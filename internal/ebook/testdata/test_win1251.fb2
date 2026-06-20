@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="windows-1251"?>
+<FictionBook xmlns="http://www.gribuser.ru/xml/fictionbook/2.0">
+  <description>
+    <title-info>
+      <book-title>Проверка</book-title>
+      <author>
+        <first-name>Иван</first-name>
+        <last-name>Тестов</last-name>
+      </author>
+      <lang>ru</lang>
+    </title-info>
+  </description>
+</FictionBook>

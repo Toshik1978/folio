@@ -1,0 +1,19 @@
+{
+  "id": 7,
+  "title": "Foundation",
+  "authors": [{ "id": 1, "name": "Isaac Asimov" }],
+  "series": "Foundation",
+  "series_index": 1.5,
+  "tags": ["sf"],
+  "publisher": "Gnome Press",
+  "year": 1951,
+  "pages": 255,
+  "rating": 5,
+  "language": "en",
+  "annotation": "<p>Classic.</p>",
+  "formats": [{ "type": "epub", "size_bytes": 1024, "download_url": "/api/books/7/files/11" }],
+  "identifiers": [
+    { "type": "isbn", "value": "9780553293357", "url": "https://isbnsearch.org/isbn/9780553293357" }
+  ],
+  "cover_url": "/api/books/7/cover?v=abc-0"
+}

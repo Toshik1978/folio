@@ -1,0 +1,389 @@
+name: Lint, Test & Build Project
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: '24.x'
+          cache: 'npm'
+          cache-dependency-path: web/package-lock.json
+
+      - name: Setup Golang
+        uses: actions/setup-go@v6
+        with:
+          go-version: '1.26'
+          cache: true
+
+      - name: Install Task
+        uses: go-task/setup-task@v2
+
+      - name: Setup project
+        run: task setup:ci
+
+      - name: Run Golang linter
+        uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.12.2
+
+      - name: Run Node.js linter
+        run: task lint:frontend
+
+      - name: Run Prettier check
+        run: task check:frontend
+
+  test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      statuses: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: '24.x'
+          cache: 'npm'
+          cache-dependency-path: web/package-lock.json
+
+      - name: Setup Golang
+        uses: actions/setup-go@v6
+        with:
+          go-version: '1.26'
+          cache: true
+
+      - name: Install Task
+        uses: go-task/setup-task@v2
+
+      - name: Setup project
+        run: task setup:ci
+
+      - name: Run frontend tests
+        run: |
+          # Don't fail the step (badges/stats below must still publish), but
+          # capture the real exit code so the gate can fail on a vitest crash that
+          # never produced a JSON report.
+          set +e
+          task test:frontend:ci
+          echo "FRONTEND_EXIT=$?" >> "$GITHUB_ENV"
+          set -e
+
+      - name: Run backend tests
+        run: |
+          # Don't fail the step (statistics collection and badge updates below must
+          # still run even when tests fail), but capture the real exit code so the
+          # gate can fail on a build failure or panic — neither of which emits a
+          # "--- FAIL:" line for the parser below to count.
+          set +e
+          go test -v -coverpkg=./internal/... ./internal/... -covermode=count -coverprofile=coverage.out > test_status.log 2>&1
+          BACKEND_EXIT=$?
+          set -e
+          echo "BACKEND_EXIT=$BACKEND_EXIT" >> "$GITHUB_ENV"
+          cat test_status.log
+
+      - name: Convert Go Coverage to Cobertura
+        run: |
+          go run github.com/boumenot/gocover-cobertura@latest < coverage.out > go-coverage.xml
+
+      - name: Process Test Results and Coverage
+        run: |
+          # Count the number of test results from the log
+          PASSED=$(grep -c -- "--- PASS:" test_status.log || true)
+          FAILED=$(grep -c -- "--- FAIL:" test_status.log || true)
+          SKIPPED=$(grep -c -- "--- SKIP:" test_status.log || true)
+          
+          # Build test message
+          TEST_MSG=""
+
+          if [ "$PASSED" -gt 0 ]; then
+            TEST_MSG="${PASSED} passed"
+          fi
+
+          if [ "$FAILED" -gt 0 ]; then
+            if [ -n "$TEST_MSG" ]; then TEST_MSG="$TEST_MSG, "; fi
+            TEST_MSG="${TEST_MSG}${FAILED} failed"
+          fi
+
+          if [ "$SKIPPED" -gt 0 ]; then
+            if [ -n "$TEST_MSG" ]; then TEST_MSG="$TEST_MSG, "; fi
+            TEST_MSG="${TEST_MSG}${SKIPPED} skipped"
+          fi
+
+          if [ -z "$TEST_MSG" ]; then
+            TEST_MSG="0 tests"
+          fi
+
+          echo "TEST_BADGE_MSG=$TEST_MSG" >> "$GITHUB_ENV"
+          
+          # Determine test badge color and success flag
+          if [ "${BACKEND_EXIT:-0}" -ne 0 ] || [ "$FAILED" -gt 0 ]; then
+            echo "TEST_BADGE_COLOR=red" >> "$GITHUB_ENV"
+            echo "TESTS_FAILED=true" >> "$GITHUB_ENV"
+          elif [ "$SKIPPED" -gt 0 ]; then
+            echo "TEST_BADGE_COLOR=yellow" >> "$GITHUB_ENV"
+            echo "TESTS_FAILED=false" >> "$GITHUB_ENV"
+          else
+            echo "TEST_BADGE_COLOR=green" >> "$GITHUB_ENV"
+            echo "TESTS_FAILED=false" >> "$GITHUB_ENV"
+          fi
+
+          # Process coverage file and exclude generated code
+          if [ -f coverage.out ]; then
+            go tool cover -func=coverage.out -o=coverage.txt
+            TOTAL_COVERAGE=$(tail -n 1 coverage.txt | awk '{print $3}' | tr -d '%')
+          
+            if [ -z "$TOTAL_COVERAGE" ]; then TOTAL_COVERAGE="0"; fi
+          else
+            TOTAL_COVERAGE="0"
+          fi
+          echo "TOTAL_COVERAGE=$TOTAL_COVERAGE" >> "$GITHUB_ENV"
+
+          # Determine coverage badge color based on percentage
+          COVERAGE_INT=$(echo "$TOTAL_COVERAGE" | cut -d'.' -f1)
+          if [ "$COVERAGE_INT" -ge 80 ]; then
+            echo "COVERAGE_BADGE_COLOR=green" >> "$GITHUB_ENV"
+          elif [ "$COVERAGE_INT" -ge 50 ]; then
+            echo "COVERAGE_BADGE_COLOR=yellow" >> "$GITHUB_ENV"
+          else
+            echo "COVERAGE_BADGE_COLOR=red" >> "$GITHUB_ENV"
+          fi
+
+          # --- Frontend Processing ---
+          FE_JSON="web/test_status.json"
+          FE_COV_JSON="web/coverage/coverage-summary.json"
+
+          if [ -f "$FE_JSON" ]; then
+            FE_PASSED=$(jq '.numPassedTests // 0' "$FE_JSON")
+            FE_FAILED=$(jq '.numFailedTests // 0' "$FE_JSON")
+            FE_SKIPPED=$(jq '.numPendingTests // 0' "$FE_JSON")
+          else
+            FE_PASSED=0
+            FE_FAILED=0
+            FE_SKIPPED=0
+          fi
+
+          FE_TEST_MSG=""
+          if [ "$FE_PASSED" -gt 0 ]; then FE_TEST_MSG="${FE_PASSED} passed"; fi
+          if [ "$FE_FAILED" -gt 0 ]; then
+            if [ -n "$FE_TEST_MSG" ]; then FE_TEST_MSG="$FE_TEST_MSG, "; fi
+            FE_TEST_MSG="${FE_TEST_MSG}${FE_FAILED} failed"
+          fi
+          if [ "$FE_SKIPPED" -gt 0 ]; then
+            if [ -n "$FE_TEST_MSG" ]; then FE_TEST_MSG="$FE_TEST_MSG, "; fi
+            FE_TEST_MSG="${FE_TEST_MSG}${FE_SKIPPED} skipped"
+          fi
+          if [ -z "$FE_TEST_MSG" ]; then FE_TEST_MSG="0 tests"; fi
+
+          echo "FE_TEST_BADGE_MSG=$FE_TEST_MSG" >> "$GITHUB_ENV"
+
+          if [ "${FRONTEND_EXIT:-0}" -ne 0 ] || [ "$FE_FAILED" -gt 0 ]; then
+            echo "FE_TEST_BADGE_COLOR=red" >> "$GITHUB_ENV"
+            echo "FE_TESTS_FAILED=true" >> "$GITHUB_ENV"
+          elif [ "$FE_SKIPPED" -gt 0 ]; then
+            echo "FE_TEST_BADGE_COLOR=yellow" >> "$GITHUB_ENV"
+            echo "FE_TESTS_FAILED=false" >> "$GITHUB_ENV"
+          else
+            echo "FE_TEST_BADGE_COLOR=green" >> "$GITHUB_ENV"
+            echo "FE_TESTS_FAILED=false" >> "$GITHUB_ENV"
+          fi
+
+          if [ -f "$FE_COV_JSON" ]; then
+            FE_TOTAL_COVERAGE=$(jq '.total.lines.pct // 0' "$FE_COV_JSON" | cut -d'.' -f1)
+          else
+            FE_TOTAL_COVERAGE="0"
+          fi
+          echo "FE_TOTAL_COVERAGE=$FE_TOTAL_COVERAGE" >> "$GITHUB_ENV"
+
+          if [ "$FE_TOTAL_COVERAGE" -ge 80 ]; then
+            echo "FE_COVERAGE_BADGE_COLOR=green" >> "$GITHUB_ENV"
+          elif [ "$FE_TOTAL_COVERAGE" -ge 50 ]; then
+            echo "FE_COVERAGE_BADGE_COLOR=yellow" >> "$GITHUB_ENV"
+          else
+            echo "FE_COVERAGE_BADGE_COLOR=red" >> "$GITHUB_ENV"
+          fi
+
+      - name: Update Gist with Badges Data
+        # Badges are updated only on push to the main branch
+        if: github.ref == 'refs/heads/main'
+        uses: actions/github-script@v7
+        env:
+          GIST_ID: ${{ secrets.GIST_ID }}
+          TEST_BADGE_MSG: ${{ env.TEST_BADGE_MSG }}
+          TEST_BADGE_COLOR: ${{ env.TEST_BADGE_COLOR }}
+          TOTAL_COVERAGE: ${{ env.TOTAL_COVERAGE }}
+          COVERAGE_BADGE_COLOR: ${{ env.COVERAGE_BADGE_COLOR }}
+          FE_TEST_BADGE_MSG: ${{ env.FE_TEST_BADGE_MSG }}
+          FE_TEST_BADGE_COLOR: ${{ env.FE_TEST_BADGE_COLOR }}
+          FE_TOTAL_COVERAGE: ${{ env.FE_TOTAL_COVERAGE }}
+          FE_COVERAGE_BADGE_COLOR: ${{ env.FE_COVERAGE_BADGE_COLOR }}
+        with:
+          github-token: ${{ secrets.GIST_SECRET_TOKEN }}
+          script: |
+            const gist_id = process.env.GIST_ID;
+            
+            try {
+              await github.rest.gists.update({
+                gist_id,
+                files: {
+                  'tests.json': {
+                    content: JSON.stringify({
+                      schemaVersion: 1,
+                      label: "Tests",
+                      namedLogo: "go",
+                      message: process.env.TEST_BADGE_MSG,
+                      color: process.env.TEST_BADGE_COLOR,
+                      cacheSeconds: 180
+                    }, null, 2)
+                  },
+                  'coverage.json': {
+                    content: JSON.stringify({
+                      schemaVersion: 1,
+                      label: "Coverage",
+                      namedLogo: "go",
+                      message: process.env.TOTAL_COVERAGE + "%",
+                      color: process.env.COVERAGE_BADGE_COLOR,
+                      cacheSeconds: 180
+                    }, null, 2)
+                  },
+                  'web-tests.json': {
+                    content: JSON.stringify({
+                      schemaVersion: 1,
+                      label: "Tests",
+                      namedLogo: "vue.js",
+                      message: process.env.FE_TEST_BADGE_MSG,
+                      color: process.env.FE_TEST_BADGE_COLOR,
+                      cacheSeconds: 180
+                    }, null, 2)
+                  },
+                  'web-coverage.json': {
+                    content: JSON.stringify({
+                      schemaVersion: 1,
+                      label: "Coverage",
+                      namedLogo: "vue.js",
+                      message: process.env.FE_TOTAL_COVERAGE + "%",
+                      color: process.env.FE_COVERAGE_BADGE_COLOR,
+                      cacheSeconds: 180
+                    }, null, 2)
+                  }
+                }
+              });
+              console.log('Gist updated successfully.');
+            } catch (error) {
+              console.error('Error updating Gist:', error);
+              core.setFailed(error.message);
+            }
+
+      - name: Code Coverage Report
+        uses: irongut/CodeCoverageSummary@v1.3.0
+        with:
+          filename: go-coverage.xml,web/coverage/cobertura-coverage.xml
+          badge: true
+          hide_branch_rate: true
+          hide_complexity: true
+          format: markdown
+          output: both
+          thresholds: '50 80'
+
+      - name: Modify Report In-Place
+        run: |
+          # 1. Rename 'src' references to 'web/src'
+          sed -i 's/^src /web\/src /g' code-coverage-results.md
+          sed -i 's/^src\./web\/src\//g' code-coverage-results.md
+
+          # 2. Inject row headers inside the single Markdown table structure
+          gawk -i inplace '
+            !go && index($0, "github.com") { print "**Backend (Go)** | |"; go=1 }
+            !web && index($0, "web/src") { print "**Frontend (Web)** | |"; web=1 }
+            { print }
+          ' code-coverage-results.md
+
+      - name: Add Coverage PR Comment
+        uses: marocchino/sticky-pull-request-comment@v3
+        if: github.event_name == 'pull_request'
+        with:
+          recreate: true
+          path: code-coverage-results.md
+
+      - name: Check test and coverage gates
+        run: |
+          # Force the workflow to fail if either suite failed OR either stack's
+          # coverage dropped below the 80% floor (see docs/BUILD-AND-DEPLOY.md).
+          # This runs AFTER the badge update so the (red) badges still publish.
+          #
+          # Test gate: the parsed *_FAILED flags catch ordinary test failures; the
+          # captured *_EXIT codes are the safety net for a build failure or panic
+          # that emits no "--- FAIL:" line (backend) or crashes before writing a
+          # JSON report (frontend).
+          MIN_COVERAGE=80
+          FAILED=0
+
+          if [ "${{ env.TESTS_FAILED }}" = "true" ] || [ "${BACKEND_EXIT:-0}" -ne 0 ]; then
+            echo "Backend tests failed (parsed=${{ env.TESTS_FAILED }}, exit=${BACKEND_EXIT:-0})."
+            FAILED=1
+          fi
+          if [ "${{ env.FE_TESTS_FAILED }}" = "true" ] || [ "${FRONTEND_EXIT:-0}" -ne 0 ]; then
+            echo "Frontend tests failed (parsed=${{ env.FE_TESTS_FAILED }}, exit=${FRONTEND_EXIT:-0})."
+            FAILED=1
+          fi
+
+          # Coverage gate. TOTAL_COVERAGE / FE_TOTAL_COVERAGE come from the prior
+          # step via $GITHUB_ENV, so they are read here as plain shell env vars.
+          # TOTAL_COVERAGE is a float ("82.0"); FE_TOTAL_COVERAGE is already an int.
+          # Truncating the backend value is a correct floor test for a >=80
+          # threshold (79.x -> 79 fails, 80.x -> 80 passes).
+          BE_COVERAGE=$(echo "${TOTAL_COVERAGE:-0}" | cut -d'.' -f1)
+          if [ "${BE_COVERAGE:-0}" -lt "$MIN_COVERAGE" ]; then
+            echo "Backend coverage ${TOTAL_COVERAGE:-0}% is below the ${MIN_COVERAGE}% floor."
+            FAILED=1
+          fi
+          if [ "${FE_TOTAL_COVERAGE:-0}" -lt "$MIN_COVERAGE" ]; then
+            echo "Frontend coverage ${FE_TOTAL_COVERAGE:-0}% is below the ${MIN_COVERAGE}% floor."
+            FAILED=1
+          fi
+
+          if [ "$FAILED" -eq 1 ]; then
+            exit 1
+          fi
+          echo "Gates passed: backend ${TOTAL_COVERAGE:-0}%, frontend ${FE_TOTAL_COVERAGE:-0}% (floor ${MIN_COVERAGE}%)."
+
+  build:
+    runs-on: ubuntu-latest
+    needs: [ lint, test ]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: '24.x'
+          cache: 'npm'
+          cache-dependency-path: web/package-lock.json
+
+      - name: Setup Golang
+        uses: actions/setup-go@v6
+        with:
+          go-version: '1.26'
+          cache: true
+
+      - name: Install Task
+        uses: go-task/setup-task@v2
+
+      - name: Setup project
+        run: task setup:ci
+
+      - name: Run build
+        run: task build

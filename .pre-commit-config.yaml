@@ -1,0 +1,27 @@
+repos:
+- repo: https://github.com/commitizen-tools/commitizen
+  rev: v4.16.3
+  hooks:
+    - id: commitizen
+      stages:
+        - commit-msg
+
+- repo: local
+  hooks:
+    - id: linters
+      name: Run linters
+      types_or: [go, javascript, jsx, ts, tsx, vue, html]
+      pass_filenames: false
+      language: system
+      entry: task lint
+      stages:
+        - pre-commit
+
+    - id: tests
+      name: Run tests
+      types_or: [go, javascript, jsx, ts, tsx, vue, html]
+      pass_filenames: false
+      language: system
+      entry: task test
+      stages:
+        - pre-commit

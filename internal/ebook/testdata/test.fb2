@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<FictionBook xmlns="http://www.gribuser.ru/xml/fictionbook/2.0">
+  <description>
+    <title-info>
+      <book-title>Test FB2 Book</book-title>
+      <genre>sf_history</genre>
+      <genre>adventure</genre>
+      <author>
+        <first-name>Ivan</first-name>
+        <middle-name>P.</middle-name>
+        <last-name>Testov</last-name>
+      </author>
+      <annotation><p>An annotation for testing.</p></annotation>
+      <sequence name="FB2 Series"/>
+      <lang>ru</lang>
+      <coverpage><image href="#cover.png"/></coverpage>
+    </title-info>
+  </description>
+  <binary id="cover.png" content-type="image/png">iVBORw0KGgoAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==</binary>
+</FictionBook>

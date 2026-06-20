@@ -1,0 +1,10 @@
+---
+commitizen:
+  changelog_file: CHANGELOG.md
+  name: cz_conventional_commits
+  tag_format: v$version
+  update_changelog_on_bump: true
+  version: 1.0.0-beta.1
+  version_files:
+  - VERSION
+  version_scheme: semver2

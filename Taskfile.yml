@@ -1,0 +1,114 @@
+version: "3"
+
+tasks:
+  setup:
+    desc: Install dependencies and prepare workspace
+    cmds:
+      - mkdir -p web/dist && touch web/dist/.gitkeep
+      - cd web && npm install
+      - go mod tidy
+
+  setup:ci:
+    desc: Install dependencies and prepare workspace on CI
+    cmds:
+      - mkdir -p web/dist && touch web/dist/.gitkeep
+      - cd web && npm ci
+      - go mod download
+
+  generate:
+    desc: Run sqlc code generation
+    cmd: sqlc generate
+
+  dev:backend:
+    desc: Run Go backend server
+    cmd: go run cmd/folio-idx/main.go
+
+  dev:frontend:
+    desc: Run Vite dev server with HMR
+    dir: web
+    cmd: npm run dev
+
+  build:frontend:
+    desc: Type-check and bundle Vue SPA
+    dir: web
+    cmd: npm run build
+
+  build:backend:
+    desc: Compile Go binary with embedded SPA
+    deps: [build:frontend]
+    cmds:
+      - mkdir -p bin
+      - CGO_ENABLED=0 go build -ldflags="-w -s" -o bin/folio-idx cmd/folio-idx/main.go
+    generates:
+      - bin/folio-idx
+
+  build:
+    desc: Full production build (frontend + backend)
+    deps: [build:backend]
+
+  test:backend:
+    desc: Run all Go tests
+    cmd: go test -v -coverpkg=./internal/... ./internal/...
+
+  test:frontend:
+    desc: Run frontend unit tests
+    dir: web
+    cmd: npm run test
+
+  test:frontend:ci:
+    desc: Run frontend unit tests with coverage and JSON output (CI)
+    dir: web
+    cmd: npm run test:ci
+
+  test:
+    desc: Run all tests
+    cmds:
+      - task: test:backend
+      - task: test:frontend
+
+  lint:backend:
+    desc: Run Go linters
+    cmd: golangci-lint run
+
+  lint:frontend:
+    desc: Run Node.js linters
+    dir: web
+    cmd: npm run lint
+
+  check:frontend:
+    desc: Run Prettier format check
+    dir: web
+    cmd: npm run format:check
+
+  lint:
+    desc: Full linters run (frontend + backend)
+    cmds:
+      - task: lint:backend
+      - task: lint:frontend
+      - task: check:frontend
+
+  format:backend:
+    desc: Run gofumpt
+    cmd: golangci-lint fmt
+
+  format:frontend:
+    desc: Run Prettier formatter
+    dir: web
+    cmd: npm run format
+
+  format:
+    desc: Run formatters
+    cmds:
+      - task: format:backend
+      - task: format:frontend
+
+  build:docker:
+    desc: Build Docker container
+    cmd: docker build -t folio-idx:latest .
+
+  clean:
+    desc: Remove build artifacts
+    cmds:
+      - rm -rf bin/
+      - rm -rf web/dist/*
+      - touch web/dist/.gitkeep

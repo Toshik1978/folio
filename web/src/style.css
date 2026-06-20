@@ -1,0 +1,38 @@
+@import 'tailwindcss';
+
+@plugin "daisyui" {
+  themes: all;
+}
+
+/*
+ * Chrome renderer-crash workaround.
+ *
+ * daisyUI v5's `.modal` attaches a scroll-driven animation to the document root
+ * while a modal is open (`:root:has(.modal-open) { animation: … scroll() }`,
+ * for scrollbar-gutter stabilization). Rapidly opening/closing the modal — e.g.
+ * clicking books in quick succession — repeatedly creates and destroys that
+ * `scroll()`-timeline animation on `:root`, which crashes Chrome's renderer
+ * (EXC_BREAKPOINT, no JS error; only visible in chrome://crashes).
+ *
+ * We don't need the gutter animation, so disable it. The page scroll-lock
+ * (`--page-overflow: hidden`, set by the same rule) is unaffected.
+ */
+:root:has(.modal-open),
+:root:has(.modal[open]),
+:root:has(.modal:target) {
+  animation: none !important;
+}
+
+@layer base {
+  body {
+    font-family:
+      'Inter',
+      -apple-system,
+      BlinkMacSystemFont,
+      'Segoe UI',
+      sans-serif;
+    margin: 0;
+    padding: 0;
+    min-height: 100vh;
+  }
+}

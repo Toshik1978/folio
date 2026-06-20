@@ -1,0 +1,27 @@
+# Dependency directories
+node_modules/
+/web/node_modules/
+
+# Build outputs
+/web/dist
+/bin/
+
+# Frontend test artifacts
+/web/coverage/
+/web/test_status.json
+
+# DB and local runtime files
+/data/
+*.db
+*.db-journal
+*.db-shm
+*.db-wal
+.env
+
+# Versioning
+release_notes.md
+
+# Configuration
+.antigravitycli
+.claude
+.idea

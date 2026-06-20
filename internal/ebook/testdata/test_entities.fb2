@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<FictionBook xmlns="http://www.gribuser.ru/xml/fictionbook/2.0">
+  <description>
+    <title-info>
+      <book-title>Entity Test</book-title>
+      <author>
+        <first-name>Jack</first-name>
+        <last-name>O&apos;Brien</last-name>
+      </author>
+      <annotation><p>Jack &amp; Jill went &quot;up&quot; the hill.</p><p>Score: 5 &lt; 10 &gt; 3.</p><p>A&nbsp;word &mdash; another &ldquo;quoted&rdquo;.</p></annotation>
+      <lang>en</lang>
+    </title-info>
+  </description>
+</FictionBook>
