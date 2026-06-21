@@ -65,14 +65,14 @@ func parseMOBI(_ context.Context, path string) (Metadata, error) {
 	}
 
 	m := mf.readTitle()
-	if err := mf.readEXTH(&m); err != nil {
-		// Missing/short EXTH is not fatal: keep the record-0 header title.
-		return m, nil
-	}
+	// A missing/short EXTH is not fatal: the record-0 header title already read
+	// stands. The title is entity-decoded below either way.
+	mf.readEXTH(&m)
 
-	// MOBI/AZW3 titles (record-0 header or EXTH) can carry HTML/numeric entities
-	// (e.g. retail Kindle "Death&#x2019;s End"). Decode them after EXTH so the
-	// preferred EXTH 503 title is unescaped too.
+	// MOBI/AZW3 titles (record-0 header or EXTH 503) can carry HTML/numeric
+	// entities (e.g. retail Kindle "Death&#x2019;s End"). Decode after EXTH so
+	// the preferred EXTH 503 title is unescaped too — and so a file without an
+	// EXTH block still gets its record-0 header title decoded.
 	m.Title = html.UnescapeString(m.Title)
 
 	return m, nil
@@ -199,32 +199,34 @@ func (mf *mobiFile) readTitle() Metadata {
 	return m
 }
 
-func (mf *mobiFile) readEXTH(m *Metadata) error {
+// readEXTH applies the EXTH metadata block to m when one is present and well
+// formed. It is best-effort: a missing/short/!magic EXTH simply leaves m with
+// the record-0 header title already read, so the caller never has to special-case
+// the failure (it just decodes entities on whatever title stands).
+func (mf *mobiFile) readEXTH(m *Metadata) {
 	exthFlag := binary.BigEndian.Uint32(mf.rec0[128:132])
 	if exthFlag&mobiExthFlag == 0 {
-		return errors.New("no EXTH")
+		return
 	}
 
 	mobiHeaderLen := int(binary.BigEndian.Uint32(mf.rec0[20:24]))
 	if mobiHeaderLen < mobiRec0MinSize-16 {
-		return errors.New("no EXTH")
+		return
 	}
 	exthStart := 16 + mobiHeaderLen
 	if exthStart+exthHeaderSize > len(mf.rec0) {
-		return errors.New("no EXTH")
+		return
 	}
 
 	exth := mf.rec0[exthStart:]
 	if string(exth[:4]) != exthMagic {
-		return errors.New("no EXTH")
+		return
 	}
 
 	coverOffset := mf.parseEXTHRecords(exth, m)
 	if coverOffset >= 0 {
 		m.Cover = mf.extractCover(coverOffset)
 	}
-
-	return nil
 }
 
 func (mf *mobiFile) parseEXTHRecords(exth []byte, m *Metadata) int {

@@ -74,6 +74,21 @@ func (s *mobiSuite) TestUpdatedTitlePreferredOverHeader() {
 	s.Equal("Clean Updated Title", m.Title)
 }
 
+// TestHeaderTitleEntitiesDecodedWithoutEXTH covers the EXTH-absent half of M5: a
+// MOBI with no EXTH block must still have its record-0 header title entity-decoded.
+// Regression — the decode previously sat after an early return taken when EXTH was
+// missing, so an entity-encoded header title was served raw (e.g. "Death&#x2019;s
+// End" instead of "Death's End").
+func (s *mobiSuite) TestHeaderTitleEntitiesDecodedWithoutEXTH() {
+	rec0 := buildRec0("Death&#x2019;s End", nil, withoutEXTH())
+	path := s.writeMOBIFixture("mobi", rec0)
+
+	m, err := s.d.Parse(context.Background(), s.log, path)
+	s.Require().NoError(err)
+	s.Equal("Death’s End", m.Title,
+		"header title entities must be decoded even when the file has no EXTH block")
+}
+
 type exthRecord struct {
 	typ  int
 	data []byte
@@ -94,6 +109,16 @@ func withFirstImageIndex(idx uint32) rec0Option {
 	return func(rec0 []byte) {
 		// MOBI header offset 92 = PalmDoc(16) + 92 = rec0[108:112]
 		binary.BigEndian.PutUint32(rec0[108:112], idx)
+	}
+}
+
+// withoutEXTH clears the MOBI header's EXTH-present flag so the parser takes the
+// EXTH-absent path: it keeps the record-0 header title without consulting an EXTH
+// block. buildRec0 still appends an (inert) EXTH body, but the cleared flag makes
+// readEXTH return before it is read.
+func withoutEXTH() rec0Option {
+	return func(rec0 []byte) {
+		binary.BigEndian.PutUint32(rec0[128:132], 0)
 	}
 }
 
