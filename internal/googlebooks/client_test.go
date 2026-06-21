@@ -1,6 +1,8 @@
 package googlebooks
 
 import (
+	"bytes"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -86,6 +88,21 @@ func (s *clientSuite) TestRateLimitCooldownSuppressesCalls() {
 	_, err = c.SearchQuery(s.T().Context(), "y")
 	s.Require().ErrorIs(err, ErrRateLimited, "second call stays rate-limited during cooldown")
 	s.Equal(int32(1), hits.Load(), "second call short-circuited by the cooldown")
+}
+
+// A hostile or runaway upstream body must not be buffered unbounded into memory:
+// the decode is capped, so an over-cap body is rejected (truncated decode) rather
+// than fully read.
+func (s *clientSuite) TestGetJSONRejectsOversizedBody() {
+	c, closeFn := s.server(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, `{"kind":"`)
+		_, _ = w.Write(bytes.Repeat([]byte("a"), maxJSONBytes+1))
+		_, _ = io.WriteString(w, `"}`)
+	})
+	defer closeFn()
+
+	_, _, err := c.SearchISBN(s.T().Context(), "9780441013593")
+	s.Require().Error(err, "a body beyond the cap must be rejected, not buffered unbounded")
 }
 
 func (s *clientSuite) TestSearchBuildsTitleAuthorQuery() {

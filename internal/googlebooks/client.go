@@ -20,6 +20,7 @@ const (
 	defaultBaseURL    = "https://www.googleapis.com/books/v1"
 	requestTimeout    = 8 * time.Second
 	maxImageBytes     = 5 << 20         // 5 MiB cap on a downloaded cover
+	maxJSONBytes      = 10 << 20        // 10 MiB cap on a decoded JSON response
 	rateLimitCooldown = 5 * time.Minute // back off this long after a 429
 )
 
@@ -215,7 +216,9 @@ func (c *Client) getJSON(ctx context.Context, u string, dst any) error {
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("google books status %d", resp.StatusCode)
 	}
-	if err := json.NewDecoder(resp.Body).Decode(dst); err != nil {
+	// Cap the decoded body so a hostile or runaway upstream can't be buffered
+	// unbounded into memory (cf. the image path's maxImageBytes guard).
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxJSONBytes)).Decode(dst); err != nil {
 		return fmt.Errorf("decode response: %w", err)
 	}
 

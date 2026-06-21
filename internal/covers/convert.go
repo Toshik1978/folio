@@ -14,18 +14,31 @@ import (
 	_ "golang.org/x/image/webp" // Support WEBP format
 )
 
+// maxCoverPixels caps the decoded area (width × height) of a non-JPEG cover. A
+// small, highly-compressed image can declare enormous dimensions (a
+// decompression bomb); image.Decode would then allocate width×height×4 bytes and
+// can OOM the low-spec target hosts (NAS, Raspberry Pi, minimal VPS). 40 MP is far
+// above any real book cover yet bounds the worst-case allocation.
+const maxCoverPixels = 40_000_000
+
 // convertToJPEG decodes an image from a byte slice in memory and returns new slice as a JPEG.
 func convertToJPEG(inputData []byte) ([]byte, error) {
 	if len(inputData) == 0 {
 		return nil, errors.New("input data is empty")
 	}
 
-	// Check the image format using only the header metadata
-	// If it is already a JPEG, bypass decoding/encoding completely
-	configReader := bytes.NewReader(inputData)
-	_, formatName, err := image.DecodeConfig(configReader)
+	// Check the image format and dimensions using only the header metadata.
+	cfg, formatName, err := image.DecodeConfig(bytes.NewReader(inputData))
+	// If it is already a JPEG, bypass decoding/encoding completely (no allocation).
 	if err == nil && formatName == "jpeg" {
 		return inputData, nil
+	}
+	// Reject decompression bombs from the header alone, before image.Decode
+	// allocates the full pixel buffer. A header we cannot read falls through to
+	// image.Decode below, which returns the real decode error.
+	if err == nil && int64(cfg.Width)*int64(cfg.Height) > maxCoverPixels {
+		return nil, fmt.Errorf("image dimensions %dx%d exceed %d pixel limit",
+			cfg.Width, cfg.Height, maxCoverPixels)
 	}
 
 	// Otherwise do decode
