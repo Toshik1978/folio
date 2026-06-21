@@ -29,7 +29,7 @@ All `/api/*` routes are protected externally by Cloudflare Access (browser SSO/M
 | `GET` | `/api/publishers/letters` | Alphabet buckets that have publishers | JSON array of letters |
 | `POST` | `/api/sync` | Force a re-index of all active libraries, bypassing checkpoint gating (the "Re-index All" action) | JSON sync status |
 | `GET` | `/api/sync/status` | Current sync state (idle/running, active library, queue) | JSON object |
-| `GET` | `/api/stats` | Library statistics (counts, sizes, per-format/per-language breakdowns); `?library=<id>` scopes, absent = all | JSON object (see Stats Object) |
+| `GET` | `/api/stats` | Whole-catalog statistics (counts, sizes, per-format/per-language breakdowns). **Always global** — `/api/stats` is not library-scoped; any `?library=` is ignored | JSON object (see Stats Object) |
 | `GET` | `/api/facets` | Distinct format & language **values** for the search-bar facet pickers; `?library=<id>` scopes, absent = all | JSON `{"formats":[…],"languages":[…]}` |
 
 > **Sync gating rule:** the forced manual triggers (`POST /api/sync` and
@@ -131,11 +131,15 @@ Password is write-only — `GET` returns `opds_pass_set` (boolean), `PUT` accept
 }
 ```
 
-`formats` and `languages` are `{ value: count }` maps. The frontend surfaces this
-as a catalog overview card on Settings → Libraries. The search bar's
-Format/Language value-picker facets are populated separately from
+`formats` and `languages` are `{ value: count }` maps. These totals are
+**always whole-catalog**: `/api/stats` is deliberately not library-scoped — the
+result is computed globally, cached in-process, and invalidated on any catalog
+change (a sync, enrichment, or purge). A `?library=` query parameter is accepted
+by the router but ignored. The frontend surfaces this as a catalog overview card
+on Settings → Libraries (it requests `/stats` with no parameters). The search
+bar's Format/Language value-picker facets are populated separately from
 [`/api/facets`](#rest-api-api), which returns just the distinct values
-(`?library=`-scoped) rather than the counted breakdown here.
+(that endpoint **is** `?library=`-scoped) rather than the counted breakdown here.
 
 ### Query Parameters for `/api/books`
 
@@ -148,7 +152,7 @@ Format/Language value-picker facets are populated separately from
 | `tag` | string | Exact genre/tag name (not full-text indexed). |
 | `publisher` | string | Filter by publisher name |
 | `format` | string | Filter by file format (`epub`, `fb2`, …). Selectable from the search bar's Format facet (values from `/api/facets`). |
-| `library` | int | Restrict to a single library by id (`0`/absent = all libraries). Also accepted by `/api/authors`, `/api/series`, `/api/tags`, `/api/publishers`, their `/letters` variants, and `/api/stats`. |
+| `library` | int | Restrict to a single library by id (`0`/absent = all libraries). Also honored by `/api/authors`, `/api/series`, `/api/tags`, `/api/publishers`, their `/letters` variants, and `/api/facets`. (`/api/stats` is **not** scoped — it is always whole-catalog.) |
 | `lang` | string | Filter by language code (e.g. `en`, `ru`). Values are normalized ISO 639-1 across all sources — Calibre's ISO 639-2/B codes (e.g. `eng`, `rus`) are mapped to two-letter codes at ingest, so a single `lang=en` matches books from every source. Selectable from the search bar's Language facet (values from `/api/facets`). |
 | `sort` | string | Result order when not searching, three modes: absent/unrecognized → `imported_at` desc (**"Recently added"** — when the book entered Folio; the default), `source` → `added_at` desc (**"Newest"** — source/original chronology), `rating` → rating desc (highest first, unrated last). Each tie-breaks by `added_at`/`id`. Ignored while a free-text/FTS `q` is active (BM25 relevance wins). |
 | `page` | int | Page number (1-indexed) |
