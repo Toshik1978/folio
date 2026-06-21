@@ -58,7 +58,7 @@ func (q *Queries) DeleteBooksByLibrary(ctx context.Context, libraryID int64) err
 }
 
 const findBookByLibraryKey = `-- name: FindBookByLibraryKey :one
-SELECT b.id, b.library_id, b.library_key, b.title, b.series_id, b.series_number, b.language, b.annotation, b.metadata_checked, b.enrichment_checked, b.publisher, b.publisher_fold, b.year, b.rating, b.content_hash, b.metadata_format, b.added_at, b.manually_matched, b.cover_prio, b.imported_at, COALESCE(s.name, '') AS series_name
+SELECT b.id, b.library_id, b.library_key, b.title, b.series_id, b.series_number, b.language, b.annotation, b.metadata_checked, b.enrichment_checked, b.publisher, b.publisher_fold, b.year, b.rating, b.content_hash, b.metadata_format, b.added_at, b.imported_at, b.manually_matched, b.cover_prio, COALESCE(s.name, '') AS series_name
 FROM books b
          LEFT JOIN series s ON s.id = b.series_id
 WHERE b.library_id = ?
@@ -88,9 +88,9 @@ type FindBookByLibraryKeyRow struct {
 	ContentHash       string
 	MetadataFormat    sql.NullString
 	AddedAt           int64
+	ImportedAt        int64
 	ManuallyMatched   int64
 	CoverPrio         int64
-	ImportedAt        int64
 	SeriesName        string
 }
 
@@ -115,16 +115,16 @@ func (q *Queries) FindBookByLibraryKey(ctx context.Context, arg FindBookByLibrar
 		&i.ContentHash,
 		&i.MetadataFormat,
 		&i.AddedAt,
+		&i.ImportedAt,
 		&i.ManuallyMatched,
 		&i.CoverPrio,
-		&i.ImportedAt,
 		&i.SeriesName,
 	)
 	return i, err
 }
 
 const getBook = `-- name: GetBook :one
-SELECT id, library_id, library_key, title, series_id, series_number, language, annotation, metadata_checked, enrichment_checked, publisher, publisher_fold, year, rating, content_hash, metadata_format, added_at, manually_matched, cover_prio, imported_at
+SELECT id, library_id, library_key, title, series_id, series_number, language, annotation, metadata_checked, enrichment_checked, publisher, publisher_fold, year, rating, content_hash, metadata_format, added_at, imported_at, manually_matched, cover_prio
 FROM books
 WHERE id = ?
 `
@@ -150,9 +150,9 @@ func (q *Queries) GetBook(ctx context.Context, id int64) (Book, error) {
 		&i.ContentHash,
 		&i.MetadataFormat,
 		&i.AddedAt,
+		&i.ImportedAt,
 		&i.ManuallyMatched,
 		&i.CoverPrio,
-		&i.ImportedAt,
 	)
 	return i, err
 }
@@ -434,7 +434,7 @@ func (q *Queries) ListBookIDsByLibrary(ctx context.Context, libraryID int64) ([]
 }
 
 const listBooks = `-- name: ListBooks :many
-SELECT id, library_id, library_key, title, series_id, series_number, language, annotation, metadata_checked, enrichment_checked, publisher, publisher_fold, year, rating, content_hash, metadata_format, added_at, manually_matched, cover_prio, imported_at
+SELECT id, library_id, library_key, title, series_id, series_number, language, annotation, metadata_checked, enrichment_checked, publisher, publisher_fold, year, rating, content_hash, metadata_format, added_at, imported_at, manually_matched, cover_prio
 FROM books
 ORDER BY added_at DESC, id DESC
 LIMIT ? OFFSET ?
@@ -475,9 +475,9 @@ func (q *Queries) ListBooks(ctx context.Context, arg ListBooksParams) ([]Book, e
 			&i.ContentHash,
 			&i.MetadataFormat,
 			&i.AddedAt,
+			&i.ImportedAt,
 			&i.ManuallyMatched,
 			&i.CoverPrio,
-			&i.ImportedAt,
 		); err != nil {
 			return nil, err
 		}

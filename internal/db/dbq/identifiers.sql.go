@@ -23,6 +23,40 @@ func (q *Queries) CountBookIdentifiers(ctx context.Context, bookID int64) (int64
 	return count, err
 }
 
+const findBookByIdentifier = `-- name: FindBookByIdentifier :one
+SELECT bi.book_id, b.library_key
+FROM book_identifiers bi
+         JOIN books b ON b.id = bi.book_id
+WHERE b.library_id = ?
+  AND bi.type = ?
+  AND bi.value = ?
+ORDER BY bi.book_id
+LIMIT 1
+`
+
+type FindBookByIdentifierParams struct {
+	LibraryID int64
+	Type      string
+	Value     string
+}
+
+type FindBookByIdentifierRow struct {
+	BookID     int64
+	LibraryKey string
+}
+
+// FindBookByIdentifier resolves a cleaned (type, value) identifier to the lowest
+// matching book id in a library and that book's library_key. Used by the
+// importer to group same-book files that share a strong identifier (ISBN/ASIN/
+// Google/Goodreads) but differ in title/author metadata. Lowest id keeps the
+// choice deterministic when several already-split books share the identifier.
+func (q *Queries) FindBookByIdentifier(ctx context.Context, arg FindBookByIdentifierParams) (FindBookByIdentifierRow, error) {
+	row := q.db.QueryRowContext(ctx, findBookByIdentifier, arg.LibraryID, arg.Type, arg.Value)
+	var i FindBookByIdentifierRow
+	err := row.Scan(&i.BookID, &i.LibraryKey)
+	return i, err
+}
+
 const insertBookIdentifier = `-- name: InsertBookIdentifier :exec
 INSERT INTO book_identifiers (book_id, type, value)
 VALUES (?, ?, ?)

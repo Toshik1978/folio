@@ -32,9 +32,9 @@ type Book struct {
 	ContentHash       string
 	MetadataFormat    sql.NullString
 	AddedAt           int64
+	ImportedAt        int64
 	ManuallyMatched   int64
 	CoverPrio         int64
-	ImportedAt        int64
 }
 
 type BookAuthor struct {
