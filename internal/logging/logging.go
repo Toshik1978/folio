@@ -25,7 +25,7 @@ type customHandler struct {
 	mu        *sync.Mutex
 	out       io.Writer
 	attrs     []slog.Attr
-	groups    []string
+	groupPfx  string // dotted path of open groups, e.g. "req.db." (empty at root)
 	level     slog.Level
 	useColor  bool
 	envPrefix string
@@ -114,8 +114,10 @@ func (h *customHandler) Handle(_ context.Context, r slog.Record) error {
 		fmt.Fprintf(h.out, " %s=%v", attr.Key, attr.Value.Any())
 	}
 
+	// Record attrs are namespaced under whatever groups are open on this handler;
+	// attrs persisted via WithAttrs already carry their prefix baked into the key.
 	r.Attrs(func(attr slog.Attr) bool {
-		fmt.Fprintf(h.out, " %s=%v", attr.Key, attr.Value.Any())
+		fmt.Fprintf(h.out, " %s%s=%v", h.groupPfx, attr.Key, attr.Value.Any())
 		return true
 	})
 
@@ -126,11 +128,25 @@ func (h *customHandler) Handle(_ context.Context, r slog.Record) error {
 }
 
 func (h *customHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	if len(attrs) == 0 {
+		return h
+	}
+
+	// Qualify each new attr's key with the currently-open group path and bake it
+	// in now, so interleaved With/WithGroup chains keep the correct namespace per
+	// attr. A fresh slice avoids aliasing a shared backing array across handlers.
+	merged := make([]slog.Attr, 0, len(h.attrs)+len(attrs))
+	merged = append(merged, h.attrs...)
+	for _, a := range attrs {
+		a.Key = h.groupPfx + a.Key
+		merged = append(merged, a)
+	}
+
 	return &customHandler{
 		mu:        h.mu,
 		out:       h.out,
-		attrs:     append(h.attrs, attrs...),
-		groups:    h.groups,
+		attrs:     merged,
+		groupPfx:  h.groupPfx,
 		level:     h.level,
 		useColor:  h.useColor,
 		envPrefix: h.envPrefix,
@@ -146,7 +162,7 @@ func (h *customHandler) WithGroup(name string) slog.Handler {
 		mu:        h.mu,
 		out:       h.out,
 		attrs:     h.attrs,
-		groups:    append(h.groups, name),
+		groupPfx:  h.groupPfx + name + ".",
 		level:     h.level,
 		useColor:  h.useColor,
 		envPrefix: h.envPrefix,

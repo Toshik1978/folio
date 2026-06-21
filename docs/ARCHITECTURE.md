@@ -149,7 +149,7 @@ package is imported as `github.com/Toshik1978/folio/web`.
 | :--- | :--- | :--- | :--- |
 | Backend language | Go | 1.26 | Server, embedding, file I/O |
 | HTTP router | go-chi/chi/v5 | 5.3.x | Routing, middleware |
-| Logging | log/slog (stdlib) | — | Structured logging via the default slog logger (stderr), tagged with an `env` attribute (`logging.New` configures no custom handler); chi `middleware.Logger` bridged to slog for dev request logs |
+| Logging | log/slog (stdlib) | — | Structured logging via a custom `slog.Handler` (`logging.New`) that writes to **stdout** with per-env levels (dev → Debug, else Info), an `[ENV]` line tag, and ANSI colors when the output is a TTY; chi `middleware.Logger` bridged to slog for dev request logs |
 | Config | caarlos0/env/v11 | 11.x | Struct-based environment variable parsing |
 | Env files | joho/godotenv | 1.5.x | Auto-load `.env` files in development |
 | SQLite driver | modernc.org/sqlite | 1.51.x | Pure-Go SQLite (no CGo), includes FTS5 |

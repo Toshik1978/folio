@@ -107,6 +107,29 @@ func (s *loggingSuite) TestNewReturnsLogger() {
 	s.NotNil(New(false, "dev"))
 }
 
+// TestWithGroupNamespacesRecordAttrs: a WithGroup-derived logger must qualify
+// per-call attribute keys with the dotted group path (slog semantics).
+func (s *loggingSuite) TestWithGroupNamespacesRecordAttrs() {
+	log, buf := s.logger("")
+	log.WithGroup("req").Info("served", "method", "GET")
+
+	out := buf.String()
+	s.Contains(out, "req.method=GET", "record attrs must be namespaced under the open group")
+	s.NotContains(out, " method=GET", "the un-namespaced key must not leak")
+}
+
+// TestWithGroupNestsAndInterleavesAttrs: nested groups compose into a dotted
+// path, and only attributes added *after* a group is opened are nested under it.
+func (s *loggingSuite) TestWithGroupNestsAndInterleavesAttrs() {
+	log, buf := s.logger("")
+	log.With("top", 1).WithGroup("g1").With("mid", 2).WithGroup("g2").Info("m", "leaf", 3)
+
+	out := buf.String()
+	s.Contains(out, "top=1", "attrs added before any group stay at the root")
+	s.Contains(out, "g1.mid=2", "attrs added after g1 nest under g1")
+	s.Contains(out, "g1.g2.leaf=3", "record attrs nest under the full open group path")
+}
+
 func (s *loggingSuite) TestWithGroupEmptyIsNoop() {
 	var buf bytes.Buffer
 	h := newCustomHandler(&buf, false, "")
