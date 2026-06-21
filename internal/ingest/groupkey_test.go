@@ -1,42 +1,41 @@
 package ingest
 
-import "testing"
+import (
+	"github.com/stretchr/testify/suite"
+)
 
-func TestGroupKeyAuthorOrderIndependent(t *testing.T) {
+type groupKeySuite struct {
+	suite.Suite
+}
+
+func (s *groupKeySuite) TestGroupKeyAuthorOrderIndependent() {
 	const title, lang = "Death's End", "en"
 	surnameFirst := groupKey(title, []string{"Liu, Cixin"}, lang)
 	firstLast := groupKey(title, []string{"Cixin Liu"}, lang)
 	spaceOnly := groupKey(title, []string{"Liu Cixin"}, lang)
 
-	if surnameFirst != firstLast {
-		t.Fatalf("comma vs plain differ:\n %q\n %q", surnameFirst, firstLast)
-	}
-	if firstLast != spaceOnly {
-		t.Fatalf("order differs:\n %q\n %q", firstLast, spaceOnly)
-	}
+	s.Equal(surnameFirst, firstLast, "comma vs plain differ")
+	s.Equal(spaceOnly, firstLast, "order differ")
 }
 
-func TestGroupKeyMultiAuthorOrderIndependent(t *testing.T) {
+func (s *groupKeySuite) TestGroupKeyMultiAuthorOrderIndependent() {
 	a := groupKey("T", []string{"Smith, John", "Doe, Jane"}, "en")
 	b := groupKey("T", []string{"Jane Doe", "John Smith"}, "en")
-	if a != b {
-		t.Fatalf("multi-author order not normalized:\n %q\n %q", a, b)
-	}
+
+	s.Equal(a, b, "multi-author order not normalized")
 }
 
-func TestGroupKeyDifferentLanguageSplits(t *testing.T) {
+func (s *groupKeySuite) TestGroupKeyDifferentLanguageSplits() {
 	en := groupKey("T", []string{"A B"}, "en")
 	ru := groupKey("T", []string{"A B"}, "ru")
-	if en == ru {
-		t.Fatal("different language must produce different key")
-	}
+
+	s.NotEqual(en, ru, "different language must produce different key")
 }
 
-func TestGroupKeyMiddleInitialStillSplits(t *testing.T) {
+func (s *groupKeySuite) TestGroupKeyMiddleInitialStillSplits() {
 	// Accepted limitation: a differing middle token still splits (identifiers heal it).
 	withInitial := groupKey("T", []string{"Ursula K. Le Guin"}, "en")
 	without := groupKey("T", []string{"Ursula Le Guin"}, "en")
-	if withInitial == without {
-		t.Fatal("expected middle-initial difference to split (documented limitation)")
-	}
+
+	s.NotEqual(without, withInitial, "expected middle-initial difference to split (documented limitation)")
 }

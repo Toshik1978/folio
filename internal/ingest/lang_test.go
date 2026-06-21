@@ -1,14 +1,16 @@
 package ingest
 
 import (
-	"testing"
-
-	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/suite"
 
 	"github.com/Toshik1978/folio/internal/ebook"
 )
 
-func TestNormalizeLang(t *testing.T) {
+type langSuite struct {
+	suite.Suite
+}
+
+func (s *langSuite) TestNormalizeLang() {
 	cases := map[string]string{
 		"eng":        "en",
 		"rus":        "ru",
@@ -31,13 +33,13 @@ func TestNormalizeLang(t *testing.T) {
 		"english": "", // not a code at all
 	}
 	for in, want := range cases {
-		assert.Equalf(t, want, normalizeLang(in), "normalizeLang(%q)", in)
+		s.Equal(want, normalizeLang(in), "normalizeLang(%q)", in)
 	}
 }
 
 // recordFromMeta must normalize the language so editions of the same work that
 // declare "en" and "en-US" land in one group instead of splitting facets.
-func TestRecordFromMetaNormalizesLanguage(t *testing.T) {
+func (s *langSuite) TestRecordFromMetaNormalizesLanguage() {
 	mk := func(lang string) bookRecord {
 		return recordFromMeta(1, "rel", "/x/Book.epub", 10, 20, "epub", ebook.Metadata{
 			Title:    "Same Title",
@@ -48,6 +50,6 @@ func TestRecordFromMetaNormalizesLanguage(t *testing.T) {
 	enUS := mk("en-US")
 	en := mk("en")
 
-	assert.Equal(t, "en", enUS.Language, "en-US normalized to en")
-	assert.Equal(t, en.LibraryKey, enUS.LibraryKey, "en and en-US share a group key")
+	s.Equal("en", enUS.Language, "en-US normalized to en")
+	s.Equal(en.LibraryKey, enUS.LibraryKey, "en and en-US share a group key")
 }

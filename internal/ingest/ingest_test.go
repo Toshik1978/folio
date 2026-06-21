@@ -40,6 +40,8 @@ func TestIngest(t *testing.T) {
 	suite.Run(t, new(enrichSuite))
 	suite.Run(t, new(importerSuite))
 	suite.Run(t, new(mergeSuite))
+	suite.Run(t, new(groupKeySuite))
+	suite.Run(t, new(langSuite))
 }
 
 // nopReporter discards progress. The tests use it to drive a Sync without caring

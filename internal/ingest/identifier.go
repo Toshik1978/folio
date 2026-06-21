@@ -10,18 +10,20 @@ import (
 )
 
 const (
-	isbnType   = "isbn"
-	amazonType = "amazon"
+	isbnType      = "isbn"
+	amazonType    = "amazon"
+	googleType    = "google"
+	goodreadsType = "goodreads"
 )
 
 // strongIdentifierTypes are the cleaned identifier types reliable enough (per
 // edition or per work) to force two records onto the same book. Other types are
 // still stored, but never trigger a merge.
 var strongIdentifierTypes = map[string]struct{}{
-	isbnType:    {},
-	amazonType:  {},
-	"google":    {},
-	"goodreads": {},
+	isbnType:      {},
+	amazonType:    {},
+	googleType:    {},
+	goodreadsType: {},
 }
 
 func cleanIdentifier(typ, val string) (string, string) {

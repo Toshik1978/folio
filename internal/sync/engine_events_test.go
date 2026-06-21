@@ -44,9 +44,13 @@ func (p *recordingPublisher) libraryIDs() []int64 {
 	return ids
 }
 
-type engineEventsSuite struct{ suite.Suite }
+type engineEventsSuite struct {
+	suite.Suite
+}
 
-func TestEngineEventsSuite(t *testing.T) { suite.Run(t, new(engineEventsSuite)) }
+func TestEngineEventsSuite(t *testing.T) {
+	suite.Run(t, new(engineEventsSuite))
+}
 
 func (s *engineEventsSuite) newEngine(p Publisher) *Engine {
 	return &Engine{

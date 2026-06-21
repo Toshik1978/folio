@@ -8,9 +8,13 @@ import (
 	"github.com/stretchr/testify/suite"
 )
 
-type reporterSuite struct{ suite.Suite }
+type reporterSuite struct {
+	suite.Suite
+}
 
-func TestReporterSuite(t *testing.T) { suite.Run(t, new(reporterSuite)) }
+func TestReporterSuite(t *testing.T) {
+	suite.Run(t, new(reporterSuite))
+}
 
 func (s *reporterSuite) TestThrottlesAddButFlushesFinal() {
 	rec := &recordingPublisher{}

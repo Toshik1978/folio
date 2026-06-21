@@ -16,9 +16,13 @@ type countingReporter struct {
 func (c *countingReporter) SetTotal(n int) { c.total = n }
 func (c *countingReporter) Add(n int)      { c.processed += n }
 
-type reconcileReportSuite struct{ suite.Suite }
+type reconcileReportSuite struct {
+	suite.Suite
+}
 
-func TestReconcileReportSuite(t *testing.T) { suite.Run(t, new(reconcileReportSuite)) }
+func TestReconcileReportSuite(t *testing.T) {
+	suite.Run(t, new(reconcileReportSuite))
+}
 
 func (s *reconcileReportSuite) TestMarkSeenCountsProgress() {
 	rep := &countingReporter{}
