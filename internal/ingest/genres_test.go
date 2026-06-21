@@ -1,6 +1,8 @@
 package ingest
 
 import (
+	"slices"
+
 	"github.com/stretchr/testify/suite"
 )
 
@@ -66,6 +68,14 @@ func (s *genresSuite) TestNormalizeGenresBISACPaths() {
 	s.Equal([]string{"History", "Fantasy"},
 		normalizeGenres([]string{"History", "Fiction / Fantasy / Epic"}),
 		"bare terms and BISAC paths combine across the list")
+}
+
+func (s *genresSuite) TestCanonicalGenres() {
+	got := CanonicalGenres()
+	s.NotEmpty(got)
+	s.True(slices.IsSorted(got), "CanonicalGenres must return a sorted slice")
+	s.Contains(got, "Science Fiction")
+	s.NotContains(got, "", "taxonomy must not contain an empty label")
 }
 
 func (s *genresSuite) TestDeduplicate() {

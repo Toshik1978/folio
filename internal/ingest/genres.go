@@ -2,6 +2,7 @@
 package ingest
 
 import (
+	"slices"
 	"strings"
 
 	dbf "github.com/Toshik1978/folio/internal/db"
@@ -248,6 +249,19 @@ var targetGenres = map[string]struct{}{
 	"Travel":                             {},
 	"War & Military":                     {},
 	"Young Adult Fiction":                {},
+}
+
+// CanonicalGenres returns the BISAC-aligned taxonomy (the targetGenres
+// whitelist) sorted alphabetically. It feeds the manual-edit genre autocomplete
+// so a user can only assign genres the enrichment pipeline also recognizes.
+func CanonicalGenres() []string {
+	out := make([]string, 0, len(targetGenres))
+	for g := range targetGenres {
+		out = append(out, g)
+	}
+	slices.Sort(out)
+
+	return out
 }
 
 // normalizeGenre normalizes a tag against the taxonomy. It returns the mapped tag

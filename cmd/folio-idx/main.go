@@ -78,7 +78,7 @@ func run() int { //revive:disable:function-length
 	// engine (publisher) and the API (subscriber).
 	broker := events.NewBroker()
 
-	catalogHandler := api.NewCatalog(log, database)
+	catalogHandler := api.NewCatalog(log, database, ingest.CanonicalGenres())
 
 	syncEngine, err := sync.New(
 		log,

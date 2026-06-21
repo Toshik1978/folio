@@ -26,6 +26,7 @@ import (
 	"github.com/Toshik1978/folio/internal/events"
 	"github.com/Toshik1978/folio/internal/googlebooks"
 	"github.com/Toshik1978/folio/internal/htmltext"
+	"github.com/Toshik1978/folio/internal/ingest"
 	"github.com/Toshik1978/folio/internal/sync"
 )
 
@@ -139,7 +140,7 @@ func (s *baseSuite) SetupTest() {
 	s.broker = events.NewBroker()
 	log := slog.New(slog.DiscardHandler)
 	s.books = NewBooks(log, database, store, nil, nil, store)
-	s.catalog = NewCatalog(log, database)
+	s.catalog = NewCatalog(log, database, ingest.CanonicalGenres())
 	s.libraries = NewLibraries(log, database, s.sync)
 	s.syncH = NewSync(log, s.sync, s.broker)
 

@@ -3,6 +3,7 @@ package api
 import (
 	"database/sql"
 	"log/slog"
+	"net/http"
 	"sync"
 
 	"github.com/go-chi/chi/v5"
@@ -20,11 +21,13 @@ type CatalogHandler struct {
 	cacheMutex  sync.Mutex
 	cacheValid  bool
 	cachedStats statsView
+
+	genres []string
 }
 
 // NewCatalog builds the catalog handler over the folio database.
-func NewCatalog(log *slog.Logger, database *sql.DB) *CatalogHandler {
-	return &CatalogHandler{base: base{log: log}, q: dbq.New(database)}
+func NewCatalog(log *slog.Logger, database *sql.DB, genres []string) *CatalogHandler {
+	return &CatalogHandler{base: base{log: log}, q: dbq.New(database), genres: genres}
 }
 
 // StatsChanged marks the cached stats as stale so the next request recomputes them.
@@ -46,4 +49,10 @@ func (h *CatalogHandler) Register(r chi.Router) {
 	r.Get("/publishers/letters", h.publisherLetters)
 	r.Get("/stats", h.stats)
 	r.Get("/facets", h.facets)
+	r.Get("/genres", h.listGenres)
+}
+
+// listGenres returns the canonical genre taxonomy for the edit autocomplete.
+func (h *CatalogHandler) listGenres(w http.ResponseWriter, _ *http.Request) {
+	h.writeJSON(w, http.StatusOK, h.genres)
 }
