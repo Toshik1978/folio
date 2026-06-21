@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -122,14 +123,73 @@ func (h *BooksHandler) loadBook(ctx context.Context, w http.ResponseWriter, id i
 // coverFetchTimeout bounds the server-side fetch of a cover URL.
 const coverFetchTimeout = 15 * time.Second
 
+// isBlockedIP reports whether ip is a private, loopback, link-local, or
+// unspecified address — any of which must not be reachable via a user-supplied URL.
+func isBlockedIP(ip net.IP) bool {
+	return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() ||
+		ip.IsLinkLocalMulticast() || ip.IsUnspecified()
+}
+
+// isBlockedHost reports whether host resolves to any private, loopback,
+// link-local, or unspecified address. It is the canonical SSRF guard used for
+// both the initial URL and every redirect hop. ctx is used for the DNS lookup.
+func isBlockedHost(ctx context.Context, host string) bool {
+	// Strip port if present so LookupHost gets a bare hostname or IP.
+	h, _, err := net.SplitHostPort(host)
+	if err != nil {
+		// No port — host is already bare.
+		h = host
+	}
+
+	addrs, err := net.DefaultResolver.LookupHost(ctx, h)
+	if err != nil || len(addrs) == 0 {
+		// Cannot resolve → treat as blocked to be safe.
+		return true
+	}
+
+	for _, a := range addrs {
+		ip := net.ParseIP(a)
+		if ip == nil || isBlockedIP(ip) {
+			return true
+		}
+	}
+
+	return false
+}
+
+// blockedHost is the SSRF guard used in production. Tests may replace it with a
+// stub that allows loopback httptest servers while still exercising fetch logic.
+// Production code always uses isBlockedHost; this indirection is the only seam.
+var blockedHost = isBlockedHost
+
 // coverFetchClient fetches cover URLs the user picked. A dedicated client keeps
-// the timeout off the shared default transport.
-var coverFetchClient = &http.Client{Timeout: coverFetchTimeout}
+// the timeout off the shared default transport and rejects redirects to internal
+// addresses (SSRF guard). CheckRedirect calls isBlockedHost directly (not via
+// the blockedHost var) so the real guard is always active, even in tests that
+// override blockedHost to allow loopback httptest servers for the initial URL.
+var coverFetchClient = &http.Client{
+	Timeout: coverFetchTimeout,
+	CheckRedirect: func(req *http.Request, via []*http.Request) error {
+		if len(via) >= 5 {
+			return errors.New("too many redirects")
+		}
+
+		if req.URL.Scheme != "http" && req.URL.Scheme != "https" {
+			return fmt.Errorf("redirect to non-http(s) scheme %q", req.URL.Scheme)
+		}
+
+		if isBlockedHost(req.Context(), req.URL.Host) {
+			return errors.New("redirect to internal address blocked")
+		}
+
+		return nil
+	},
+}
 
 // parseCoverURL decodes the JSON body of a cover-URL request and validates the
-// scheme; it returns the raw URL string and true, or writes a 400 and returns
-// false. Only http/https are accepted: file:// and other schemes are rejected
-// so the server cannot be made to read a local path.
+// scheme and host; it returns the raw URL string and true, or writes a 400 and
+// returns false. Only http/https are accepted and the host must not resolve to a
+// private/loopback/link-local address to prevent SSRF.
 func (h *BooksHandler) parseCoverURL(w http.ResponseWriter, r *http.Request) (string, bool) {
 	var body struct {
 		URL string `json:"url"`
@@ -141,6 +201,10 @@ func (h *BooksHandler) parseCoverURL(w http.ResponseWriter, r *http.Request) (st
 	u, err := url.Parse(body.URL)
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") {
 		h.writeError(w, http.StatusBadRequest, "url must be http(s)")
+		return "", false
+	}
+	if blockedHost(r.Context(), u.Host) {
+		h.writeError(w, http.StatusBadRequest, "url host not allowed")
 		return "", false
 	}
 

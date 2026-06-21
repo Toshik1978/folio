@@ -10,12 +10,31 @@ import (
 	"github.com/stretchr/testify/suite"
 )
 
+// allowAllHosts is a blockedHost stub that permits every host, including
+// loopback. Tests that need to exercise the fetch path (not the host-check path)
+// install this override in SetupTest so httptest.NewServer URLs are not blocked.
+func allowAllHosts(_ context.Context, _ string) bool { return false }
+
 type editSuite struct {
 	baseSuite
 }
 
 func TestEditSuite(t *testing.T) {
 	suite.Run(t, new(editSuite))
+}
+
+// SetupTest bypasses the SSRF host guard for the whole editSuite so that
+// httptest servers bound to 127.0.0.1 can be reached by fetch-path tests.
+// Dedicated SSRF tests (TestIsBlockedHost, TestSetCoverRejectsLoopbackURL,
+// TestSetCoverRejectsRedirectToLoopback) restore or use the real guard directly.
+func (s *editSuite) SetupTest() {
+	s.baseSuite.SetupTest()
+	blockedHost = allowAllHosts
+}
+
+func (s *editSuite) TearDownTest() {
+	blockedHost = isBlockedHost // restore production guard after each test
+	s.baseSuite.TearDownTest()
 }
 
 // rawPut issues a PUT with a raw (non-JSON) body, used for cover byte uploads.
@@ -132,4 +151,68 @@ func (s *editSuite) TestUpdateBookRequiresTitle() {
 func (s *editSuite) TestUpdateBookUnknown() {
 	w := s.do(http.MethodPut, "/books/999999", map[string]any{"title": "x"})
 	s.Equal(http.StatusNotFound, w.Code)
+}
+
+// TestIsBlockedHost unit-tests the real SSRF guard directly (no server needed).
+func (s *editSuite) TestIsBlockedHost() {
+	blocked := []string{
+		"127.0.0.1",
+		"127.0.0.1:80",
+		"localhost",
+		"::1",
+		"[::1]:443",
+		"10.0.0.1",
+		"10.255.255.255",
+		"172.16.0.1",
+		"192.168.1.100",
+		"169.254.169.254", // AWS/GCP metadata
+		"169.254.169.254:80",
+		"0.0.0.0",
+	}
+	ctx := s.T().Context()
+	for _, h := range blocked {
+		s.True(isBlockedHost(ctx, h), "expected %q to be blocked", h)
+	}
+
+	// A known public IP must not be blocked.
+	// (8.8.8.8 is Google's DNS — globally routable, not private/loopback.)
+	s.False(isBlockedHost(ctx, "8.8.8.8"), "expected public IP to be allowed")
+}
+
+// TestSetCoverRejectsLoopbackURL verifies that a literal loopback address in the
+// initial URL is rejected with 400 before any fetch attempt. The real blockedHost
+// is used (SetupTest installed allowAllHosts, so we restore it for this test).
+func (s *editSuite) TestSetCoverRejectsLoopbackURL() {
+	blockedHost = isBlockedHost // use real guard for this test
+	defer func() { blockedHost = allowAllHosts }()
+
+	src := s.seedLibrary("folder", "/lib")
+	id := s.seedBook(src, bookSeed{Title: "x"})
+
+	// Port 1 is almost certainly not listening; we expect rejection before any
+	// network dial because parseCoverURL checks the host first.
+	w := s.do(http.MethodPost, "/books/"+itoa(id)+"/cover", map[string]string{"url": "http://127.0.0.1:1/x"})
+	s.Equal(http.StatusBadRequest, w.Code)
+	s.False(s.covers.Has(id), "no cover must be saved for a blocked URL")
+}
+
+// TestSetCoverRejectsRedirectToLoopback verifies that a redirect from a
+// permitted host to a loopback address is blocked. The server is reached (so
+// allowAllHosts is in effect for the initial URL check), but CheckRedirect uses
+// the real isBlockedHost and must refuse the redirect, causing a 502.
+func (s *editSuite) TestSetCoverRejectsRedirectToLoopback() {
+	// The real CheckRedirect in coverFetchClient always calls isBlockedHost
+	// directly — not via the blockedHost var — so this test just exercises the
+	// client's redirect policy without any extra setup.
+	redirectSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "http://127.0.0.1:1/evil", http.StatusFound)
+	}))
+	defer redirectSrv.Close()
+
+	src := s.seedLibrary("folder", "/lib")
+	id := s.seedBook(src, bookSeed{Title: "x"})
+
+	w := s.do(http.MethodPost, "/books/"+itoa(id)+"/cover", map[string]string{"url": redirectSrv.URL})
+	s.NotEqual(http.StatusOK, w.Code, "redirect to loopback must not succeed")
+	s.False(s.covers.Has(id), "no cover must be saved when redirect is blocked")
 }
