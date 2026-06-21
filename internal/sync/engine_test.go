@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"log/slog"
+	stdsync "sync"
 	"time"
 
 	"github.com/Toshik1978/folio/internal/db/dbq"
@@ -61,6 +63,59 @@ func (s *engineSuite) TestCheckpointGatingSkipsUnchanged() {
 	s.parser.checkpoint = "cp-2"
 	s.engine.syncLibrary(syncReq{id: src.ID})
 	s.Equal(3, s.parser.callCount())
+}
+
+// recordingStats counts StatsChanged calls so tests can assert whether a sync
+// pass invalidated the stats cache.
+type recordingStats struct {
+	mu    stdsync.Mutex
+	count int
+}
+
+func (r *recordingStats) StatsChanged() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.count++
+}
+
+func (r *recordingStats) calls() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.count
+}
+
+// TestCheckpointSkipDoesNotBustCaches guards 2.5b: a no-op checkpoint skip must
+// still stamp last_sync_at, but must NOT invalidate the stats cache or emit a
+// library event — otherwise every connected client needlessly refetches stats
+// and the libraries list on every unchanged cycle.
+func (s *engineSuite) TestCheckpointSkipDoesNotBustCaches() {
+	s.parser.checkpoint = "cp-1"
+	rec := &recordingPublisher{}
+	stats := &recordingStats{}
+	eng, err := New(slog.New(slog.DiscardHandler), s.db,
+		map[string]Parser{"stub": s.parser}, s.store, nil,
+		WithEvents(rec), WithStatsObserver(stats))
+	s.Require().NoError(err)
+
+	src := s.insertLibrary("stub", "/lib/skip-cache")
+
+	// First run: executes, stamps, busts the stats cache, emits a library event.
+	eng.now = func() time.Time { return time.Unix(1000, 0) }
+	eng.syncLibrary(syncReq{id: src.ID})
+	s.Require().Equal(1, s.parser.callCount())
+	s.Require().Equal(1, stats.calls())
+	s.Require().Equal([]int64{src.ID}, rec.libraryIDs())
+	s.Require().Equal(int64(1000), s.getLibrary(src.ID).LastSyncAt.Int64)
+
+	// Second run at a later time: unchanged checkpoint → skip.
+	eng.now = func() time.Time { return time.Unix(2000, 0) }
+	eng.syncLibrary(syncReq{id: src.ID})
+
+	s.Equal(1, s.parser.callCount(), "skip must not re-run the parser")
+	s.Equal(int64(2000), s.getLibrary(src.ID).LastSyncAt.Int64,
+		"skip must still stamp last_sync_at with the current time")
+	s.Equal(1, stats.calls(), "skip must not invalidate the stats cache")
+	s.Equal([]int64{src.ID}, rec.libraryIDs(), "skip must not emit another library event")
 }
 
 func (s *engineSuite) TestParserErrorMarksLibraryFailed() {

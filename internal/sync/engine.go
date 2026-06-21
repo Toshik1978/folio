@@ -425,7 +425,10 @@ func (e *Engine) syncLibrary(req syncReq) {
 	// changes again.
 	fp := e.fingerprint(parser, src)
 	if e.shouldSkip(req, src, fp) {
-		e.recordLastSync(ctx, req.id)
+		// Stamp the check time, but skip the change notifications: nothing in the
+		// catalog moved, so busting the stats cache or emitting a library event
+		// would make every connected client refetch on each unchanged cycle.
+		e.stampLastSync(ctx, req.id)
 		return // unchanged artifact: skip read + reconcile
 	}
 
@@ -489,13 +492,21 @@ func (e *Engine) fingerprint(parser Parser, src dbq.Library) string {
 	return fp
 }
 
-// recordLastSync stamps the library's last successful sync time.
-func (e *Engine) recordLastSync(ctx context.Context, id int64) {
+// stampLastSync persists the library's last sync time without emitting any
+// change notification. Used on a no-op checkpoint skip, where the run touched
+// nothing in the catalog and only the "last checked" timestamp advances.
+func (e *Engine) stampLastSync(ctx context.Context, id int64) {
 	if err := dbq.New(e.db).UpdateLibraryLastSync(ctx, dbq.UpdateLibraryLastSyncParams{
 		LastSyncAt: sql.NullInt64{Int64: e.now().Unix(), Valid: true}, ID: id,
 	}); err != nil {
 		e.log.Error("record last sync", slog.Int64("library", id), slog.Any("error", err))
 	}
+}
+
+// recordLastSync stamps the library's last successful sync time and notifies
+// observers that catalog state changed (stats cache + libraries list).
+func (e *Engine) recordLastSync(ctx context.Context, id int64) {
+	e.stampLastSync(ctx, id)
 	// Notify before emitting so SSE clients that immediately refetch stats
 	// see a fresh value. This also converges the libraries count after a new
 	// library is created: the create path does not notify on its own, so
