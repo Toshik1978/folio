@@ -36,7 +36,7 @@ func (f *FolderParser) Sync(
 	covers CoverStore,
 	r Reporter,
 ) (Result, error) {
-	return runReconcile(ctx, db, covers, library, r, func(ctx context.Context, rc *reconciler) error {
+	return runReconcile(ctx, db, covers, library, r, f.log, func(ctx context.Context, rc *reconciler) error {
 		w := &folderWalk{log: f.log, parser: f.parser, rc: rc, root: library.Path, libraryID: library.ID}
 		if err := filepath.WalkDir(library.Path, func(path string, d fs.DirEntry, err error) error {
 			if ctxErr := ctx.Err(); ctxErr != nil {

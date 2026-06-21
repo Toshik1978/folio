@@ -84,7 +84,7 @@ func (*CalibreParser) Checkpoint(library dbq.Library) (string, error) {
 	return fileCheckpoint(filepath.Join(library.Path, "metadata.db"))
 }
 
-func (*CalibreParser) Sync(
+func (c *CalibreParser) Sync(
 	ctx context.Context,
 	library dbq.Library,
 	db *sql.DB,
@@ -119,7 +119,7 @@ func (*CalibreParser) Sync(
 	}
 	defer func() { _ = rows.Close() }()
 
-	return runReconcile(ctx, db, covers, library, r, func(ctx context.Context, rc *reconciler) error {
+	return runReconcile(ctx, db, covers, library, r, c.log, func(ctx context.Context, rc *reconciler) error {
 		return reconcileCalibreRows(ctx, rc, rows, library.Path, library.ID, links)
 	})
 }

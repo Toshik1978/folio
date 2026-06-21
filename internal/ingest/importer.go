@@ -5,12 +5,20 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log/slog"
 
 	"github.com/Toshik1978/folio/internal/db/dbq"
 )
 
 // undefinedLanguage represents an undefined or unspecified language.
 const undefinedLanguage = "und"
+
+// msgIdentifierOverride is logged when identifier grouping links a record onto a
+// book whose library_key differs from the record's own — i.e. strong-identifier
+// matching overrode key-based grouping. This is the visibility hook for spotting
+// a wrong auto-merge (reused/garbage ISBN), though it also fires on the intended
+// author-order-drift heals; the attributes let a human tell them apart.
+const msgIdentifierOverride = "identifier grouping overrode key-based grouping"
 
 // importer wraps the writable folio database and cover store, providing a
 // single place that knows how to persist a bookRecord (book row + authors +
@@ -27,21 +35,31 @@ type importer struct {
 	newBooks  []int64
 	count     int
 	batchSize int
+	log       *slog.Logger
 }
 
-// newImporter builds an importer with an initialized cover-priority tracker.
+// newImporter builds an importer with an initialized cover-priority tracker. The
+// logger defaults to a discard handler so callers (and tests) that don't wire one
+// stay silent; production wires the real logger via setLogger.
 func newImporter(db *sql.DB, covers CoverStore) *importer {
 	return &importer{
 		db:        db,
 		covers:    covers,
 		coverPrio: map[int64]int{},
 		batchSize: 1,
+		log:       slog.New(slog.DiscardHandler),
 	}
 }
 
 func (im *importer) setBatchSize(size int) {
 	if size > 0 {
 		im.batchSize = size
+	}
+}
+
+func (im *importer) setLogger(log *slog.Logger) {
+	if log != nil {
+		im.log = log
 	}
 }
 
@@ -174,8 +192,11 @@ func (im *importer) matchByIdentifier(
 	ctx context.Context, q *dbq.Queries, rec bookRecord,
 ) (string, bool, error) {
 	clean := cleanIdentifiers(rec.Identifiers)
-	var bestID int64
-	var bestKey string
+	var (
+		bestID            int64
+		bestKey           string
+		bestType, bestVal string
+	)
 	for typ, val := range clean {
 		if _, ok := strongIdentifierTypes[typ]; !ok {
 			continue
@@ -190,8 +211,19 @@ func (im *importer) matchByIdentifier(
 			return "", false, fmt.Errorf("find book by identifier: %w", err)
 		}
 		if bestID == 0 || row.BookID < bestID {
-			bestID, bestKey = row.BookID, row.LibraryKey
+			bestID, bestKey, bestType, bestVal = row.BookID, row.LibraryKey, typ, val
 		}
+	}
+
+	if bestID != 0 && bestKey != rec.LibraryKey {
+		im.log.Info(msgIdentifierOverride,
+			slog.Int64("library_id", rec.LibraryID),
+			slog.String("record_key", rec.LibraryKey),
+			slog.Int64("matched_book", bestID),
+			slog.String("matched_key", bestKey),
+			slog.String("identifier_type", bestType),
+			slog.String("identifier_value", bestVal),
+		)
 	}
 
 	return bestKey, bestID != 0, nil

@@ -56,7 +56,7 @@ func (*INPXParser) Checkpoint(library dbq.Library) (string, error) {
 	return fileCheckpoint(library.Path)
 }
 
-func (*INPXParser) Sync(
+func (p *INPXParser) Sync(
 	ctx context.Context,
 	library dbq.Library,
 	db *sql.DB,
@@ -69,7 +69,7 @@ func (*INPXParser) Sync(
 	}
 	defer func() { _ = zr.Close() }()
 
-	return runReconcile(ctx, db, covers, library, r, func(ctx context.Context, rc *reconciler) error {
+	return runReconcile(ctx, db, covers, library, r, p.log, func(ctx context.Context, rc *reconciler) error {
 		for _, f := range zr.File {
 			if !strings.EqualFold(filepath.Ext(f.Name), ".inp") {
 				continue
