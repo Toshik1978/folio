@@ -134,6 +134,15 @@
             <i class="pi pi-pencil" />
             Edit
           </button>
+          <button
+            type="button"
+            data-testid="cover-open"
+            class="btn btn-ghost btn-sm gap-2"
+            @click="coverOpen = true"
+          >
+            <i class="pi pi-image" />
+            Cover
+          </button>
         </div>
       </div>
     </div>
@@ -153,6 +162,13 @@
       @applied="emit('updated', $event)"
     />
 
+    <CoverPickerModal
+      :book="book"
+      :open="coverOpen"
+      @close="coverOpen = false"
+      @applied="emit('updated', $event)"
+    />
+
     <div v-if="book.annotation" class="border-base-300 mt-8 border-t pt-6">
       <h2 class="mb-3 text-base font-semibold">Annotation</h2>
       <div
@@ -168,6 +184,7 @@
 import DOMPurify from 'dompurify';
 import { computed, ref } from 'vue';
 
+import CoverPickerModal from '@/components/CoverPickerModal.vue';
 import EditBookModal from '@/components/EditBookModal.vue';
 import FixMatchModal from '@/components/FixMatchModal.vue';
 import type { Book } from '@/types';
@@ -179,6 +196,7 @@ const emit = defineEmits<{ updated: [book: Book] }>();
 
 const fixMatchOpen = ref(false);
 const editOpen = ref(false);
+const coverOpen = ref(false);
 
 // Seed the Fix Match search with the book's title and authors.
 const matchQuery = computed(() =>
