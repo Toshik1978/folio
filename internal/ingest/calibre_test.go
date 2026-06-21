@@ -51,7 +51,7 @@ func (s *calibreSuite) buildCalibreDB(libDir string) {
 		`INSERT INTO books_authors_link (book, author) VALUES (1, 1), (2, 2)`,
 		`INSERT INTO series (id, name) VALUES (1, 'Russian Classics')`,
 		`INSERT INTO books_series_link (book, series) VALUES (1, 1)`,
-		`INSERT INTO tags (id, name) VALUES (1, 'Literary Fiction'), (2, 'History')`,
+		`INSERT INTO tags (id, name) VALUES (1, 'Literary'), (2, 'History')`,
 		`INSERT INTO books_tags_link (book, tag) VALUES (1, 1), (1, 2)`,
 		`INSERT INTO publishers (id, name) VALUES (1, 'Penguin Classics')`,
 		`INSERT INTO books_publishers_link (book, publisher) VALUES (1, 1)`,

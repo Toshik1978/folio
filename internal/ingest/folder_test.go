@@ -425,14 +425,14 @@ func (s *folderSuite) TestCaseFoldedDedupAcrossRecords() {
 	rec1 := bookRecord{
 		LibraryID: src.ID, LibraryKey: "k1", Title: "Book One", Language: "en",
 		Authors:    []string{"Leo Tolstoy", "Лев Толстой"},
-		Genres:     []string{"Literary Fiction"},
+		Genres:     []string{"Literary"},
 		Series:     "War Saga",
 		FileFormat: "epub", SourcePath: "1.epub", FileSize: 1,
 	}
 	rec2 := bookRecord{
 		LibraryID: src.ID, LibraryKey: "k2", Title: "Book Two", Language: "en",
 		Authors:    []string{"leo tolstoy", "лев толстой"}, // case + Cyrillic case variants
-		Genres:     []string{"LITERARY FICTION"},
+		Genres:     []string{"LITERARY"},
 		Series:     "war saga",
 		FileFormat: "epub", SourcePath: "2.epub", FileSize: 1,
 	}
