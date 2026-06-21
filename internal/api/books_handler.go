@@ -106,5 +106,6 @@ func (h *BooksHandler) Register(r chi.Router) {
 		r.Get("/{id}/match", h.searchMatch)
 		r.Post("/{id}/match", h.applyMatch)
 		r.Put("/{id}/cover", h.uploadCover)
+		r.Post("/{id}/cover", h.setCoverFromURL)
 	})
 }

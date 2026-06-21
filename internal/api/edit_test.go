@@ -54,3 +54,39 @@ func (s *editSuite) TestUploadCoverUnknownBook() {
 	w := s.rawPut("/books/999999/cover", s.jpegFixture())
 	s.Equal(http.StatusNotFound, w.Code)
 }
+
+func (s *editSuite) TestSetCoverFromURL() {
+	// A local HTTP server stands in for the remote image host.
+	img := s.jpegFixture()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write(img)
+	}))
+	defer srv.Close()
+
+	src := s.seedLibrary("folder", "/lib")
+	id := s.seedBook(src, bookSeed{Title: "x"})
+
+	w := s.do(http.MethodPost, "/books/"+itoa(id)+"/cover", map[string]string{"url": srv.URL})
+	s.Require().Equal(http.StatusOK, w.Code)
+	s.True(s.covers.Has(id), "fetched cover is cached")
+
+	book, err := s.q.GetBook(s.T().Context(), id)
+	s.Require().NoError(err)
+	s.Equal(manualCoverPrio, book.CoverPrio)
+}
+
+func (s *editSuite) TestSetCoverFromURLRejectsBadScheme() {
+	src := s.seedLibrary("folder", "/lib")
+	id := s.seedBook(src, bookSeed{Title: "x"})
+
+	w := s.do(http.MethodPost, "/books/"+itoa(id)+"/cover", map[string]string{"url": "file:///etc/passwd"})
+	s.Equal(http.StatusBadRequest, w.Code)
+}
+
+func (s *editSuite) TestSetCoverFromURLMissingURL() {
+	src := s.seedLibrary("folder", "/lib")
+	id := s.seedBook(src, bookSeed{Title: "x"})
+
+	w := s.do(http.MethodPost, "/books/"+itoa(id)+"/cover", map[string]string{})
+	s.Equal(http.StatusBadRequest, w.Code)
+}
