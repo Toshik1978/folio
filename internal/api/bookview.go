@@ -151,12 +151,14 @@ func (h *BooksHandler) loadFileIdentifierRelations(ctx context.Context, ids []in
 }
 
 // toBookView renders the JSON view of b from the pre-fetched page relations.
+// Series resolution is best-effort (resolveSeries swallows lookup errors rather
+// than failing the whole view), so this never reports an error.
 func (h *BooksHandler) toBookView(
 	ctx context.Context,
 	b dbq.Book,
 	sc seriesCache,
 	rel bookRelations,
-) (bookView, error) {
+) bookView {
 	av := rel.authors[b.ID]
 	if av == nil {
 		av = make([]bookAuthorView, 0)
@@ -195,7 +197,7 @@ func (h *BooksHandler) toBookView(
 	}
 	h.resolveSeries(ctx, b, sc, &view)
 
-	return view, nil
+	return view
 }
 
 // nullIntToPtr converts a nullable integer column to *int (nil when absent).
@@ -215,7 +217,7 @@ func (h *BooksHandler) toSingleBookView(ctx context.Context, b dbq.Book) (bookVi
 		return bookView{}, err
 	}
 
-	return h.toBookView(ctx, b, make(seriesCache), rel)
+	return h.toBookView(ctx, b, make(seriesCache), rel), nil
 }
 
 // resolveSeries fills the view's series name and index from the book row.

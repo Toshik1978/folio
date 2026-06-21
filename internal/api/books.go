@@ -74,13 +74,7 @@ func (h *BooksHandler) listBooks(w http.ResponseWriter, r *http.Request) {
 	sc := make(seriesCache)
 	items := make([]bookView, 0, len(books))
 	for i := range books {
-		view, err := h.toBookView(r.Context(), books[i], sc, rel)
-		if err != nil {
-			h.log.Error("render book", slog.Any("error", err))
-			h.writeError(w, http.StatusInternalServerError, "failed to render books")
-			return
-		}
-		items = append(items, view)
+		items = append(items, h.toBookView(r.Context(), books[i], sc, rel))
 	}
 
 	h.writeJSON(w, http.StatusOK, page[bookView]{Items: items, Total: total, Page: pageNo, Limit: limit})
