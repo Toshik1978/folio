@@ -125,6 +125,15 @@
             <i class="pi pi-search" />
             Fix match
           </button>
+          <button
+            type="button"
+            data-testid="edit-open"
+            class="btn btn-ghost btn-sm gap-2"
+            @click="editOpen = true"
+          >
+            <i class="pi pi-pencil" />
+            Edit
+          </button>
         </div>
       </div>
     </div>
@@ -134,6 +143,13 @@
       :open="fixMatchOpen"
       :initial-query="matchQuery"
       @close="fixMatchOpen = false"
+      @applied="emit('updated', $event)"
+    />
+
+    <EditBookModal
+      :book="book"
+      :open="editOpen"
+      @close="editOpen = false"
       @applied="emit('updated', $event)"
     />
 
@@ -152,6 +168,7 @@
 import DOMPurify from 'dompurify';
 import { computed, ref } from 'vue';
 
+import EditBookModal from '@/components/EditBookModal.vue';
 import FixMatchModal from '@/components/FixMatchModal.vue';
 import type { Book } from '@/types';
 import { formatSize } from '@/utils/format';
@@ -161,6 +178,7 @@ const props = defineProps<{ book: Book }>();
 const emit = defineEmits<{ updated: [book: Book] }>();
 
 const fixMatchOpen = ref(false);
+const editOpen = ref(false);
 
 // Seed the Fix Match search with the book's title and authors.
 const matchQuery = computed(() =>
