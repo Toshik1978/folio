@@ -51,8 +51,8 @@ var bookColumns = []any{
 	"b.id", "b.library_id", "b.library_key", "b.title", "b.series_id", "b.series_number",
 	"b.language", "b.annotation", "b.metadata_checked", "b.enrichment_checked",
 	"b.publisher", "b.publisher_fold", "b.year", "b.rating",
-	"b.content_hash", "b.metadata_format", "b.added_at", "b.manually_matched", "b.cover_prio",
-	"b.imported_at",
+	"b.content_hash", "b.metadata_format", "b.added_at", "b.imported_at",
+	"b.manually_matched", "b.cover_prio",
 }
 
 // quoteToken wraps a single token as an FTS5 string literal, escaping embedded
@@ -180,8 +180,8 @@ func scanBook(rows *sql.Rows) (dbq.Book, error) {
 		&b.ID, &b.LibraryID, &b.LibraryKey, &b.Title, &b.SeriesID, &b.SeriesNumber,
 		&b.Language, &b.Annotation, &b.MetadataChecked, &b.EnrichmentChecked,
 		&b.Publisher, &b.PublisherFold, &b.Year, &b.Rating,
-		&b.ContentHash, &b.MetadataFormat, &b.AddedAt, &b.ManuallyMatched, &b.CoverPrio,
-		&b.ImportedAt,
+		&b.ContentHash, &b.MetadataFormat, &b.AddedAt, &b.ImportedAt,
+		&b.ManuallyMatched, &b.CoverPrio,
 	); err != nil {
 		return dbq.Book{}, fmt.Errorf("scan book: %w", err)
 	}
