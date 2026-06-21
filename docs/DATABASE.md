@@ -233,7 +233,11 @@ CREATE TRIGGER books_ad AFTER DELETE ON books BEGIN
 END;
 ```
 
-Insertions and full metadata population (including annotations) are handled inside a single Go database transaction for atomicity.
+Insertions and full metadata population (including annotations) are written in
+batched transactions: each batch commits atomically, and a sync **run** is not a
+single transaction. A mid-run failure leaves already-committed batches in place,
+but reconciliation is idempotent — the next sync self-heals — so runs are
+effectively resumable.
 
 ---
 
