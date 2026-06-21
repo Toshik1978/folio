@@ -18,6 +18,10 @@ type page[T any] struct {
 const (
 	defaultLimit = 24
 	maxLimit     = 100
+	// maxPage bounds the requested page so (pageNo-1)*limit cannot overflow int64
+	// into a negative (or wrapped) SQL OFFSET. With maxLimit it caps the offset at
+	// ~1e11, far beyond any real catalog; a page past the end simply yields no rows.
+	maxPage = 1_000_000_000
 )
 
 // pagination reads page/limit query params, applying defaults and bounds, and
@@ -25,6 +29,7 @@ const (
 func pagination(r *http.Request) (pageNo, limit, offset int64) {
 	pageNo = parseIntDefault(r.URL.Query().Get("page"), 1)
 	pageNo = max(pageNo, 1)
+	pageNo = min(pageNo, maxPage)
 	limit = parseIntDefault(r.URL.Query().Get("limit"), defaultLimit)
 	if limit < 1 {
 		limit = defaultLimit
