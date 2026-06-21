@@ -8,7 +8,6 @@ import (
 	"net/http/httptest"
 	"strconv"
 	"strings"
-	"testing"
 	"time"
 
 	"github.com/Toshik1978/folio/internal/db/dbq"
@@ -148,14 +147,14 @@ func (s *metaSuite) TestSyncEventsInitialSnapshotAndPush() {
 	}()
 
 	// Initial snapshot: a status event reflecting the engine's current state.
-	evt, data := readSSEEvent(s.T(), lines)
+	evt, data := s.readSSEEvent(lines)
 	s.Equal("status", evt)
 	s.Contains(data, `"running":true`)
 	s.Contains(data, `"current":7`)
 
 	// A pushed library event must reach the wire.
 	s.broker.Publish(events.Event{Type: events.TypeLibrary, Data: map[string]any{"id": 7, "status": "active"}})
-	evt, data = readSSEEvent(s.T(), lines)
+	evt, data = s.readSSEEvent(lines)
 	s.Equal("library", evt)
 	s.Contains(data, `"id":7`)
 }
@@ -220,16 +219,16 @@ func (s *metaSuite) TestStatsCacheInvalidation() {
 
 // readSSEEvent reads one event:/data: frame from a shared lines channel,
 // skipping comment (":") and "retry:" lines.
-func readSSEEvent(t *testing.T, lines <-chan string) (event, data string) {
-	t.Helper()
+func (s *metaSuite) readSSEEvent(lines <-chan string) (event, data string) {
+	s.T().Helper()
 	deadline := time.After(2 * time.Second)
 	for {
 		select {
 		case <-deadline:
-			t.Fatal("timed out waiting for an SSE event")
+			s.FailNow("timed out waiting for an SSE event")
 		case line, ok := <-lines:
 			if !ok {
-				t.Fatal("stream closed before a full event")
+				s.FailNow("stream closed before a full event")
 			}
 			switch {
 			case strings.HasPrefix(line, "event:"):
