@@ -26,6 +26,41 @@ var strongIdentifierTypes = map[string]struct{}{
 	goodreadsType: {},
 }
 
+// validStrongIdentifier reports whether a cleaned strong identifier is trustworthy
+// enough to force two records onto the same book. cleanIdentifiers normalizes
+// shape but never validates content, so a placeholder or garbage value (a
+// copy-pasted/placeholder ISBN, an all-zero ASIN) could otherwise become a
+// "strong" key and collapse two genuinely different books. ISBNs must pass a
+// checksum; any strong type made of a single repeated character is rejected as a
+// placeholder. Failing the check only disables grouping — the identifier is still
+// stored for display.
+func validStrongIdentifier(typ, val string) bool {
+	if isPlaceholderIdentifier(val) {
+		return false
+	}
+	if typ == isbnType {
+		return ebook.LooksLikeISBN(val)
+	}
+
+	return true
+}
+
+// isPlaceholderIdentifier reports whether val is a single character repeated
+// (e.g. "0000000000000", "XXXXXXXXXX") — a common stand-in for a missing
+// identifier and never a real one.
+func isPlaceholderIdentifier(val string) bool {
+	if val == "" {
+		return true
+	}
+	for i := 1; i < len(val); i++ {
+		if val[i] != val[0] {
+			return false
+		}
+	}
+
+	return true
+}
+
 func cleanIdentifier(typ, val string) (string, string) {
 	typ = strings.ToLower(strings.TrimSpace(typ))
 	val = strings.TrimSpace(val)

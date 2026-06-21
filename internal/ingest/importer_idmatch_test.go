@@ -116,6 +116,61 @@ func (s *idMatchSuite) TestHealAlreadySplitOnResync() {
 	s.Equal(1, s.bookCount(lib))
 }
 
+// A placeholder ISBN (all zeros) shared across two genuinely different books must
+// not collapse them: an invalid value is never a usable grouping key.
+func (s *idMatchSuite) TestPlaceholderISBNDoesNotGroup() {
+	ctx := context.Background()
+	lib := s.insertLibrary("folder", "/lib")
+	im := newImporter(s.db, s.store)
+	defer im.rollback()
+
+	_, err := im.add(ctx, s.recISBN(lib, "key-a", "a.epub", "0000000000000"), 1)
+	s.Require().NoError(err)
+	_, err = im.add(ctx, s.recISBN(lib, "key-b", "b.epub", "0000000000000"), 1)
+	s.Require().NoError(err)
+	s.Require().NoError(im.commit())
+
+	s.Equal(2, s.bookCount(lib))
+}
+
+// An ISBN-shaped value with a bad check digit must not group: only checksum-valid
+// ISBNs are trusted as strong grouping keys.
+func (s *idMatchSuite) TestInvalidChecksumISBNDoesNotGroup() {
+	ctx := context.Background()
+	lib := s.insertLibrary("folder", "/lib")
+	im := newImporter(s.db, s.store)
+	defer im.rollback()
+
+	_, err := im.add(ctx, s.recISBN(lib, "key-a", "a.epub", "9781234567890"), 1)
+	s.Require().NoError(err)
+	_, err = im.add(ctx, s.recISBN(lib, "key-b", "b.epub", "9781234567890"), 1)
+	s.Require().NoError(err)
+	s.Require().NoError(im.commit())
+
+	s.Equal(2, s.bookCount(lib))
+}
+
+// A placeholder ASIN shared across distinct books must not group either.
+func (s *idMatchSuite) TestPlaceholderASINDoesNotGroup() {
+	ctx := context.Background()
+	lib := s.insertLibrary("folder", "/lib")
+	im := newImporter(s.db, s.store)
+	defer im.rollback()
+
+	mk := func(key, path string) bookRecord {
+		r := s.recISBN(lib, key, path, "")
+		r.Identifiers = []identifier{{Type: "amazon", Value: "0000000000"}}
+		return r
+	}
+	_, err := im.add(ctx, mk("key-a", "a.epub"), 1)
+	s.Require().NoError(err)
+	_, err = im.add(ctx, mk("key-b", "b.epub"), 1)
+	s.Require().NoError(err)
+	s.Require().NoError(im.commit())
+
+	s.Equal(2, s.bookCount(lib))
+}
+
 func (s *idMatchSuite) TestNonWhitelistedTypeDoesNotGroup() {
 	ctx := context.Background()
 	lib := s.insertLibrary("folder", "/lib")

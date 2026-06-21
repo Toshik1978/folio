@@ -201,6 +201,9 @@ func (im *importer) matchByIdentifier(
 		if _, ok := strongIdentifierTypes[typ]; !ok {
 			continue
 		}
+		if !validStrongIdentifier(typ, val) {
+			continue
+		}
 		row, err := q.FindBookByIdentifier(ctx, dbq.FindBookByIdentifierParams{
 			LibraryID: rec.LibraryID, Type: typ, Value: val,
 		})

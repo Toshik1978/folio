@@ -79,6 +79,25 @@ func (s *identifierSuite) TestCleanIdentifiers() {
 	s.Equal("B00WDVKZY0", clean["amazon"])  // ASIN mapped to amazon, uppercased, and deduplicated (last-one-wins)
 }
 
+func (s *identifierSuite) TestValidStrongIdentifier() {
+	// ISBN: must pass checksum to be a usable grouping key.
+	s.True(validStrongIdentifier(isbnType, "9781466853454"))  // valid ISBN-13
+	s.True(validStrongIdentifier(isbnType, "0441013597"))     // valid ISBN-10
+	s.False(validStrongIdentifier(isbnType, "9781234567890")) // bad ISBN-13 checksum
+	s.False(validStrongIdentifier(isbnType, "12345"))         // wrong shape
+
+	// Placeholders (a single character repeated) are never a usable grouping key,
+	// regardless of type.
+	s.False(validStrongIdentifier(isbnType, "0000000000000"))
+	s.False(validStrongIdentifier(amazonType, "0000000000"))
+	s.False(validStrongIdentifier(goodreadsType, "11111"))
+
+	// Real non-ISBN strong identifiers pass (no checksum scheme to apply).
+	s.True(validStrongIdentifier(amazonType, "B00WDVKZY0"))
+	s.True(validStrongIdentifier(googleType, "zyTCAlFPjgYC"))
+	s.True(validStrongIdentifier(goodreadsType, "18007564"))
+}
+
 func (s *identifierSuite) TestCleanedEbookIdentifiers() {
 	in := []ebook.Identifier{
 		{Type: "AMAZON-ASIN", Value: "b001"},
