@@ -198,6 +198,40 @@ func (s *booksFilterSuite) TestQuerySearchMatchesFTS() {
 	s.Empty(none)
 }
 
+// TestDeletedBookRemovedFromFTS guards the FTS delete trigger (books_ad). The
+// trigger's `book_id = old.id` match depends on SQLite column affinity coercing
+// the TEXT book_id against the INTEGER old.id (see the comment in
+// 002_create_fts5.sql). A future refactor that binds an integer book_id, or
+// rewrites the trigger to a bare literal, would silently leave orphaned rows in
+// the FTS index. The assertion queries books_fts directly (not FilterBooks,
+// whose INNER JOIN back to books would hide an orphaned FTS row once the books
+// row is gone) so it actually exercises the trigger.
+func (s *booksFilterSuite) TestDeletedBookRemovedFromFTS() {
+	ctx := context.Background()
+	src := s.library()
+	dune := s.seed(src, bookSeed{key: "k1", title: "Dune", author: "Frank Herbert"})
+	s.seed(src, bookSeed{key: "k2", title: "Solaris", author: "Stanislaw Lem"})
+
+	// Sanity: the title is in the FTS index before deletion.
+	s.Require().Equal(1, s.ftsMatchCount(ctx, "Dune"), "seeded book must be in the FTS index")
+
+	s.Require().NoError(s.q.DeleteBook(ctx, dune))
+
+	s.Equal(0, s.ftsMatchCount(ctx, "Dune"),
+		"deleted book must be purged from books_fts by the books_ad trigger")
+	s.Equal(1, s.ftsMatchCount(ctx, "Solaris"), "surviving book must remain in the FTS index")
+}
+
+// ftsMatchCount returns how many rows in books_fts match the given query,
+// reading the FTS table directly so trigger-driven cleanup can be asserted
+// independently of the books join.
+func (s *booksFilterSuite) ftsMatchCount(ctx context.Context, query string) int {
+	var n int
+	err := s.db.QueryRowContext(ctx, "SELECT count(*) FROM books_fts WHERE books_fts MATCH ?", query).Scan(&n)
+	s.Require().NoError(err)
+	return n
+}
+
 // TestCombinedFiltersAndPagination checks that several filters AND together and
 // that Limit/Offset page the result.
 func (s *booksFilterSuite) TestCombinedFiltersAndPagination() {
