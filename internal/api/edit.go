@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/Toshik1978/folio/internal/db/dbq"
+	"github.com/Toshik1978/folio/internal/ebook"
 )
 
 // manualCoverPrio pins a user-supplied cover in books.cover_prio. It sits far
@@ -179,6 +180,73 @@ func (h *BooksHandler) setCoverFromURL(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.applyManualCover(r.Context(), w, book, data)
+}
+
+// editRequest is the PUT /api/books/{id} body. Empty fields are left unchanged
+// (overwrite semantics fill only non-empty values); empty author/genre lists do
+// not clear existing links. Title is required.
+type editRequest struct {
+	Title        string   `json:"title"`
+	Authors      []string `json:"authors"`
+	Genres       []string `json:"genres"`
+	Series       string   `json:"series"`
+	SeriesNumber float64  `json:"series_number"`
+	Year         int      `json:"year"`
+	Publisher    string   `json:"publisher"`
+	Annotation   string   `json:"annotation"`
+}
+
+// updateBook handles PUT /api/books/{id} — a manual metadata edit. It feeds the
+// user's fields into the shared applyEnrichment(overwrite=true) engine, which
+// relinks authors/series/genres, updates FTS, rebumps content_hash, and marks
+// the book manually_matched so a later sync never reverts it.
+func (h *BooksHandler) updateBook(w http.ResponseWriter, r *http.Request) {
+	id, ok := intParam(r, "id")
+	if !ok {
+		h.writeError(w, http.StatusBadRequest, "invalid book id")
+		return
+	}
+	var req editRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		h.writeError(w, http.StatusBadRequest, "invalid body")
+		return
+	}
+	if strings.TrimSpace(req.Title) == "" {
+		h.writeError(w, http.StatusBadRequest, "title is required")
+		return
+	}
+	if !h.claimLazy(id) {
+		h.writeError(w, http.StatusConflict, "book is busy; retry shortly")
+		return
+	}
+	defer h.releaseLazy(id)
+
+	book, ok := h.loadBook(r.Context(), w, id)
+	if !ok {
+		return
+	}
+	meta := ebook.Metadata{
+		Title:        strings.TrimSpace(req.Title),
+		Authors:      req.Authors,
+		Genres:       req.Genres,
+		Series:       req.Series,
+		SeriesNumber: req.SeriesNumber,
+		Year:         req.Year,
+		Publisher:    req.Publisher,
+		Annotation:   req.Annotation,
+	}
+	if _, err := h.applyEnrichment(r.Context(), &book, meta, true, false); err != nil {
+		h.log.Error("manual edit", slog.Int64("book", id), slog.Any("error", err))
+		h.writeError(w, http.StatusInternalServerError, "failed to save edit")
+		return
+	}
+	view, err := h.toSingleBookView(r.Context(), book)
+	if err != nil {
+		h.log.Error("render book", slog.Int64("book", id), slog.Any("error", err))
+		h.writeError(w, http.StatusInternalServerError, "failed to render book")
+		return
+	}
+	h.writeJSON(w, http.StatusOK, view)
 }
 
 // fetchCover downloads an image URL within the cover budget and size cap,

@@ -90,3 +90,46 @@ func (s *editSuite) TestSetCoverFromURLMissingURL() {
 	w := s.do(http.MethodPost, "/books/"+itoa(id)+"/cover", map[string]string{})
 	s.Equal(http.StatusBadRequest, w.Code)
 }
+
+func (s *editSuite) TestUpdateBookOverwritesAndLocks() {
+	src := s.seedLibrary("folder", "/lib")
+	id := s.seedBook(src, bookSeed{Title: "Old", Authors: []string{"Nobody"}, Genres: []string{"History"}})
+
+	body := map[string]any{
+		"title":      "Dune",
+		"authors":    []string{"Frank Herbert"},
+		"genres":     []string{"Science Fiction"},
+		"series":     "Dune Chronicles",
+		"year":       1965,
+		"publisher":  "Ace",
+		"annotation": "Desert planet.",
+	}
+	w := s.do(http.MethodPut, "/books/"+itoa(id), body)
+	s.Require().Equal(http.StatusOK, w.Code)
+
+	var got bookView
+	s.decode(w, &got)
+	s.Equal("Dune", got.Title)
+	s.Require().Len(got.Authors, 1)
+	s.Equal("Frank Herbert", got.Authors[0].Name)
+	s.Equal([]string{"Science Fiction"}, got.Tags)
+	s.Require().NotNil(got.Year)
+	s.Equal(1965, *got.Year)
+
+	book, err := s.q.GetBook(s.T().Context(), id)
+	s.Require().NoError(err)
+	s.EqualValues(1, book.ManuallyMatched, "a manual edit locks the book against sync revert")
+}
+
+func (s *editSuite) TestUpdateBookRequiresTitle() {
+	src := s.seedLibrary("folder", "/lib")
+	id := s.seedBook(src, bookSeed{Title: "Old"})
+
+	w := s.do(http.MethodPut, "/books/"+itoa(id), map[string]any{"title": "  "})
+	s.Equal(http.StatusBadRequest, w.Code)
+}
+
+func (s *editSuite) TestUpdateBookUnknown() {
+	w := s.do(http.MethodPut, "/books/999999", map[string]any{"title": "x"})
+	s.Equal(http.StatusNotFound, w.Code)
+}

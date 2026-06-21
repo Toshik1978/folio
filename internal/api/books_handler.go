@@ -97,7 +97,7 @@ func NewBooks(
 	}
 }
 
-func (h *BooksHandler) Register(r chi.Router) {
+func (h *BooksHandler) Register(r chi.Router) { //nolint:dupl // chi route groups share structural shape, not logic
 	r.Route("/books", func(r chi.Router) {
 		r.Get("/", h.listBooks)
 		r.Get("/{id}", h.getBook)
@@ -105,6 +105,7 @@ func (h *BooksHandler) Register(r chi.Router) {
 		r.Get("/{id}/cover", h.serveCover)
 		r.Get("/{id}/match", h.searchMatch)
 		r.Post("/{id}/match", h.applyMatch)
+		r.Put("/{id}", h.updateBook)
 		r.Put("/{id}/cover", h.uploadCover)
 		r.Post("/{id}/cover", h.setCoverFromURL)
 	})
