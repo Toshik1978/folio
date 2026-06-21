@@ -156,3 +156,16 @@ export interface FacetsResponse {
   formats: string[];
   languages: string[];
 }
+
+// BookMetadataUpdate is the PUT /books/:id body. Empty/absent fields are left
+// unchanged by the backend; empty author/genre lists do not clear links.
+export interface BookMetadataUpdate {
+  title: string;
+  authors: string[];
+  genres: string[];
+  series?: string;
+  series_number?: number;
+  year?: number;
+  publisher?: string;
+  annotation?: string;
+}

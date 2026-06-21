@@ -2,6 +2,7 @@ import type {
   Author,
   Book,
   BookFilters,
+  BookMetadataUpdate,
   FacetsResponse,
   Library,
   MatchCandidate,
@@ -98,6 +99,32 @@ export function applyMatch(id: number, volumeId: string): Promise<Book> {
     method: 'POST',
     body: JSON.stringify({ volume_id: volumeId }),
   });
+}
+
+// updateBookMetadata saves a manual metadata edit and returns the updated book.
+export function updateBookMetadata(id: number, payload: BookMetadataUpdate): Promise<Book> {
+  return request<Book>(`/books/${id}`, { method: 'PUT', body: JSON.stringify(payload) });
+}
+
+// setCoverFromUrl tells the server to fetch an image URL and use it as the cover.
+export function setCoverFromUrl(id: number, url: string): Promise<Book> {
+  return request<Book>(`/books/${id}/cover`, { method: 'POST', body: JSON.stringify({ url }) });
+}
+
+// uploadCover sends raw image bytes (file, paste, or drag-drop) as the cover.
+// The Content-Type header overrides request()'s JSON default; the server sniffs
+// the image bytes regardless, but a correct type keeps the request honest.
+export function uploadCover(id: number, file: Blob): Promise<Book> {
+  return request<Book>(`/books/${id}/cover`, {
+    method: 'PUT',
+    body: file,
+    headers: { 'Content-Type': file.type || 'application/octet-stream' },
+  });
+}
+
+// fetchGenres returns the canonical genre taxonomy for the edit autocomplete.
+export function fetchGenres(): Promise<string[]> {
+  return request<string[]>('/genres');
 }
 
 // fetchStats returns catalog totals.
