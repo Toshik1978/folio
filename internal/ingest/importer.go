@@ -106,8 +106,13 @@ func (im *importer) add(ctx context.Context, rec bookRecord, addedAt int64) (int
 		return 0, err
 	}
 
+	matchKey, err := im.resolveMatchKey(ctx, q, rec)
+	if err != nil {
+		return 0, err
+	}
+
 	existing, err := q.FindBookByLibraryKey(ctx, dbq.FindBookByLibraryKeyParams{
-		LibraryID: rec.LibraryID, LibraryKey: rec.LibraryKey,
+		LibraryID: rec.LibraryID, LibraryKey: matchKey,
 	})
 	var (
 		bookID    int64
@@ -141,6 +146,55 @@ func (im *importer) add(ctx context.Context, rec bookRecord, addedAt int64) (int
 	}
 
 	return bookID, nil
+}
+
+// resolveMatchKey returns the library_key to use when looking up an existing book.
+// For derived-identity sources it runs an identifier pre-match first; for all
+// others it returns rec.LibraryKey unchanged.
+func (im *importer) resolveMatchKey(ctx context.Context, q *dbq.Queries, rec bookRecord) (string, error) {
+	if !rec.DeriveIdentity {
+		return rec.LibraryKey, nil
+	}
+	key, found, err := im.matchByIdentifier(ctx, q, rec)
+	if err != nil {
+		return "", err
+	}
+	if found {
+		return key, nil
+	}
+
+	return rec.LibraryKey, nil
+}
+
+// matchByIdentifier finds an existing book in the record's library that shares one
+// of the record's cleaned strong identifiers. When several match (e.g. ISBN and
+// ASIN point at different already-split books), it returns the lowest book id's
+// library_key so every file converges on the same winner within a sync.
+func (im *importer) matchByIdentifier(
+	ctx context.Context, q *dbq.Queries, rec bookRecord,
+) (string, bool, error) {
+	clean := cleanIdentifiers(rec.Identifiers)
+	var bestID int64
+	var bestKey string
+	for typ, val := range clean {
+		if _, ok := strongIdentifierTypes[typ]; !ok {
+			continue
+		}
+		row, err := q.FindBookByIdentifier(ctx, dbq.FindBookByIdentifierParams{
+			LibraryID: rec.LibraryID, Type: typ, Value: val,
+		})
+		if errors.Is(err, sql.ErrNoRows) {
+			continue
+		}
+		if err != nil {
+			return "", false, fmt.Errorf("find book by identifier: %w", err)
+		}
+		if bestID == 0 || row.BookID < bestID {
+			bestID, bestKey = row.BookID, row.LibraryKey
+		}
+	}
+
+	return bestKey, bestID != 0, nil
 }
 
 // saveCoverIfBetter caches rec's cover under bookID when this file's format

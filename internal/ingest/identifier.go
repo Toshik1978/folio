@@ -14,6 +14,16 @@ const (
 	amazonType = "amazon"
 )
 
+// strongIdentifierTypes are the cleaned identifier types reliable enough (per
+// edition or per work) to force two records onto the same book. Other types are
+// still stored, but never trigger a merge.
+var strongIdentifierTypes = map[string]struct{}{
+	isbnType:    {},
+	amazonType:  {},
+	"google":    {},
+	"goodreads": {},
+}
+
 func cleanIdentifier(typ, val string) (string, string) {
 	typ = strings.ToLower(strings.TrimSpace(typ))
 	val = strings.TrimSpace(val)
