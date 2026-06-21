@@ -185,20 +185,35 @@ taxonomy has two parts:
 - **`targetGenres`** — the whitelist of canonical labels. A raw string that is
   already a canonical label (case-insensitive) passes through unchanged.
 
-A string that matches **neither** is **discarded by design** — the taxonomy is
-deliberately curated rather than open-vocabulary. The practical consequence:
+**The canonical labels are BISAC subject labels** (`Science Fiction`, `Crime`,
+`Mystery & Detective`, `Biography & Autobiography`, …). That single choice is
+what makes the three sources converge:
 
-- **FB2 / INPX** genres map well, because the source vocabulary *is* the
-  flibusta code set the map is keyed on.
-- **EPUB `dc:subject`** and **Calibre tags** are free text, so only those that
-  happen to equal a canonical label survive; most other subjects are dropped.
+- **Google Books** returns BISAC-derived category *paths* (`"Fiction / Science
+  Fiction / Space Opera"`). `normalizeRawTag` matches the whole string first,
+  then — failing that — splits on `/` and matches each segment, so a path still
+  contributes its recognized segment(s) (here, `Science Fiction`). Aligning the
+  whitelist to BISAC means enrichment fills the same shelves verbatim instead of
+  dropping unmatched labels.
+- **Calibre** tags survive by design when the library is itself BISAC-tagged,
+  because each tag *is* a canonical label — Calibre tags run through the same
+  `normalizeGenres` on import, so a non-BISAC tag would be silently dropped.
+- **FB2 / INPX** codes are mapped to their BISAC label by `fb2GenreMap`.
+
+Two intentional **non-BISAC** buckets are kept: `Nonfiction` (the catch-all;
+BISAC has no such subject) and `Contemporary Fiction` (BISAC only has
+"Contemporary" nested under specific genres). Neither is produced by Google
+enrichment — they are FB2/manual-only — but both are heavily used shelves.
+
+A string that matches **neither** map is **discarded by design** — the taxonomy
+is deliberately curated rather than open-vocabulary.
 
 The overwrite merge path re-links genres from the highest-priority edition, so a
 book's stored genres are always the normalized set of its current metadata owner.
 `relinkGenres` no-ops rather than wiping when nothing maps, so a higher-priority
 edition without recognized genres can't erase the existing set. To recognise more
 inputs, extend `fb2GenreMap` (new code→label) or `targetGenres` (new canonical
-label).
+label — keep it a valid BISAC subject so Google enrichment can match it).
 
 ---
 
