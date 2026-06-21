@@ -141,16 +141,17 @@ func parseINPLine(line string, libraryID int64, archive string) (bookRecord, boo
 	lang := normalizeLang(inpOptional(fields, inpLang))
 
 	rec := bookRecord{
-		LibraryID:  libraryID,
-		LibraryKey: groupKey(title, authors, lang),
-		Title:      title,
-		Authors:    authors,
-		Genres:     splitColon(fields[inpGenre]),
-		Series:     strings.TrimSpace(fields[inpSeries]),
-		Language:   lang,
-		SourcePath: archive + "/" + file + "." + ext,
-		FileFormat: ext,
-		FileSize:   parseInt64(fields[inpSize]),
+		LibraryID:      libraryID,
+		LibraryKey:     groupKey(title, authors, lang),
+		DeriveIdentity: true,
+		Title:          title,
+		Authors:        authors,
+		Genres:         splitColon(fields[inpGenre]),
+		Series:         strings.TrimSpace(fields[inpSeries]),
+		Language:       lang,
+		SourcePath:     archive + "/" + file + "." + ext,
+		FileFormat:     ext,
+		FileSize:       parseInt64(fields[inpSize]),
 	}
 	if n, err := strconv.ParseFloat(strings.TrimSpace(fields[inpSerNo]), 64); err == nil && n != 0 {
 		rec.SeriesNumber = nullFloat(n, true)

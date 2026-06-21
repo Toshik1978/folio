@@ -82,6 +82,40 @@ func (s *idMatchSuite) TestCalibreNotIdentifierMatched() {
 	s.Equal(2, s.bookCount(lib))
 }
 
+// Healing: two books that were split in a prior sync (different keys, shared ISBN)
+// collapse to one when both files are re-seen through the reconciler.
+func (s *idMatchSuite) TestHealAlreadySplitOnResync() {
+	ctx := context.Background()
+	lib := s.insertLibrary("folder", "/lib")
+
+	// Prior sync state: two separate books, one file each, sharing an ISBN.
+	im1 := newImporter(s.db, s.store)
+	a := s.recISBN(lib, "key-cixin-liu", "a.epub", "9781466853454")
+	b := s.recISBN(lib, "key-liu-cixin", "b.azw3", "9781466853454")
+	// Simulate the pre-fix world: force them apart by disabling pre-match on insert.
+	a.DeriveIdentity, b.DeriveIdentity = false, false
+	_, err := im1.add(ctx, a, 1)
+	s.Require().NoError(err)
+	_, err = im1.add(ctx, b, 1)
+	s.Require().NoError(err)
+	s.Require().NoError(im1.commit())
+	s.Require().Equal(2, s.bookCount(lib))
+
+	// Re-sync with the feature on, through the reconciler so move/prune runs.
+	im2 := newImporter(s.db, s.store)
+	defer im2.rollback()
+	rc, err := newReconciler(ctx, im2, lib.ID, 2, nopReporter{})
+	s.Require().NoError(err)
+	a.DeriveIdentity, b.DeriveIdentity = true, true
+	s.Require().NoError(rc.upsert(ctx, a))
+	s.Require().NoError(rc.upsert(ctx, b))
+	_, err = rc.prune(ctx)
+	s.Require().NoError(err)
+	s.Require().NoError(im2.commit())
+
+	s.Equal(1, s.bookCount(lib))
+}
+
 func (s *idMatchSuite) TestNonWhitelistedTypeDoesNotGroup() {
 	ctx := context.Background()
 	lib := s.insertLibrary("folder", "/lib")
