@@ -27,7 +27,7 @@ func (s *importerSuite) rec(lib dbq.Library, format, path string) bookRecord {
 func (s *importerSuite) TestLanguageEditPropagates() {
 	ctx := context.Background()
 	lib := s.insertLibrary("folder", "/lib")
-	im := newImporter(s.db, s.store)
+	im := newImporter(s.log, s.db, s.store, 1)
 	defer im.rollback()
 
 	r := s.rec(lib, "epub", "a.epub")
@@ -50,7 +50,7 @@ func (s *importerSuite) TestManualMatchSurvivesSync() {
 	ctx := context.Background()
 	lib := s.insertLibrary("folder", "/lib")
 	q := dbq.New(s.db)
-	im := newImporter(s.db, s.store)
+	im := newImporter(s.log, s.db, s.store, 1)
 	defer im.rollback()
 
 	r := s.rec(lib, "epub", "a.epub")
@@ -78,7 +78,7 @@ func (s *importerSuite) TestSameFormatSiblingsDoNotPingPong() {
 	ctx := context.Background()
 	lib := s.insertLibrary("folder", "/lib")
 	q := dbq.New(s.db)
-	im := newImporter(s.db, s.store)
+	im := newImporter(s.log, s.db, s.store, 1)
 	defer im.rollback()
 
 	a := s.rec(lib, "epub", "a.epub")
@@ -112,7 +112,7 @@ func (s *importerSuite) TestSiblingIdentifierNeverReplaces() {
 	ctx := context.Background()
 	lib := s.insertLibrary("folder", "/lib")
 	q := dbq.New(s.db)
-	im := newImporter(s.db, s.store)
+	im := newImporter(s.log, s.db, s.store, 1)
 	defer im.rollback()
 
 	a := s.rec(lib, "epub", "a.epub")
@@ -137,7 +137,7 @@ func (s *importerSuite) TestPagesOnlyChangeIsStored() {
 	ctx := context.Background()
 	lib := s.insertLibrary("folder", "/lib")
 	q := dbq.New(s.db)
-	im := newImporter(s.db, s.store)
+	im := newImporter(s.log, s.db, s.store, 1)
 	defer im.rollback()
 
 	r := s.rec(lib, "epub", "a.epub")
@@ -161,7 +161,7 @@ func (s *importerSuite) TestPagesOnlyChangeIsStored() {
 func (s *importerSuite) TestCoverNotDowngradedAcrossRuns() {
 	ctx := context.Background()
 	lib := s.insertLibrary("folder", "/lib")
-	im := newImporter(s.db, s.store)
+	im := newImporter(s.log, s.db, s.store, 1)
 	defer im.rollback()
 
 	epub := s.rec(lib, "epub", "a.epub")
@@ -173,7 +173,7 @@ func (s *importerSuite) TestCoverNotDowngradedAcrossRuns() {
 	s.Require().NoError(err)
 
 	// Fresh importer = fresh run: only the PDF is re-parsed (folder diff).
-	im2 := newImporter(s.db, s.store)
+	im2 := newImporter(s.log, s.db, s.store, 1)
 	defer im2.rollback()
 	pdf := s.rec(lib, "pdf", "a.pdf")
 	pdf.Cover = s.coverFixtureAlt() // distinguishable bytes
@@ -189,7 +189,7 @@ func (s *importerSuite) TestCoverNotDowngradedAcrossRuns() {
 // L1: a book with no parseable language is stored as the 'und' sentinel, not 'en'.
 func (s *importerSuite) TestInsertStoresUndForUnknownLanguage() {
 	lib := s.insertLibrary("folder", "/lib/lang1")
-	im := newImporter(s.db, s.store)
+	im := newImporter(s.log, s.db, s.store, 1)
 	id, err := im.add(context.Background(), bookRecord{
 		LibraryID: lib.ID, LibraryKey: "k1", Title: "T",
 		FileFormat: "epub", SourcePath: "a.epub", // no Language
@@ -206,7 +206,7 @@ func (s *importerSuite) TestInsertStoresUndForUnknownLanguage() {
 func (s *importerSuite) TestGapFillUpgradesUndLanguage() {
 	ctx := context.Background()
 	lib := s.insertLibrary("folder", "/lib/lang2")
-	im := newImporter(s.db, s.store)
+	im := newImporter(s.log, s.db, s.store, 1)
 
 	id, err := im.add(ctx, bookRecord{
 		LibraryID: lib.ID, LibraryKey: "k", Title: "T",
@@ -230,7 +230,7 @@ func (s *importerSuite) TestGapFillUpgradesUndLanguage() {
 func (s *importerSuite) TestGapFillKeepsRealLanguage() {
 	ctx := context.Background()
 	lib := s.insertLibrary("folder", "/lib/lang3")
-	im := newImporter(s.db, s.store)
+	im := newImporter(s.log, s.db, s.store, 1)
 
 	id, err := im.add(ctx, bookRecord{
 		LibraryID: lib.ID, LibraryKey: "k", Title: "T", Language: "en",
@@ -259,14 +259,14 @@ func (s *importerSuite) TestReconcilerCountsOnlyNewFiles() {
 		FileFormat: "epub", SourcePath: "a.epub", FileSize: 1, Mtime: 1,
 	}
 
-	im := newImporter(s.db, s.store)
+	im := newImporter(s.log, s.db, s.store, 1)
 	rc, err := newReconciler(ctx, im, lib.ID, time.Now().Unix(), nopReporter{})
 	s.Require().NoError(err)
 	s.Require().NoError(rc.upsert(ctx, rec))
 	s.Require().NoError(im.commit())
 	s.Equal(1, rc.added, "a brand-new file is an add")
 
-	im2 := newImporter(s.db, s.store)
+	im2 := newImporter(s.log, s.db, s.store, 1)
 	rc2, err := newReconciler(ctx, im2, lib.ID, time.Now().Unix(), nopReporter{})
 	s.Require().NoError(err)
 	changed := rec

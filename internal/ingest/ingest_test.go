@@ -237,8 +237,7 @@ func (s *helpersSuite) TestIngestHelpers() {
 
 func (s *helpersSuite) TestRollbackRemovesCoversOfUncommittedBooks() {
 	lib := s.insertLibrary("folder", "/lib/rollback")
-	im := newImporter(s.db, s.store)
-	im.batchSize = 1000 // keep the batch open across the add
+	im := newImporter(s.log, s.db, s.store, 1000) // keep the batch open across the add
 
 	bookID, err := im.add(context.Background(), bookRecord{
 		LibraryID: lib.ID, LibraryKey: "k1", Title: "T",
@@ -255,7 +254,7 @@ func (s *helpersSuite) TestRollbackRemovesCoversOfUncommittedBooks() {
 func (s *helpersSuite) TestRollbackCleansCoversWhenTxAlreadyClosed() {
 	// After a failed commit the tx is already nil but newBooks still lists the
 	// uncommitted books; the deferred rollback must clean their covers anyway.
-	im := newImporter(s.db, s.store)
+	im := newImporter(s.log, s.db, s.store, 1)
 	const bookID = int64(9999)
 	s.Require().NoError(s.store.Save(bookID, s.coverFixture()))
 	im.newBooks = []int64{bookID} // as left behind by a failed commit
@@ -267,7 +266,7 @@ func (s *helpersSuite) TestRollbackCleansCoversWhenTxAlreadyClosed() {
 
 func (s *helpersSuite) TestInsertBookDeduplicatesFTSAuthors() {
 	lib := s.insertLibrary("folder", "/lib/dedupe")
-	im := newImporter(s.db, s.store)
+	im := newImporter(s.log, s.db, s.store, 1)
 
 	bookID, err := im.add(context.Background(), bookRecord{
 		LibraryID: lib.ID, LibraryKey: "kd", Title: "T",

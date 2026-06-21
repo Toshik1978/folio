@@ -28,9 +28,7 @@ func runReconcile(
 	log *slog.Logger,
 	scan scanFunc,
 ) (Result, error) {
-	im := newImporter(db, covers)
-	im.setBatchSize(1000)
-	im.setLogger(log)
+	im := newImporter(log, db, covers, 1000)
 	defer im.rollback()
 
 	rc, err := newReconciler(ctx, im, library.ID, time.Now().Unix(), r)

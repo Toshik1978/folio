@@ -44,7 +44,7 @@ func (s *idMatchSuite) bookCount(lib dbq.Library) int {
 func (s *idMatchSuite) TestSharedISBNGroupsDespiteDifferentKey() {
 	ctx := context.Background()
 	lib := s.insertLibrary("folder", "/lib")
-	im := newImporter(s.db, s.store)
+	im := newImporter(s.log, s.db, s.store, 1)
 	defer im.rollback()
 
 	id1, err := im.add(ctx, s.recISBN(lib, "key-cixin-liu", "a.epub", "9781466853454"), 1)
@@ -65,7 +65,7 @@ func (s *idMatchSuite) TestSharedISBNGroupsDespiteDifferentKey() {
 func (s *idMatchSuite) TestCalibreNotIdentifierMatched() {
 	ctx := context.Background()
 	lib := s.insertLibrary("calibre", "/lib")
-	im := newImporter(s.db, s.store)
+	im := newImporter(s.log, s.db, s.store, 1)
 	defer im.rollback()
 
 	// Two distinct Calibre books sharing an ISBN: DeriveIdentity is false -> stay split.
@@ -89,7 +89,7 @@ func (s *idMatchSuite) TestHealAlreadySplitOnResync() {
 	lib := s.insertLibrary("folder", "/lib")
 
 	// Prior sync state: two separate books, one file each, sharing an ISBN.
-	im1 := newImporter(s.db, s.store)
+	im1 := newImporter(s.log, s.db, s.store, 1)
 	a := s.recISBN(lib, "key-cixin-liu", "a.epub", "9781466853454")
 	b := s.recISBN(lib, "key-liu-cixin", "b.azw3", "9781466853454")
 	// Simulate the pre-fix world: force them apart by disabling pre-match on insert.
@@ -102,7 +102,7 @@ func (s *idMatchSuite) TestHealAlreadySplitOnResync() {
 	s.Require().Equal(2, s.bookCount(lib))
 
 	// Re-sync with the feature on, through the reconciler so move/prune runs.
-	im2 := newImporter(s.db, s.store)
+	im2 := newImporter(s.log, s.db, s.store, 1)
 	defer im2.rollback()
 	rc, err := newReconciler(ctx, im2, lib.ID, 2, nopReporter{})
 	s.Require().NoError(err)
@@ -121,7 +121,7 @@ func (s *idMatchSuite) TestHealAlreadySplitOnResync() {
 func (s *idMatchSuite) TestPlaceholderISBNDoesNotGroup() {
 	ctx := context.Background()
 	lib := s.insertLibrary("folder", "/lib")
-	im := newImporter(s.db, s.store)
+	im := newImporter(s.log, s.db, s.store, 1)
 	defer im.rollback()
 
 	_, err := im.add(ctx, s.recISBN(lib, "key-a", "a.epub", "0000000000000"), 1)
@@ -138,7 +138,7 @@ func (s *idMatchSuite) TestPlaceholderISBNDoesNotGroup() {
 func (s *idMatchSuite) TestInvalidChecksumISBNDoesNotGroup() {
 	ctx := context.Background()
 	lib := s.insertLibrary("folder", "/lib")
-	im := newImporter(s.db, s.store)
+	im := newImporter(s.log, s.db, s.store, 1)
 	defer im.rollback()
 
 	_, err := im.add(ctx, s.recISBN(lib, "key-a", "a.epub", "9781234567890"), 1)
@@ -154,7 +154,7 @@ func (s *idMatchSuite) TestInvalidChecksumISBNDoesNotGroup() {
 func (s *idMatchSuite) TestPlaceholderASINDoesNotGroup() {
 	ctx := context.Background()
 	lib := s.insertLibrary("folder", "/lib")
-	im := newImporter(s.db, s.store)
+	im := newImporter(s.log, s.db, s.store, 1)
 	defer im.rollback()
 
 	mk := func(key, path string) bookRecord {
@@ -174,7 +174,7 @@ func (s *idMatchSuite) TestPlaceholderASINDoesNotGroup() {
 func (s *idMatchSuite) TestNonWhitelistedTypeDoesNotGroup() {
 	ctx := context.Background()
 	lib := s.insertLibrary("folder", "/lib")
-	im := newImporter(s.db, s.store)
+	im := newImporter(s.log, s.db, s.store, 1)
 	defer im.rollback()
 
 	mk := func(key, path string) bookRecord {

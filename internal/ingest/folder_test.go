@@ -290,7 +290,7 @@ func (s *folderSuite) TestTitleFallsBackToFilename() {
 
 func (s *folderSuite) TestMetadataFormatPriority() {
 	ctx := context.Background()
-	im := newImporter(s.db, s.store)
+	im := newImporter(s.log, s.db, s.store, 1)
 
 	src := s.insertLibrary("folder", "/dummy")
 
@@ -419,7 +419,7 @@ func (s *folderSuite) TestImportedAtIsRunTimeNotSourceDate() {
 // Cyrillic), and the first-seen display casing is kept.
 func (s *folderSuite) TestCaseFoldedDedupAcrossRecords() {
 	ctx := context.Background()
-	im := newImporter(s.db, s.store)
+	im := newImporter(s.log, s.db, s.store, 1)
 	src := s.insertLibrary("folder", "/dummy")
 
 	rec1 := bookRecord{

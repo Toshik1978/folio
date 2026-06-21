@@ -63,8 +63,7 @@ func (s *idMatchSuite) TestIdentifierOverrideIsLogged() {
 	ctx := context.Background()
 	lib := s.insertLibrary("folder", "/lib")
 	logger, recs := s.newCaptureLogger()
-	im := newImporter(s.db, s.store)
-	im.setLogger(logger)
+	im := newImporter(logger, s.db, s.store, 1)
 	defer im.rollback()
 
 	id1, err := im.add(ctx, s.recISBN(lib, "key-cixin-liu", "a.epub", "9781466853454"), 1)
@@ -89,8 +88,7 @@ func (s *idMatchSuite) TestIdentifierMatchSameKeyNotLogged() {
 	ctx := context.Background()
 	lib := s.insertLibrary("folder", "/lib")
 	logger, recs := s.newCaptureLogger()
-	im := newImporter(s.db, s.store)
-	im.setLogger(logger)
+	im := newImporter(logger, s.db, s.store, 1)
 	defer im.rollback()
 
 	_, err := im.add(ctx, s.recISBN(lib, "same-key", "a.epub", "9781466853454"), 1)

@@ -21,7 +21,7 @@ func TestIdentifierLookupSuite(t *testing.T) {
 func (s *identifierLookupSuite) TestFindBookByIdentifierLowestID() {
 	ctx := context.Background()
 	lib := s.insertLibrary("folder", "/lib")
-	im := newImporter(s.db, s.store)
+	im := newImporter(s.log, s.db, s.store, 1)
 	defer im.rollback()
 
 	// Two separate books carrying the same cleaned ISBN.

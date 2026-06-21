@@ -24,42 +24,30 @@ const msgIdentifierOverride = "identifier grouping overrode key-based grouping"
 // single place that knows how to persist a bookRecord (book row + authors +
 // genres + series + FTS entry) atomically and cache its cover.
 type importer struct {
+	log       *slog.Logger
 	db        *sql.DB
 	tx        *sql.Tx
 	queries   *dbq.Queries
 	covers    CoverStore
+	batchSize int
 	coverPrio map[int64]int // bookID -> priority of the cover currently saved this run
 	// newBooks are books inserted in the current uncommitted batch. Their covers
 	// are written to disk eagerly, but AUTOINCREMENT ids are never reused, so a
 	// rolled-back batch would orphan those files forever; rollback deletes them.
-	newBooks  []int64
-	count     int
-	batchSize int
-	log       *slog.Logger
+	newBooks []int64
+	count    int
 }
 
 // newImporter builds an importer with an initialized cover-priority tracker. The
 // logger defaults to a discard handler so callers (and tests) that don't wire one
 // stay silent; production wires the real logger via setLogger.
-func newImporter(db *sql.DB, covers CoverStore) *importer {
+func newImporter(log *slog.Logger, db *sql.DB, covers CoverStore, batchSize int) *importer {
 	return &importer{
+		log:       log,
 		db:        db,
 		covers:    covers,
+		batchSize: batchSize,
 		coverPrio: map[int64]int{},
-		batchSize: 1,
-		log:       slog.New(slog.DiscardHandler),
-	}
-}
-
-func (im *importer) setBatchSize(size int) {
-	if size > 0 {
-		im.batchSize = size
-	}
-}
-
-func (im *importer) setLogger(log *slog.Logger) {
-	if log != nil {
-		im.log = log
 	}
 }
 
@@ -219,7 +207,8 @@ func (im *importer) matchByIdentifier(
 	}
 
 	if bestID != 0 && bestKey != rec.LibraryKey {
-		im.log.Info(msgIdentifierOverride,
+		im.log.Info(
+			msgIdentifierOverride,
 			slog.Int64("library_id", rec.LibraryID),
 			slog.String("record_key", rec.LibraryKey),
 			slog.Int64("matched_book", bestID),
