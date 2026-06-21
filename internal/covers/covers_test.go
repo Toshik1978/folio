@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -64,6 +65,22 @@ func sampleImage() image.Image {
 func (s *coversTestSuite) jpegBytes() []byte {
 	var buf bytes.Buffer
 	s.Require().NoError(jpeg.Encode(&buf, sampleImage(), nil))
+	return buf.Bytes()
+}
+
+// bigJPEGBytes encodes a larger image so a torn write would span many disk
+// blocks, widening the window in which a partial read could be observed.
+func (s *coversTestSuite) bigJPEGBytes() []byte {
+	img := image.NewRGBA(image.Rect(0, 0, 512, 512))
+	for y := range 512 {
+		for x := range 512 {
+			img.Set(x, y, color.RGBA{R: uint8(x), G: uint8(y), B: uint8(x ^ y), A: 255})
+		}
+	}
+
+	var buf bytes.Buffer
+	s.Require().NoError(jpeg.Encode(&buf, img, &jpeg.Options{Quality: 95}))
+
 	return buf.Bytes()
 }
 
@@ -351,6 +368,57 @@ func (s *coversTestSuite) TestNoCoverStillNegativeCaches() {
 	store.ServeHTTP(w, httptest.NewRequestWithContext(s.T().Context(), http.MethodGet, "/", http.NoBody), 8)
 	s.Equal(http.StatusOK, w.Code)
 	s.True(store.Has(8), "deterministic no-cover must cache the placeholder")
+}
+
+// Save must replace a cover atomically: a concurrent reader either sees the
+// old or the new complete JPEG, never a torn (half-written) file, and no temp
+// staging file is left behind.
+func (s *coversTestSuite) TestSaveIsAtomicUnderConcurrentReads() {
+	store, err := NewStore(s.dataDir, nil)
+	s.Require().NoError(err)
+
+	small := s.jpegBytes()
+	large := s.bigJPEGBytes() // distinct, much larger payload to widen the torn-read window
+	s.Require().NoError(store.Save(3, small))
+
+	var wg sync.WaitGroup
+	stop := make(chan struct{})
+	wg.Go(func() {
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			data, rerr := os.ReadFile(store.Path(3))
+			if rerr != nil {
+				continue // mid-rename the path can momentarily not exist on some OSes
+			}
+			// Every observed file must be one of the two complete writes, never a
+			// truncated/partial blend — that is what os.WriteFile risked.
+			if !bytes.Equal(data, small) && !bytes.Equal(data, large) {
+				s.Failf("torn read", "read %d bytes matching neither complete cover", len(data))
+				return
+			}
+		}
+	})
+
+	for i := range 50 {
+		next := large
+		if i%2 == 0 {
+			next = small
+		}
+		s.Require().NoError(store.Save(3, next))
+	}
+	close(stop)
+	wg.Wait()
+
+	// No leftover staging files in the shard directory.
+	entries, err := os.ReadDir(filepath.Dir(store.Path(3)))
+	s.Require().NoError(err)
+	for _, e := range entries {
+		s.NotContains(e.Name(), ".tmp", "temp staging file must not leak")
+	}
 }
 
 // M1: re-saving identical bytes must not rewrite the file (mtime = ?v= buster).

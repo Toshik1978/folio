@@ -145,13 +145,32 @@ func (s *Store) serveBytes(w http.ResponseWriter, data []byte) {
 }
 
 // writeFile caches already-JPEG bytes for bookID, creating the shard directory.
+// The bytes are staged in a sibling temp file and atomically renamed into place,
+// so a concurrent ServeHTTP read never observes a torn (half-written) JPEG.
 func (s *Store) writeFile(bookID int64, jpegData []byte) error {
 	dir := filepath.Join(s.dir, strconv.FormatInt(bookID/1000, 10))
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("create covers subdirectory: %w", err)
 	}
-	if err := os.WriteFile(s.Path(bookID), jpegData, 0o600); err != nil {
+	// CreateTemp in the same directory keeps os.Rename a same-filesystem atomic
+	// replace, and creates the file with 0o600 (matching the prior mode).
+	tmp, err := os.CreateTemp(dir, strconv.FormatInt(bookID, 10)+".*.tmp")
+	if err != nil {
+		return fmt.Errorf("create temp cover %d: %w", bookID, err)
+	}
+	tmpName := tmp.Name()
+	if _, err := tmp.Write(jpegData); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(tmpName)
 		return fmt.Errorf("write cover %d: %w", bookID, err)
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpName)
+		return fmt.Errorf("close temp cover %d: %w", bookID, err)
+	}
+	if err := os.Rename(tmpName, s.Path(bookID)); err != nil {
+		_ = os.Remove(tmpName)
+		return fmt.Errorf("rename cover %d: %w", bookID, err)
 	}
 
 	return nil
