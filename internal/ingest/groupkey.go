@@ -7,9 +7,22 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"unicode"
 
 	"github.com/samber/lo"
 )
+
+// normalizeAuthorKey canonicalizes one author name for grouping: lowercased,
+// split on commas and whitespace, tokens sorted and rejoined. This makes the
+// key insensitive to ordering, so "Liu, Cixin", "Cixin Liu" and "Liu Cixin" are
+// identical. Display names are unaffected — only the grouping key uses this.
+func normalizeAuthorKey(a string) string {
+	tokens := strings.FieldsFunc(strings.ToLower(a), func(r rune) bool {
+		return r == ',' || unicode.IsSpace(r)
+	})
+	slices.Sort(tokens)
+	return strings.Join(tokens, " ")
+}
 
 // groupKey is the within-library identity for libraries without a native book id
 // (INPX, Folder): normalized title + sorted authors + language. Formats of the
@@ -17,7 +30,9 @@ import (
 func groupKey(title string, authors []string, language string) string {
 	norm := make([]string, 0, len(authors))
 	for _, a := range authors {
-		norm = append(norm, strings.ToLower(strings.TrimSpace(a)))
+		if k := normalizeAuthorKey(a); k != "" {
+			norm = append(norm, k)
+		}
 	}
 	slices.Sort(norm)
 	lang := lo.CoalesceOrEmpty(strings.ToLower(strings.TrimSpace(language)), "und")
