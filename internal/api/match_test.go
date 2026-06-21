@@ -188,6 +188,37 @@ func (s *matchSuite) TestApplyMatchMarksEvenWhenUnchanged() {
 	s.EqualValues(1, book.ManuallyMatched, "Fix Match locks the book regardless of the field diff")
 }
 
+// 3.9: a Fix Match records enrichment_checked even when the chosen volume carries
+// no annotation, so a later view must NOT re-trigger online enrichment on the
+// still-empty annotation. needsEnrichment alone (which inspects only the
+// annotation, not manually_matched) would still say the book qualifies — the
+// enrichment_checked guard in runLazyTiers is what suppresses the re-query, and
+// this locks that the Fix Match sets it.
+func (s *matchSuite) TestApplyMatchSuppressesLaterEnrichment() {
+	enr := &fakeEnricher{
+		applyMeta: ebook.Metadata{Title: "Chosen"},      // the match leaves the annotation empty
+		meta:      ebook.Metadata{Annotation: "online"}, // a later Enrich would have data to add
+		ok:        true,
+	}
+	s.handlerWith(enr)
+
+	src := s.seedLibrary("folder", "/lib")
+	id := s.seedBook(src, bookSeed{Title: "Original"}) // no annotation
+
+	w := s.do(http.MethodPost, "/books/"+itoa(id)+"/match", map[string]string{"volume_id": "v1"})
+	s.Require().Equal(http.StatusOK, w.Code)
+
+	book, err := s.q.GetBook(s.T().Context(), id)
+	s.Require().NoError(err)
+	s.Require().False(book.Annotation.Valid, "the chosen volume carried no annotation")
+	s.Require().EqualValues(1, book.EnrichmentChecked, "the match records enrichment as attempted")
+
+	// A later view of the still-annotation-less book must not consult the online tier.
+	w = s.do(http.MethodGet, "/books/"+itoa(id), nil)
+	s.Require().Equal(http.StatusOK, w.Code)
+	s.Zero(enr.called, "a manually-matched book must not re-trigger online enrichment despite an empty annotation")
+}
+
 // L6: a Fix Match must not interleave with an in-flight lazy tier on the book.
 func (s *matchSuite) TestApplyMatchBusyIs409() {
 	enr := &fakeEnricher{applyMeta: ebook.Metadata{Title: "Chosen"}}
