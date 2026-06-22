@@ -25,13 +25,13 @@ const (
 
 // Source queries Open Library for cover candidates.
 type Source struct {
-	BaseURL string
+	baseURL string
 	http    *http.Client
 }
 
 // New builds an Open Library cover source with the given per-request timeout.
 func New(timeout time.Duration) *Source {
-	return &Source{BaseURL: defaultBaseURL, http: &http.Client{Timeout: timeout}}
+	return &Source{baseURL: defaultBaseURL, http: &http.Client{Timeout: timeout}}
 }
 
 // Name identifies the source.
@@ -63,7 +63,7 @@ func (s *Source) SearchCovers(ctx context.Context, q metasearch.Query) ([]metase
 	}
 	params.Set("limit", strconv.Itoa(maxDocs))
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.BaseURL+"/search.json?"+params.Encode(), http.NoBody)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.baseURL+"/search.json?"+params.Encode(), http.NoBody)
 	if err != nil {
 		return nil, fmt.Errorf("build request: %w", err)
 	}

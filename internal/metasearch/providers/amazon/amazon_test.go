@@ -9,94 +9,115 @@ import (
 	"testing"
 	"time"
 
-	"github.com/stretchr/testify/require"
+	"github.com/stretchr/testify/suite"
 
 	"github.com/Toshik1978/folio/internal/metasearch"
 )
 
-func TestParseCoversFromFixture(t *testing.T) {
+// TestAmazon is the package's single entry point; every suite is registered here.
+func TestAmazon(t *testing.T) {
+	suite.Run(t, new(parseSuite))
+	suite.Run(t, new(searchSuite))
+}
+
+// baseSuite holds helpers shared by the parser and HTTP suites.
+type baseSuite struct {
+	suite.Suite
+}
+
+// fixture returns the golden Amazon search-result HTML.
+func (s *baseSuite) fixture() []byte {
+	data, err := os.ReadFile("testdata/search.html")
+	s.Require().NoError(err)
+
+	return data
+}
+
+// sourceForHandler starts an httptest server with h (cleaned up automatically)
+// and returns a Source wired to it with a near-zero retry backoff so retry tests
+// don't wait the full 400 ms.
+func (s *baseSuite) sourceForHandler(h http.HandlerFunc) *Source {
+	srv := httptest.NewServer(h)
+	s.T().Cleanup(srv.Close)
+
+	src := New(5 * time.Second)
+	src.baseURL = srv.URL
+	src.backoff = time.Millisecond
+
+	return src
+}
+
+// parseSuite covers the offline HTML parser and capability reporting.
+type parseSuite struct {
+	baseSuite
+}
+
+func (s *parseSuite) TestParseCoversFromFixture() {
 	f, err := os.Open("testdata/search.html")
-	require.NoError(t, err)
+	s.Require().NoError(err)
 	defer func() { _ = f.Close() }()
 
 	got, err := parseCovers(f)
-	require.NoError(t, err)
+	s.Require().NoError(err)
 
 	// Two s-image results; the sprite (other-image) is ignored.
-	require.Len(t, got, 2)
+	s.Require().Len(got, 2)
 	for _, c := range got {
-		require.Equal(t, metasearch.SourceAmazon, c.Source)
-		require.Contains(t, c.FullURL, "https://m.media-amazon.com/images/I/")
+		s.Equal(metasearch.SourceAmazon, c.Source)
+		s.Contains(c.FullURL, "https://m.media-amazon.com/images/I/")
 	}
 	// The highest-density srcset entry is chosen and the size modifier is stripped to get the original.
-	require.Equal(t, "https://m.media-amazon.com/images/I/aaa.jpg", got[0].FullURL)
-	require.Equal(t, "https://m.media-amazon.com/images/I/bbb.jpg", got[1].FullURL)
+	s.Equal("https://m.media-amazon.com/images/I/aaa.jpg", got[0].FullURL)
+	s.Equal("https://m.media-amazon.com/images/I/bbb.jpg", got[1].FullURL)
 }
 
-func TestCapabilities(t *testing.T) {
+func (s *parseSuite) TestCapabilities() {
 	src := New(time.Second)
-	require.Equal(t, metasearch.SourceAmazon, src.Name())
-	require.True(t, metasearch.HasCapability(src.Capabilities(), metasearch.CapCover))
+	s.Equal(metasearch.SourceAmazon, src.Name())
+	s.True(metasearch.HasCapability(src.Capabilities(), metasearch.CapCover))
 }
 
-func TestSearchCovers(t *testing.T) {
-	data, err := os.ReadFile("testdata/search.html")
-	require.NoError(t, err)
+// searchSuite drives SearchCovers end-to-end over HTTP.
+type searchSuite struct {
+	baseSuite
+}
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write(data)
-	}))
-	defer srv.Close()
-
-	src := New(5 * time.Second)
-	src.BaseURL = srv.URL
+func (s *searchSuite) TestSearchCovers() {
+	src := s.sourceForHandler(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write(s.fixture())
+	})
 
 	got, err := src.SearchCovers(context.Background(), metasearch.Query{Title: "Dune"})
-	require.NoError(t, err)
-	require.NotEmpty(t, got)
+	s.Require().NoError(err)
+	s.Require().NotEmpty(got)
 	for _, c := range got {
-		require.Equal(t, metasearch.SourceAmazon, c.Source)
+		s.Equal(metasearch.SourceAmazon, c.Source)
 	}
 }
 
-func TestSearchCoversNon200(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+func (s *searchSuite) TestSearchCoversNon200() {
+	src := s.sourceForHandler(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
-	}))
-	defer srv.Close()
-
-	src := New(5 * time.Second)
-	src.BaseURL = srv.URL
+	})
 
 	_, err := src.SearchCovers(context.Background(), metasearch.Query{Title: "Dune"})
-	require.Error(t, err)
+	s.Require().Error(err)
 }
 
-func TestSearchCoversRetriesOnTransientBlock(t *testing.T) {
-	data, err := os.ReadFile("testdata/search.html")
-	require.NoError(t, err)
-
+func (s *searchSuite) TestSearchCoversRetriesOnTransientBlock() {
 	var reqCount atomic.Int32
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	src := s.sourceForHandler(func(w http.ResponseWriter, _ *http.Request) {
 		n := reqCount.Add(1)
 		if n == 1 {
 			w.WriteHeader(http.StatusServiceUnavailable)
+
 			return
 		}
-		_, _ = w.Write(data)
-	}))
-	defer srv.Close()
-
-	// Lower backoff so the test doesn't wait 400 ms.
-	orig := retryBackoff
-	retryBackoff = time.Millisecond
-	defer func() { retryBackoff = orig }()
-
-	src := New(5 * time.Second)
-	src.BaseURL = srv.URL
+		_, _ = w.Write(s.fixture())
+	})
 
 	got, err := src.SearchCovers(context.Background(), metasearch.Query{Title: "Dune"})
-	require.NoError(t, err)
-	require.NotEmpty(t, got)
-	require.GreaterOrEqual(t, int(reqCount.Load()), 2, "server should have been hit at least twice")
+	s.Require().NoError(err)
+	s.Require().NotEmpty(got)
+	s.GreaterOrEqual(int(reqCount.Load()), 2, "server should have been hit at least twice")
 }

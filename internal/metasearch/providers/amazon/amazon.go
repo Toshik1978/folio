@@ -28,21 +28,23 @@ const (
 	maxHTMLBytes = 4 << 20
 	imageClass   = "s-image"
 	maxAttempts  = 3
+	retryBackoff = 400 * time.Millisecond
 )
-
-// retryBackoff is the base wait between retry attempts. It is a var (not const)
-// so tests can lower it without incurring the full 400 ms wait.
-var retryBackoff = 400 * time.Millisecond //nolint:gochecknoglobals // test-overridable backoff
 
 // Source scrapes Amazon for cover candidates.
 type Source struct {
-	BaseURL string
+	baseURL string
 	client  *http.Client
+	backoff time.Duration
 }
 
 // New builds an Amazon cover source with the given per-request timeout.
 func New(timeout time.Duration) *Source {
-	return &Source{BaseURL: defaultBaseURL, client: &http.Client{Timeout: timeout}}
+	return &Source{
+		baseURL: defaultBaseURL,
+		client:  &http.Client{Timeout: timeout},
+		backoff: retryBackoff,
+	}
 }
 
 // Name identifies the source.
@@ -58,7 +60,7 @@ func (s *Source) Capabilities() []metasearch.Capability {
 // anti-bot responses (503s or empty interstitials).
 func (s *Source) SearchCovers(ctx context.Context, q metasearch.Query) ([]metasearch.CoverCandidate, error) {
 	out, err := metasearch.RetryCovers(
-		ctx, maxAttempts, retryBackoff,
+		ctx, maxAttempts, s.backoff,
 		func(c context.Context) ([]metasearch.CoverCandidate, error) {
 			return s.fetchOnce(c, q)
 		},
@@ -75,7 +77,7 @@ func (s *Source) fetchOnce(ctx context.Context, q metasearch.Query) ([]metasearc
 	params := url.Values{}
 	params.Set("k", strings.TrimSpace(q.Title+" "+q.Author))
 	params.Set("i", "stripbooks")
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.BaseURL+"/s?"+params.Encode(), http.NoBody)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.baseURL+"/s?"+params.Encode(), http.NoBody)
 	if err != nil {
 		return nil, fmt.Errorf("build request: %w", err)
 	}

@@ -3,9 +3,6 @@ package api
 import (
 	"context"
 	"net/http"
-	"testing"
-
-	"github.com/stretchr/testify/suite"
 
 	"github.com/Toshik1978/folio/internal/metasearch"
 )
@@ -24,10 +21,6 @@ func (s *stubSearcher) SearchCovers(_ context.Context, q metasearch.Query) []met
 
 type coverSearchSuite struct {
 	baseSuite
-}
-
-func TestCoverSearchSuite(t *testing.T) {
-	suite.Run(t, new(coverSearchSuite))
 }
 
 func (s *coverSearchSuite) newWithSearcher(srch CoverSearcher) {

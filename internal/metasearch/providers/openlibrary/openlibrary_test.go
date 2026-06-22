@@ -7,23 +7,27 @@ import (
 	"testing"
 	"time"
 
-	"github.com/stretchr/testify/require"
+	"github.com/stretchr/testify/suite"
 
 	"github.com/Toshik1978/folio/internal/metasearch"
 )
 
-func TestSearchCovers(t *testing.T) {
+// TestOpenLibrary is the package's single entry point; every suite is registered here.
+func TestOpenLibrary(t *testing.T) {
+	suite.Run(t, new(openLibrarySuite))
+}
+
+type openLibrarySuite struct {
+	suite.Suite
+}
+
+func (s *openLibrarySuite) TestSearchCovers() {
+	// Capture the request the source issues so we can assert on it after the call
+	// completes, rather than failing from inside the server goroutine.
+	var gotPath, gotTitle string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		require.Equal( //nolint:testifylint // require in handler: brief mandates verbatim
-			t,
-			"/search.json",
-			r.URL.Path,
-		)
-		require.Equal( //nolint:testifylint // require in handler: brief mandates verbatim
-			t,
-			"Dune",
-			r.URL.Query().Get("title"),
-		)
+		gotPath = r.URL.Path
+		gotTitle = r.URL.Query().Get("title")
 		_, _ = w.Write([]byte(`{"docs":[
 			{"title":"Dune","cover_i":123},
 			{"title":"No Cover"}
@@ -32,18 +36,20 @@ func TestSearchCovers(t *testing.T) {
 	defer srv.Close()
 
 	src := New(5 * time.Second)
-	src.BaseURL = srv.URL
+	src.baseURL = srv.URL
 
 	got, err := src.SearchCovers(context.Background(), metasearch.Query{Title: "Dune"})
-	require.NoError(t, err)
-	require.Len(t, got, 1, "only docs with cover_i yield candidates")
-	require.Equal(t, metasearch.SourceOpenLibrary, got[0].Source)
-	require.Equal(t, "https://covers.openlibrary.org/b/id/123-L.jpg", got[0].FullURL)
-	require.Equal(t, "https://covers.openlibrary.org/b/id/123-M.jpg", got[0].ThumbURL)
+	s.Require().NoError(err)
+	s.Equal("/search.json", gotPath)
+	s.Equal("Dune", gotTitle)
+	s.Require().Len(got, 1, "only docs with cover_i yield candidates")
+	s.Equal(metasearch.SourceOpenLibrary, got[0].Source)
+	s.Equal("https://covers.openlibrary.org/b/id/123-L.jpg", got[0].FullURL)
+	s.Equal("https://covers.openlibrary.org/b/id/123-M.jpg", got[0].ThumbURL)
 }
 
-func TestCapabilities(t *testing.T) {
+func (s *openLibrarySuite) TestCapabilities() {
 	src := New(time.Second)
-	require.Equal(t, metasearch.SourceOpenLibrary, src.Name())
-	require.True(t, metasearch.HasCapability(src.Capabilities(), metasearch.CapCover))
+	s.Equal(metasearch.SourceOpenLibrary, src.Name())
+	s.True(metasearch.HasCapability(src.Capabilities(), metasearch.CapCover))
 }
