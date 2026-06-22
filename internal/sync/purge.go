@@ -10,8 +10,14 @@ import (
 )
 
 // checkPurge deletes every library whose purge deadline has elapsed and prunes
-// its scheduled jobs afterward.
+// its scheduled jobs afterward. It bails out early once shutdown is signalled
+// (e.stop closed) so a sweep started right at teardown does minimal work and
+// scheduler.shutdown() is not held up by a long cascade.
 func (e *Engine) checkPurge(ctx context.Context) {
+	if e.stopped() {
+		return
+	}
+
 	now := e.now().Unix()
 	expired, err := dbq.New(e.db).ListPendingPurgeLibraries(ctx, sql.NullInt64{Int64: now, Valid: true})
 	if err != nil {
@@ -23,6 +29,9 @@ func (e *Engine) checkPurge(ctx context.Context) {
 	}
 
 	for i := range expired {
+		if e.stopped() {
+			return // shutdown signalled mid-sweep: stop reclaiming further libraries
+		}
 		if err := e.purgeLibrary(ctx, expired[i].ID); err != nil {
 			e.log.Error("purge library", slog.Int64("library", expired[i].ID), slog.Any("error", err))
 			continue
@@ -32,6 +41,17 @@ func (e *Engine) checkPurge(ctx context.Context) {
 
 	if err := e.Reschedule(ctx); err != nil {
 		e.log.Error("reschedule after purge", slog.Any("error", err))
+	}
+}
+
+// stopped reports whether shutdown has been signalled (e.stop closed). It is a
+// non-blocking probe used by the purge path to bail out promptly at teardown.
+func (e *Engine) stopped() bool {
+	select {
+	case <-e.stop:
+		return true
+	default:
+		return false
 	}
 }
 
@@ -74,6 +94,12 @@ func (e *Engine) PurgeLibrary(ctx context.Context, id int64) error {
 func (e *Engine) purgeLibrary(ctx context.Context, id int64) error {
 	// Serialize against an in-flight sync (the shared single-writer guard) so the
 	// cascade delete never races an indexing transaction; see Engine.writeGuard.
+	//
+	// This does NOT early-out on e.stop: an on-demand purge (RequestPurge /
+	// PurgeLibrary) must run to completion even during shutdown, since Stop waits
+	// for in-flight purges via e.bg. Only the deadline sweep (checkPurge) bails out
+	// at teardown; once that bail check passes and we block on the guard here, the
+	// sweep finishes after the in-flight sync releases the guard.
 	e.writeGuard.Lock()
 	defer e.writeGuard.Unlock()
 

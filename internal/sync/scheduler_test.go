@@ -6,6 +6,8 @@ import (
 	"os"
 	"time"
 
+	"github.com/go-co-op/gocron/v2"
+
 	"github.com/Toshik1978/folio/internal/db/dbq"
 )
 
@@ -127,6 +129,64 @@ func (s *schedulerSuite) TestPurgeWaitsForWriteLock() {
 
 	_, err := dbq.New(s.db).GetLibrary(context.Background(), src.ID)
 	s.Require().ErrorIs(err, sql.ErrNoRows)
+}
+
+// TestStopIsPromptWhilePurgeBlocked asserts Stop returns promptly even when a
+// running scheduled purge sweep is wedged on the write guard (standing in for an
+// in-flight sync). Stop must close e.stop BEFORE tearing down the scheduler: the
+// closed channel cancels the in-flight sync so the worker releases the guard, the
+// wedged sweep then acquires it and returns, and scheduler.shutdown completes.
+// In the old order (shutdown before close) the sweep stays wedged because nothing
+// has released the guard yet, so gocron's shutdown blocks indefinitely waiting on
+// the running job. Regression test for GO-SHUTDOWN-ORDERING-STALL.
+func (s *schedulerSuite) TestStopIsPromptWhilePurgeBlocked() {
+	// An expired library so the scheduled sweep actually reaches the guard.
+	src := s.insertLibrary("stub", "/lib/wedged")
+	past := s.engine.now().Add(-time.Hour).Unix()
+	s.markPendingPurge(src.ID, sql.NullInt64{Int64: past, Valid: true})
+
+	// Run the worker so Stop's <-e.done can complete once e.stop closes.
+	go s.engine.worker()
+
+	// Model the in-flight sync holding the write guard and releasing it only once
+	// shutdown is signalled (close(e.stop)). This is exactly what the real worker
+	// does: its sync's context is cancelled by e.stop, so it unwinds and releases
+	// the guard. The reorder is what makes close(e.stop) happen before the
+	// scheduler teardown that waits on the wedged sweep.
+	s.engine.writeGuard.Lock()
+	go func() {
+		<-s.engine.stop
+		s.engine.writeGuard.Unlock()
+	}()
+
+	// Schedule the purge sweep to start running immediately, so it is a live
+	// gocron job (the kind shutdown waits on) blocked on the held guard. started
+	// signals the job is running and about to wedge; swept signals it completed.
+	started := make(chan struct{})
+	swept := make(chan struct{})
+	_, err := s.engine.scheduler.sched.NewJob(
+		gocron.DurationJob(time.Hour),
+		gocron.NewTask(func() {
+			close(started)
+			s.engine.checkPurge(context.Background())
+			close(swept)
+		}),
+		gocron.WithStartAt(gocron.WithStartImmediately()),
+	)
+	s.Require().NoError(err)
+	s.engine.scheduler.start()
+
+	<-started                         // the sweep is running ...
+	time.Sleep(10 * time.Millisecond) // ... and now wedged on the guard
+
+	done := make(chan struct{})
+	go func() { s.engine.Stop(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		s.Fail("Stop did not return promptly while a purge was blocked")
+	}
+	<-swept // the wedged sweep ran to completion
 }
 
 func (s *schedulerSuite) TestCheckPurgeKeepsSourcesBeforeDeadline() {

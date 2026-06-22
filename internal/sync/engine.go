@@ -186,12 +186,21 @@ func (e *Engine) Start() {
 
 // Stop shuts the engine down: it stops scheduling and watching, then waits for
 // any in-flight sync and any background purge to finish.
+//
+// Ordering matters. close(e.stop) must precede scheduler.shutdown(): a purge
+// sweep running on the scheduler can be blocked on the write guard held by an
+// in-flight sync, and scheduler.shutdown() waits for running jobs to return.
+// Closing e.stop first cancels the in-flight sync (its context is derived from
+// e.stop), which releases the guard, lets the blocked sweep acquire it and
+// return, and so lets scheduler.shutdown() complete instead of waiting out
+// gocron's stop timeout. The worker observes e.stop independently and exits on
+// its own, so the subsequent <-e.done cannot deadlock against the scheduler.
 func (e *Engine) Stop() {
 	if e.watcher != nil {
 		e.watcher.Close()
 	}
-	_ = e.scheduler.shutdown()
-	close(e.stop)
+	close(e.stop)              // cancel in-flight work FIRST
+	_ = e.scheduler.shutdown() // now a guard-blocked sweep can drain and return
 	<-e.done
 	if e.warmer != nil {
 		<-e.warmer.done
