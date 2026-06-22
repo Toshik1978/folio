@@ -6,6 +6,30 @@ import (
 	"golang.org/x/text/language"
 )
 
+// iso6392BToT maps bibliographic codes (B) to terminology codes (T).
+var iso6392BToT = map[string]string{ //nolint:gochecknoglobals
+	"alb": "sqi", // Albanian
+	"arm": "hye", // Armenian
+	"baq": "eus", // Basque
+	"bur": "mya", // Burmese
+	"chi": "zho", // Chinese
+	"cze": "ces", // Czech
+	"dut": "nld", // Dutch
+	"fre": "fra", // French
+	"geo": "kat", // Georgian
+	"ger": "deu", // German
+	"gre": "ell", // Greek
+	"ice": "isl", // Icelandic
+	"mac": "mkd", // Macedonian
+	"mao": "mri", // Maori
+	"may": "msa", // Malay
+	"per": "fas", // Persian
+	"rum": "ron", // Romanian
+	"slo": "slk", // Slovak
+	"tib": "bod", // Tibetan
+	"wel": "cym", // Welsh
+}
+
 // normalizeLang canonicalizes a language code to its base ISO 639-1 subtag so
 // every source shares one facet bucket. It lowercases, maps ISO 639-2/B to /T,
 // then reduces full BCP 47 tags to the base language — collapsing region and
@@ -19,30 +43,6 @@ import (
 // "und" sentinel (insert.go, groupKey); keeping it empty here also means junk
 // never clobbers a sibling edition's good language in the merge overwrite path.
 func normalizeLang(code string) string {
-	// iso6392BToT maps bibliographic codes (B) to terminology codes (T).
-	iso6392BToT := map[string]string{
-		"alb": "sqi", // Albanian
-		"arm": "hye", // Armenian
-		"baq": "eus", // Basque
-		"bur": "mya", // Burmese
-		"chi": "zho", // Chinese
-		"cze": "ces", // Czech
-		"dut": "nld", // Dutch
-		"fre": "fra", // French
-		"geo": "kat", // Georgian
-		"ger": "deu", // German
-		"gre": "ell", // Greek
-		"ice": "isl", // Icelandic
-		"mac": "mkd", // Macedonian
-		"mao": "mri", // Maori
-		"may": "msa", // Malay
-		"per": "fas", // Persian
-		"rum": "ron", // Romanian
-		"slo": "slk", // Slovak
-		"tib": "bod", // Tibetan
-		"wel": "cym", // Welsh
-	}
-
 	cleaned := strings.ToLower(strings.TrimSpace(code))
 	if cleaned == "" || cleaned == undefinedLanguage {
 		return ""

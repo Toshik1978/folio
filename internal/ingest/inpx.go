@@ -171,17 +171,17 @@ func inpOptional(fields []string, idx int) string {
 	return strings.TrimSpace(fields[idx])
 }
 
+// inpDateFormats are the date layouts seen in INP records. Exporters disagree on
+// column order, so Y-M-D is tried first and Y-D-M second. Go rejects month > 12,
+// so a value like 2021-31-05 unambiguously falls through to Y-D-M. A value where
+// both fields are <= 12 (e.g. 2021-05-06) is inherently ambiguous and parses as
+// Y-M-D — a known, unresolvable limitation that can silently skew added_at (and
+// thus the "Newest" sort) for a Y-D-M source. No error is raised.
+var inpDateFormats = []string{"2006-01-02", "2006-02-01"} //nolint:gochecknoglobals
+
 // parseINPXDate parses an INP date column to a unix timestamp; 0 when blank or
 // unrecognized.
 func parseINPXDate(str string) int64 {
-	// inpDateFormats are the date layouts seen in INP records. Exporters disagree on
-	// column order, so Y-M-D is tried first and Y-D-M second. Go rejects month > 12,
-	// so a value like 2021-31-05 unambiguously falls through to Y-D-M. A value where
-	// both fields are <= 12 (e.g. 2021-05-06) is inherently ambiguous and parses as
-	// Y-M-D — a known, unresolvable limitation that can silently skew added_at (and
-	// thus the "Newest" sort) for a Y-D-M source. No error is raised.
-	inpDateFormats := []string{"2006-01-02", "2006-02-01"}
-
 	str = strings.TrimSpace(str)
 	if str == "" {
 		return 0

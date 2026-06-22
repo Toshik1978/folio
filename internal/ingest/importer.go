@@ -179,16 +179,6 @@ func (im *importer) resolveMatchKey(ctx context.Context, q *dbq.Queries, rec boo
 func (im *importer) matchByIdentifier(
 	ctx context.Context, q *dbq.Queries, rec bookRecord,
 ) (string, bool, error) {
-	// strongIdentifierTypes are the cleaned identifier types reliable enough (per
-	// edition or per work) to force two records onto the same book. Other types are
-	// still stored, but never trigger a merge.
-	strongIdentifierTypes := map[string]struct{}{
-		isbnType:      {},
-		amazonType:    {},
-		googleType:    {},
-		goodreadsType: {},
-	}
-
 	clean := cleanIdentifiers(rec.Identifiers)
 	var (
 		bestID            int64
