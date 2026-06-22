@@ -167,5 +167,16 @@ export interface BookMetadataUpdate {
   series_number?: number;
   year?: number;
   publisher?: string;
+  language?: string;
   annotation?: string;
+  // Full desired identifier set (add/change/delete in one save). Omit to leave
+  // identifiers untouched; an empty array clears them all.
+  identifiers?: IdentifierInput[];
+}
+
+// IdentifierInput is one (type, value) pair sent by the edit form. The server
+// derives the display URL, so it is not sent back.
+export interface IdentifierInput {
+  type: string;
+  value: string;
 }

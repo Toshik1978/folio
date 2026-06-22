@@ -30,3 +30,52 @@ export function sortLanguageCodes(codes: string[]): string[] {
     return languageLabel(a).localeCompare(languageLabel(b));
   });
 }
+
+// COMMON_LANGUAGE_CODES is the curated shortlist offered by the edit form's
+// language picker — the languages most likely to appear in a personal library.
+// It is not exhaustive: editLanguageOptions() always folds in the book's current
+// code so an out-of-list value (e.g. a rare subtag from ingest) stays selectable
+// and is never silently dropped on save.
+const COMMON_LANGUAGE_CODES = [
+  'en',
+  'ru',
+  'uk',
+  'de',
+  'fr',
+  'es',
+  'it',
+  'pt',
+  'nl',
+  'pl',
+  'cs',
+  'sv',
+  'da',
+  'no',
+  'fi',
+  'tr',
+  'el',
+  'ja',
+  'zh',
+  'ko',
+  'ar',
+  'he',
+  'hi',
+  'la',
+];
+
+export interface LanguageOption {
+  code: string;
+  label: string;
+}
+
+// editLanguageOptions builds the {code,label} list for the edit form's language
+// <select>, sorted by display name with 'und'/"Unknown" first. The book's current
+// code is always included (even when outside the curated shortlist) so editing an
+// uncommon language never forces it to change.
+export function editLanguageOptions(current?: string | null): LanguageOption[] {
+  const codes = new Set(COMMON_LANGUAGE_CODES);
+  codes.add('und');
+  if (current) codes.add(current);
+
+  return sortLanguageCodes([...codes]).map((code) => ({ code, label: languageLabel(code) }));
+}

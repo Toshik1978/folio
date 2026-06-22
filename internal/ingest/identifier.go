@@ -163,6 +163,15 @@ func cleanIdentifiers(ids []identifier) map[string]string {
 	return bestIDs
 }
 
+// CleanIdentifiers exposes the importer's identifier normalization to other
+// packages (the manual metadata edit). It applies the same rules as ingestion —
+// ISBN canonicalization, ASIN upper-casing, type mapping, useless-scheme/UUID
+// drops, and one value per type — so user-entered identifiers are stored in the
+// exact form sync would produce.
+func CleanIdentifiers(ids []ebook.Identifier) []ebook.Identifier {
+	return cleanedEbookIdentifiers(ids)
+}
+
 // cleanedEbookIdentifiers normalizes and dedupes parser identifiers using the
 // same rules as ingestion (cleanIdentifiers), returned as ebook.Identifier in
 // type-sorted order. Used by the lazy metadata backfill and online enrichment so

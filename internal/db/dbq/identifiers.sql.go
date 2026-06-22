@@ -23,6 +23,19 @@ func (q *Queries) CountBookIdentifiers(ctx context.Context, bookID int64) (int64
 	return count, err
 }
 
+const deleteBookIdentifiers = `-- name: DeleteBookIdentifiers :exec
+DELETE FROM book_identifiers
+WHERE book_id = ?
+`
+
+// DeleteBookIdentifiers removes every identifier of a book. Used only by the
+// manual edit, which then re-inserts the user's full set: the one path allowed
+// to drop identifiers (the shared enrichment engine only ever upserts).
+func (q *Queries) DeleteBookIdentifiers(ctx context.Context, bookID int64) error {
+	_, err := q.db.ExecContext(ctx, deleteBookIdentifiers, bookID)
+	return err
+}
+
 const findBookByIdentifier = `-- name: FindBookByIdentifier :one
 SELECT bi.book_id, b.library_key
 FROM book_identifiers bi

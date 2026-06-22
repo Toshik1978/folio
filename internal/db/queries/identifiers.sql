@@ -29,6 +29,13 @@ SELECT COUNT(*)
 FROM book_identifiers
 WHERE book_id = ?;
 
+-- DeleteBookIdentifiers removes every identifier of a book. Used only by the
+-- manual edit, which then re-inserts the user's full set: the one path allowed
+-- to drop identifiers (the shared enrichment engine only ever upserts).
+-- name: DeleteBookIdentifiers :exec
+DELETE FROM book_identifiers
+WHERE book_id = ?;
+
 -- FindBookByIdentifier resolves a cleaned (type, value) identifier to the lowest
 -- matching book id in a library and that book's library_key. Used by the
 -- importer to group same-book files that share a strong identifier (ISBN/ASIN/

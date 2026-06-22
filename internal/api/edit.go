@@ -15,6 +15,7 @@ import (
 
 	"github.com/Toshik1978/folio/internal/db/dbq"
 	"github.com/Toshik1978/folio/internal/ebook"
+	"github.com/Toshik1978/folio/internal/ingest"
 )
 
 // manualCoverPrio pins a user-supplied cover in books.cover_prio. It sits far
@@ -227,7 +228,19 @@ type editRequest struct {
 	SeriesNumber float64  `json:"series_number"`
 	Year         int      `json:"year"`
 	Publisher    string   `json:"publisher"`
+	Language     string   `json:"language"`
 	Annotation   string   `json:"annotation"`
+	// Identifiers is the full desired set, used as an authoritative replacement
+	// (add/change/delete in one save). A nil pointer means the field was omitted
+	// and identifiers are left untouched; a non-nil (even empty) slice replaces
+	// them — so an older client that never sends the field cannot wipe them.
+	Identifiers *[]identifierInput `json:"identifiers"`
+}
+
+// identifierInput is one (type, value) pair from the edit form.
+type identifierInput struct {
+	Type  string `json:"type"`
+	Value string `json:"value"`
 }
 
 // updateBook handles PUT /api/books/{id} — a manual metadata edit. It feeds the
@@ -267,12 +280,23 @@ func (h *BooksHandler) updateBook(w http.ResponseWriter, r *http.Request) {
 		SeriesNumber: req.SeriesNumber,
 		Year:         req.Year,
 		Publisher:    req.Publisher,
+		Language:     strings.TrimSpace(req.Language),
 		Annotation:   req.Annotation,
 	}
 	if _, err := h.applyEnrichment(r.Context(), &book, meta, true, false); err != nil {
 		h.log.Error("manual edit", slog.Int64("book", id), slog.Any("error", err))
 		h.writeError(w, http.StatusInternalServerError, "failed to save edit")
 		return
+	}
+	// Identifiers are reconciled outside applyEnrichment: the manual edit is the
+	// only authoritative-replacement path (it may delete), whereas the shared
+	// engine — also used by Fix Match — only ever upserts.
+	if req.Identifiers != nil {
+		if err := h.reconcileBookIdentifiers(r.Context(), id, *req.Identifiers); err != nil {
+			h.log.Error("manual edit identifiers", slog.Int64("book", id), slog.Any("error", err))
+			h.writeError(w, http.StatusInternalServerError, "failed to save identifiers")
+			return
+		}
 	}
 	view, err := h.toSingleBookView(r.Context(), book)
 	if err != nil {
@@ -281,6 +305,43 @@ func (h *BooksHandler) updateBook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.writeJSON(w, http.StatusOK, view)
+}
+
+// reconcileBookIdentifiers replaces a book's entire identifier set with the
+// user's submitted one. It cleans the input through the importer's rules (so a
+// manually-typed ISBN lands canonical and useless schemes are dropped), then in a
+// single transaction clears the existing rows and re-inserts the cleaned set —
+// the only path allowed to delete identifiers. An empty input therefore clears
+// them all, which is what a user who removed every row intends.
+func (h *BooksHandler) reconcileBookIdentifiers(ctx context.Context, bookID int64, in []identifierInput) error {
+	raw := make([]ebook.Identifier, 0, len(in))
+	for _, id := range in {
+		raw = append(raw, ebook.Identifier{Type: id.Type, Value: id.Value})
+	}
+	cleaned := ingest.CleanIdentifiers(raw)
+
+	tx, err := h.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin identifier tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }() // no-op after Commit
+	q := dbq.New(tx)
+
+	if err := q.DeleteBookIdentifiers(ctx, bookID); err != nil {
+		return fmt.Errorf("clear identifiers: %w", err)
+	}
+	for _, id := range cleaned {
+		if err := q.InsertBookIdentifier(ctx, dbq.InsertBookIdentifierParams{
+			BookID: bookID, Type: id.Type, Value: id.Value,
+		}); err != nil {
+			return fmt.Errorf("insert identifier %s: %w", id.Type, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit identifiers: %w", err)
+	}
+
+	return nil
 }
 
 // fetchCover downloads an image URL within the cover budget and size cap,

@@ -1010,6 +1010,7 @@ UPDATE books
 SET title              = ?,
     series_id          = ?,
     series_number      = ?,
+    language           = ?,
     annotation         = ?,
     publisher          = ?,
     publisher_fold     = ?,
@@ -1024,6 +1025,7 @@ type UpdateBookMatchParams struct {
 	Title         string
 	SeriesID      sql.NullInt64
 	SeriesNumber  sql.NullFloat64
+	Language      string
 	Annotation    sql.NullString
 	Publisher     sql.NullString
 	PublisherFold sql.NullString
@@ -1042,6 +1044,7 @@ func (q *Queries) UpdateBookMatch(ctx context.Context, arg UpdateBookMatchParams
 		arg.Title,
 		arg.SeriesID,
 		arg.SeriesNumber,
+		arg.Language,
 		arg.Annotation,
 		arg.Publisher,
 		arg.PublisherFold,

@@ -105,7 +105,7 @@ func (s *editSuite) TestSetCoverFromURLMissingURL() {
 
 func (s *editSuite) TestUpdateBookOverwritesAndLocks() {
 	src := s.seedLibrary("folder", "/lib")
-	id := s.seedBook(src, bookSeed{Title: "Old", Authors: []string{"Nobody"}, Genres: []string{"History"}})
+	id := s.seedBook(src, bookSeed{Title: "Old", Authors: []string{"Nobody"}, Genres: []string{"History"}, Lang: "en"})
 
 	body := map[string]any{
 		"title":      "Dune",
@@ -114,6 +114,7 @@ func (s *editSuite) TestUpdateBookOverwritesAndLocks() {
 		"series":     "Dune Chronicles",
 		"year":       1965,
 		"publisher":  "Ace",
+		"language":   "de",
 		"annotation": "Desert planet.",
 	}
 	w := s.do(http.MethodPut, "/books/"+itoa(id), body)
@@ -127,10 +128,27 @@ func (s *editSuite) TestUpdateBookOverwritesAndLocks() {
 	s.Equal([]string{"Science Fiction"}, got.Tags)
 	s.Require().NotNil(got.Year)
 	s.Equal(1965, *got.Year)
+	s.Require().NotNil(got.Language)
+	s.Equal("de", *got.Language, "a manual edit overwrites the language")
 
 	book, err := s.q.GetBook(s.T().Context(), id)
 	s.Require().NoError(err)
 	s.EqualValues(1, book.ManuallyMatched, "a manual edit locks the book against sync revert")
+}
+
+// TestUpdateBookKeepsLanguageWhenBlank guards the non-null language column: a PUT
+// that omits language (or sends "") must leave the stored value intact rather than
+// blanking it, so editing other fields never wipes a book's language.
+func (s *editSuite) TestUpdateBookKeepsLanguageWhenBlank() {
+	src := s.seedLibrary("folder", "/lib")
+	id := s.seedBook(src, bookSeed{Title: "Old", Lang: "ru"})
+
+	w := s.do(http.MethodPut, "/books/"+itoa(id), map[string]any{"title": "New"})
+	s.Require().Equal(http.StatusOK, w.Code)
+
+	book, err := s.q.GetBook(s.T().Context(), id)
+	s.Require().NoError(err)
+	s.Equal("ru", book.Language, "omitting language must not blank the stored value")
 }
 
 func (s *editSuite) TestUpdateBookRequiresTitle() {
@@ -144,6 +162,68 @@ func (s *editSuite) TestUpdateBookRequiresTitle() {
 func (s *editSuite) TestUpdateBookUnknown() {
 	w := s.do(http.MethodPut, "/books/999999", map[string]any{"title": "x"})
 	s.Equal(http.StatusNotFound, w.Code)
+}
+
+// TestUpdateBookReconcilesIdentifiers verifies the manual edit is authoritative
+// over identifiers: it adds a new one, normalizes a typed ISBN, and drops one the
+// user removed (the wrong Google volume id) — the path's delete capability.
+func (s *editSuite) TestUpdateBookReconcilesIdentifiers() {
+	src := s.seedLibrary("folder", "/lib")
+	id := s.seedBook(src, bookSeed{
+		Title:       "Dune",
+		Identifiers: map[string]string{"isbn": "9780441172719", "google": "WRONGVOLUME"},
+	})
+
+	body := map[string]any{
+		"title": "Dune",
+		"identifiers": []map[string]string{
+			{"type": "isbn", "value": "978-0-441-17271-9"}, // hyphens stripped by cleaning
+			{"type": "goodreads", "value": "234225"},
+		},
+	}
+	w := s.do(http.MethodPut, "/books/"+itoa(id), body)
+	s.Require().Equal(http.StatusOK, w.Code)
+
+	var got bookView
+	s.decode(w, &got)
+	idents := map[string]string{}
+	for _, iv := range got.Identifiers {
+		idents[iv.Type] = iv.Value
+	}
+	s.Equal(map[string]string{"isbn": "9780441172719", "goodreads": "234225"}, idents)
+	s.NotContains(idents, "google", "the removed identifier is deleted")
+}
+
+// TestUpdateBookKeepsIdentifiersWhenOmitted guards backward compatibility: a PUT
+// that omits the identifiers field entirely must leave them untouched, so a client
+// that never sends identifiers cannot wipe them.
+func (s *editSuite) TestUpdateBookKeepsIdentifiersWhenOmitted() {
+	src := s.seedLibrary("folder", "/lib")
+	id := s.seedBook(src, bookSeed{Title: "Dune", Identifiers: map[string]string{"isbn": "9780441172719"}})
+
+	w := s.do(http.MethodPut, "/books/"+itoa(id), map[string]any{"title": "Dune Reloaded"})
+	s.Require().Equal(http.StatusOK, w.Code)
+
+	var got bookView
+	s.decode(w, &got)
+	s.Require().Len(got.Identifiers, 1)
+	s.Equal("isbn", got.Identifiers[0].Type)
+	s.Equal("9780441172719", got.Identifiers[0].Value)
+}
+
+// TestUpdateBookClearsIdentifiersWhenEmpty verifies an explicit empty array
+// (user removed every row) deletes all identifiers.
+func (s *editSuite) TestUpdateBookClearsIdentifiersWhenEmpty() {
+	src := s.seedLibrary("folder", "/lib")
+	id := s.seedBook(src, bookSeed{Title: "Dune", Identifiers: map[string]string{"isbn": "9780441172719"}})
+
+	body := map[string]any{"title": "Dune", "identifiers": []map[string]string{}}
+	w := s.do(http.MethodPut, "/books/"+itoa(id), body)
+	s.Require().Equal(http.StatusOK, w.Code)
+
+	var got bookView
+	s.decode(w, &got)
+	s.Empty(got.Identifiers, "an explicit empty set clears all identifiers")
 }
 
 // TestIsBlockedHost unit-tests the real SSRF guard directly (no server needed).

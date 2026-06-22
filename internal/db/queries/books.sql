@@ -136,6 +136,7 @@ UPDATE books
 SET title              = ?,
     series_id          = ?,
     series_number      = ?,
+    language           = ?,
     annotation         = ?,
     publisher          = ?,
     publisher_fold     = ?,

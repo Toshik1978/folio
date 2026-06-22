@@ -196,6 +196,14 @@ func (h *BooksHandler) mergeEnrichedFields(book *dbq.Book, meta ebook.Metadata, 
 		book.Title = meta.Title
 		changed = true
 	}
+	// Language is a non-null column, so it is only written in overwrite mode and
+	// only when meta carries one — a blank meta.Language (every enrichment/Fix
+	// Match volume) leaves the book's current language untouched rather than
+	// clobbering it to "". The manual edit is the only caller that supplies it.
+	if overwrite && strings.TrimSpace(meta.Language) != "" && meta.Language != book.Language {
+		book.Language = meta.Language
+		changed = true
+	}
 
 	return changed
 }
@@ -325,6 +333,7 @@ func (h *BooksHandler) persistMatchScalars(
 ) error {
 	if err := q.UpdateBookMatch(ctx, dbq.UpdateBookMatchParams{
 		Title: book.Title, SeriesID: book.SeriesID, SeriesNumber: book.SeriesNumber,
+		Language:   book.Language,
 		Annotation: book.Annotation, Publisher: book.Publisher, PublisherFold: dbf.FoldNull(book.Publisher),
 		Year: book.Year, ContentHash: book.ContentHash, ID: book.ID,
 	}); err != nil {

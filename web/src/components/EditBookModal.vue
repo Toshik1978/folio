@@ -1,117 +1,13 @@
-<template>
-  <Teleport to="body">
-    <dialog class="modal" :class="{ 'modal-open': open }">
-      <div ref="modalBox" class="modal-box max-w-2xl">
-        <button
-          type="button"
-          data-testid="edit-close"
-          class="btn btn-sm btn-circle btn-ghost absolute right-3 top-3"
-          @click="emit('close')"
-        >
-          ✕
-        </button>
-        <h3 class="mb-4 text-lg font-semibold">Edit book</h3>
-
-        <form class="flex flex-col gap-3" @submit.prevent="save">
-          <label class="form-control">
-            <span class="label-text mb-1">Title</span>
-            <input
-              v-model="form.title"
-              data-testid="edit-title"
-              type="text"
-              class="input input-bordered input-sm"
-            />
-          </label>
-
-          <label class="form-control">
-            <span class="label-text mb-1">Authors (one per line)</span>
-            <textarea
-              v-model="authorsText"
-              data-testid="edit-authors"
-              class="textarea textarea-bordered textarea-sm"
-              rows="2"
-            />
-          </label>
-
-          <label class="form-control">
-            <span class="label-text mb-1">Genres</span>
-            <input
-              v-model="genresText"
-              data-testid="edit-genres"
-              list="genre-options"
-              class="input input-bordered input-sm"
-              placeholder="comma-separated"
-            />
-            <datalist id="genre-options">
-              <option v-for="g in genreOptions" :key="g" :value="g" />
-            </datalist>
-          </label>
-
-          <div class="grid grid-cols-2 gap-3">
-            <label class="form-control">
-              <span class="label-text mb-1">Series</span>
-              <input v-model="form.series" type="text" class="input input-bordered input-sm" />
-            </label>
-            <label class="form-control">
-              <span class="label-text mb-1">Year</span>
-              <input
-                v-model.number="form.year"
-                type="number"
-                class="input input-bordered input-sm"
-              />
-            </label>
-            <label class="form-control">
-              <span class="label-text mb-1">Publisher</span>
-              <input v-model="form.publisher" type="text" class="input input-bordered input-sm" />
-            </label>
-            <label class="form-control">
-              <span class="label-text mb-1">Series #</span>
-              <input
-                v-model.number="form.series_number"
-                type="number"
-                step="0.1"
-                class="input input-bordered input-sm"
-              />
-            </label>
-          </div>
-
-          <label class="form-control">
-            <span class="label-text mb-1">Annotation</span>
-            <textarea
-              v-model="form.annotation"
-              class="textarea textarea-bordered textarea-sm"
-              rows="4"
-            />
-          </label>
-
-          <div class="mt-2 flex justify-end gap-2">
-            <button type="button" class="btn btn-ghost btn-sm" @click="emit('close')">
-              Cancel
-            </button>
-            <button
-              type="submit"
-              data-testid="edit-save"
-              class="btn btn-primary btn-sm"
-              :disabled="saving"
-              @click.prevent="save"
-            >
-              Save
-            </button>
-          </div>
-        </form>
-      </div>
-      <div class="modal-backdrop" @click="emit('close')"></div>
-    </dialog>
-  </Teleport>
-</template>
-
 <script setup lang="ts">
 import { computed, reactive, ref, watch } from 'vue';
 
 import { fetchGenres, updateBookMetadata } from '@/api';
+import IdentifierEditor from '@/components/IdentifierEditor.vue';
+import TagSelect from '@/components/TagSelect.vue';
 import { useModalFocus } from '@/composables/useModalFocus';
 import { useToast } from '@/composables/useToast';
-import type { Book, BookMetadataUpdate } from '@/types';
+import type { Book, BookMetadataUpdate, IdentifierInput } from '@/types';
+import { editLanguageOptions } from '@/utils/language';
 
 const props = defineProps<{ book: Book; open: boolean }>();
 const emit = defineEmits<{ close: []; applied: [book: Book] }>();
@@ -126,9 +22,14 @@ useModalFocus(
 
 const form = reactive<BookMetadataUpdate>({ title: '', authors: [], genres: [] });
 const authorsText = ref('');
-const genresText = ref('');
+const tags = ref<string[]>([]);
+const identifiers = ref<IdentifierInput[]>([]);
 const genreOptions = ref<string[]>([]);
 const saving = ref(false);
+
+// Language options are derived from the book's current code so an out-of-list
+// value stays selectable (see editLanguageOptions).
+const languageOptions = computed(() => editLanguageOptions(form.language));
 
 // Reset the form from the current book each time the modal opens.
 watch(
@@ -140,14 +41,16 @@ watch(
     form.series_number = props.book.series_index ?? undefined;
     form.year = props.book.year ?? undefined;
     form.publisher = props.book.publisher ?? '';
+    form.language = props.book.language ?? 'und';
     form.annotation = props.book.annotation ?? '';
     authorsText.value = props.book.authors.map((a) => a.name).join('\n');
-    genresText.value = props.book.tags.join(', ');
+    tags.value = [...props.book.tags];
+    identifiers.value = props.book.identifiers.map((id) => ({ type: id.type, value: id.value }));
     if (genreOptions.value.length === 0) {
       try {
         genreOptions.value = await fetchGenres();
       } catch {
-        // a missing taxonomy only disables autocomplete, not editing
+        // a missing taxonomy only disables the tag suggestions, not editing
       }
     }
   },
@@ -165,10 +68,10 @@ async function save(): Promise<void> {
       .split('\n')
       .map((a) => a.trim())
       .filter(Boolean),
-    genres: genresText.value
-      .split(',')
-      .map((g) => g.trim())
-      .filter(Boolean),
+    genres: tags.value.map((t) => t.trim()).filter(Boolean),
+    identifiers: identifiers.value
+      .map((id) => ({ type: id.type.trim(), value: id.value.trim() }))
+      .filter((id) => id.type && id.value),
   };
   saving.value = true;
   try {
@@ -183,3 +86,135 @@ async function save(): Promise<void> {
   }
 }
 </script>
+
+<template>
+  <Teleport to="body">
+    <dialog class="modal" :class="{ 'modal-open': open }">
+      <div ref="modalBox" class="modal-box max-w-2xl">
+        <button
+          type="button"
+          data-testid="edit-close"
+          class="btn btn-sm btn-circle btn-ghost absolute right-3 top-3"
+          @click="emit('close')"
+        >
+          ✕
+        </button>
+        <h3 class="mb-5 text-lg font-semibold">Edit book</h3>
+
+        <form @submit.prevent="save">
+          <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <div class="sm:col-span-2">
+              <label for="edit-title" class="mb-1 block text-sm font-semibold">Title</label>
+              <input
+                id="edit-title"
+                v-model="form.title"
+                data-testid="edit-title"
+                type="text"
+                class="input w-full"
+              />
+            </div>
+
+            <div class="sm:col-span-2">
+              <label for="edit-authors" class="mb-1 block text-sm font-semibold">
+                Authors <span class="text-base-content/50 font-normal">(one per line)</span>
+              </label>
+              <textarea
+                id="edit-authors"
+                v-model="authorsText"
+                data-testid="edit-authors"
+                class="textarea w-full"
+                rows="2"
+              />
+            </div>
+
+            <div>
+              <label for="edit-series" class="mb-1 block text-sm font-semibold">Series</label>
+              <input id="edit-series" v-model="form.series" type="text" class="input w-full" />
+            </div>
+            <div>
+              <label for="edit-series-number" class="mb-1 block text-sm font-semibold">
+                Series #
+              </label>
+              <input
+                id="edit-series-number"
+                v-model.number="form.series_number"
+                type="number"
+                step="0.1"
+                class="input w-full"
+              />
+            </div>
+
+            <div>
+              <label for="edit-publisher" class="mb-1 block text-sm font-semibold">Publisher</label>
+              <input
+                id="edit-publisher"
+                v-model="form.publisher"
+                type="text"
+                class="input w-full"
+              />
+            </div>
+            <div>
+              <label for="edit-year" class="mb-1 block text-sm font-semibold">Year</label>
+              <input id="edit-year" v-model.number="form.year" type="number" class="input w-full" />
+            </div>
+
+            <div>
+              <label for="edit-language" class="mb-1 block text-sm font-semibold">Language</label>
+              <select
+                id="edit-language"
+                v-model="form.language"
+                data-testid="edit-language"
+                class="select w-full"
+              >
+                <option v-for="lang in languageOptions" :key="lang.code" :value="lang.code">
+                  {{ lang.label }}
+                </option>
+              </select>
+            </div>
+
+            <div class="sm:col-span-2">
+              <label for="edit-tags" class="mb-1 block text-sm font-semibold">Tags</label>
+              <TagSelect
+                v-model="tags"
+                input-id="edit-tags"
+                :options="genreOptions"
+                placeholder="Select tags…"
+              />
+            </div>
+
+            <div class="sm:col-span-2">
+              <span class="mb-1 block text-sm font-semibold">Identifiers</span>
+              <IdentifierEditor v-model="identifiers" />
+            </div>
+
+            <div class="sm:col-span-2">
+              <label for="edit-annotation" class="mb-1 block text-sm font-semibold">
+                Annotation
+              </label>
+              <textarea
+                id="edit-annotation"
+                v-model="form.annotation"
+                class="textarea w-full"
+                rows="4"
+              />
+            </div>
+          </div>
+
+          <div class="mt-6 flex justify-end gap-2">
+            <button type="button" class="btn btn-ghost" @click="emit('close')">Cancel</button>
+            <button
+              type="submit"
+              data-testid="edit-save"
+              class="btn btn-primary"
+              :disabled="saving"
+              @click.prevent="save"
+            >
+              Save
+            </button>
+          </div>
+        </form>
+      </div>
+      <div class="modal-backdrop" @click="emit('close')"></div>
+    </dialog>
+  </Teleport>
+</template>
