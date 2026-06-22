@@ -68,11 +68,6 @@ func run() int { //revive:disable:function-length
 		return 2
 	}
 
-	// The enricher backs online (Google Books) metadata enrichment for sparse
-	// books on view. The API key is optional — an empty key uses the anonymous
-	// quota. Covers it fetches are cached via the cover store.
-	enricher := ingest.NewEnricher(database, googlebooks.NewClient(log, cfg.GoogleKey))
-
 	// Cover search aggregates candidates from several providers. Google Books is
 	// reused here as a cover-only source; Amazon/Goodreads scrape; Open Library
 	// is REST. The providers carry their own per-request timeouts.
@@ -84,6 +79,11 @@ func run() int { //revive:disable:function-length
 		msgoogle.New(googlebooks.NewClient(log, cfg.GoogleKey), ingest.VolumeToMetadata),
 	)
 	coverSearch := metasearch.NewAggregator(log, coverRegistry)
+
+	// The enricher backs online metadata enrichment and Fix Match for sparse
+	// books. The Coordinator reuses the Google Books adapter already in the
+	// registry — one client serves both cover search and metadata enrichment.
+	enricher := metasearch.NewCoordinator(log, coverRegistry, ingest.NewBookLookup(database))
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()

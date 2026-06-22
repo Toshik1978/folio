@@ -24,9 +24,9 @@ import (
 	"github.com/Toshik1978/folio/internal/db/dbq"
 	"github.com/Toshik1978/folio/internal/ebook"
 	"github.com/Toshik1978/folio/internal/events"
-	"github.com/Toshik1978/folio/internal/googlebooks"
 	"github.com/Toshik1978/folio/internal/htmltext"
 	"github.com/Toshik1978/folio/internal/ingest"
+	"github.com/Toshik1978/folio/internal/metasearch"
 	"github.com/Toshik1978/folio/internal/sync"
 )
 
@@ -89,9 +89,10 @@ type fakeEnricher struct {
 	meta       ebook.Metadata
 	ok         bool
 	called     int
-	candidates []googlebooks.Volume
+	candidates []metasearch.Volume
 	applyMeta  ebook.Metadata
 	lastQuery  string
+	lastSource string
 	lastVolume string
 }
 
@@ -100,13 +101,14 @@ func (f *fakeEnricher) Enrich(context.Context, int64) (ebook.Metadata, bool, err
 	return f.meta, f.ok, nil
 }
 
-func (f *fakeEnricher) Search(_ context.Context, query string) ([]googlebooks.Volume, error) {
+func (f *fakeEnricher) Search(_ context.Context, query string) ([]metasearch.Volume, error) {
 	f.lastQuery = query
 	return f.candidates, nil
 }
 
-func (f *fakeEnricher) ApplyMatch(_ context.Context, volumeID string) (ebook.Metadata, error) {
-	f.lastVolume = volumeID
+func (f *fakeEnricher) ApplyMatch(_ context.Context, source, id string) (ebook.Metadata, error) {
+	f.lastSource = source
+	f.lastVolume = id
 	return f.applyMeta, nil
 }
 

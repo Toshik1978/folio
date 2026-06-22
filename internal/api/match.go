@@ -8,12 +8,12 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/Toshik1978/folio/internal/ebook"
-	"github.com/Toshik1978/folio/internal/googlebooks"
+	"github.com/Toshik1978/folio/internal/metasearch"
 )
 
 // matchCandidate is one Fix Match search result presented to the user.
 type matchCandidate struct {
+	Source    string   `json:"source"`
 	VolumeID  string   `json:"volume_id"`
 	Title     string   `json:"title"`
 	Authors   []string `json:"authors"`
@@ -21,7 +21,7 @@ type matchCandidate struct {
 	Thumbnail string   `json:"thumbnail"`
 }
 
-// searchMatch handles GET /api/books/{id}/match?q= — Google Books candidates the
+// searchMatch handles GET /api/books/{id}/match?q= — metadata candidates the
 // user can pick from to correct a book's metadata.
 func (h *BooksHandler) searchMatch(w http.ResponseWriter, r *http.Request) {
 	if h.enricher == nil {
@@ -55,30 +55,21 @@ func (h *BooksHandler) searchMatch(w http.ResponseWriter, r *http.Request) {
 	h.writeJSON(w, http.StatusOK, matchCandidates(vols))
 }
 
-// matchCandidates maps Google Books volumes to the slim candidate view.
-func matchCandidates(vols []googlebooks.Volume) []matchCandidate {
+// matchCandidates maps neutral metasearch volumes to the slim candidate view.
+func matchCandidates(vols []metasearch.Volume) []matchCandidate {
 	out := make([]matchCandidate, 0, len(vols))
 	for i := range vols {
 		out = append(out, matchCandidate{
+			Source:    vols[i].Source,
 			VolumeID:  vols[i].ID,
-			Title:     vols[i].VolumeInfo.Title,
-			Authors:   vols[i].VolumeInfo.Authors,
-			Year:      ebook.ParseYear(vols[i].VolumeInfo.PublishedDate),
-			Thumbnail: httpsURL(vols[i].VolumeInfo.ImageLinks.Thumbnail),
+			Title:     vols[i].Title,
+			Authors:   vols[i].Authors,
+			Year:      vols[i].Year,
+			Thumbnail: vols[i].ThumbnailURL,
 		})
 	}
 
 	return out
-}
-
-// httpsURL upgrades a Google Books "http://" image link to https so the candidate
-// thumbnail isn't blocked as mixed content on an HTTPS-served Folio.
-func httpsURL(u string) string {
-	if rest, ok := strings.CutPrefix(u, "http://"); ok {
-		return "https://" + rest
-	}
-
-	return u
 }
 
 // applyMatch handles POST /api/books/{id}/match — overwrite a book's metadata
@@ -102,7 +93,7 @@ func (h *BooksHandler) applyMatch(w http.ResponseWriter, r *http.Request) {
 	}
 	defer h.releaseLazy(id)
 
-	volumeID, ok := h.decodeVolumeID(w, r)
+	source, volumeID, ok := h.decodeMatch(w, r)
 	if !ok {
 		return
 	}
@@ -118,7 +109,7 @@ func (h *BooksHandler) applyMatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	meta, err := h.enricher.ApplyMatch(r.Context(), volumeID)
+	meta, err := h.enricher.ApplyMatch(r.Context(), source, volumeID)
 	if err != nil {
 		h.log.Error("apply match", slog.Int64("book", id), slog.Any("error", err))
 		h.writeError(w, http.StatusBadGateway, "apply failed")
@@ -142,16 +133,18 @@ func (h *BooksHandler) applyMatch(w http.ResponseWriter, r *http.Request) {
 	h.writeJSON(w, http.StatusOK, view)
 }
 
-// decodeVolumeID reads the {"volume_id":"…"} body of an applyMatch request,
-// writing a 400 and returning ok=false when it is missing or blank.
-func (h *BooksHandler) decodeVolumeID(w http.ResponseWriter, r *http.Request) (string, bool) {
+// decodeMatch reads the {"source":"…","volume_id":"…"} body of an applyMatch
+// request. volume_id is required; source may be empty (the coordinator then
+// tries each metadata source).
+func (h *BooksHandler) decodeMatch(w http.ResponseWriter, r *http.Request) (source, id string, ok bool) {
 	var body struct {
+		Source   string `json:"source"`
 		VolumeID string `json:"volume_id"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || strings.TrimSpace(body.VolumeID) == "" {
 		h.writeError(w, http.StatusBadRequest, "missing volume_id")
-		return "", false
+		return "", "", false
 	}
 
-	return body.VolumeID, true
+	return body.Source, body.VolumeID, true
 }

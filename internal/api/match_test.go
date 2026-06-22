@@ -8,7 +8,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/Toshik1978/folio/internal/ebook"
-	"github.com/Toshik1978/folio/internal/googlebooks"
+	"github.com/Toshik1978/folio/internal/metasearch"
 )
 
 type matchSuite struct {
@@ -24,13 +24,15 @@ func (s *matchSuite) handlerWith(enr MetadataEnricher) {
 }
 
 func (s *matchSuite) TestSearchMatchReturnsCandidates() {
-	var v googlebooks.Volume
-	v.ID = "vol1"
-	v.VolumeInfo.Title = "Dune"
-	v.VolumeInfo.Authors = []string{"Frank Herbert"}
-	v.VolumeInfo.PublishedDate = "1965"
-	v.VolumeInfo.ImageLinks.Thumbnail = "http://img/t.jpg"
-	enr := &fakeEnricher{candidates: []googlebooks.Volume{v}}
+	v := metasearch.Volume{
+		Source:       metasearch.SourceGoogleBooks,
+		ID:           "vol1",
+		Title:        "Dune",
+		Authors:      []string{"Frank Herbert"},
+		Year:         1965,
+		ThumbnailURL: "https://img/t.jpg",
+	}
+	enr := &fakeEnricher{candidates: []metasearch.Volume{v}}
 	s.handlerWith(enr)
 
 	src := s.seedLibrary("folder", "/lib")
@@ -43,15 +45,12 @@ func (s *matchSuite) TestSearchMatchReturnsCandidates() {
 	var got []matchCandidate
 	s.decode(w, &got)
 	s.Require().Len(got, 1)
+	s.Equal(metasearch.SourceGoogleBooks, got[0].Source)
 	s.Equal("vol1", got[0].VolumeID)
 	s.Equal("Dune", got[0].Title)
 	s.Equal([]string{"Frank Herbert"}, got[0].Authors)
 	s.Equal(1965, got[0].Year)
-	s.Equal(
-		"https://img/t.jpg",
-		got[0].Thumbnail,
-		"http thumbnails are upgraded to https to avoid mixed-content blocking",
-	)
+	s.Equal("https://img/t.jpg", got[0].Thumbnail)
 }
 
 func (s *matchSuite) TestSearchMatchUnknownBook() {
@@ -85,8 +84,10 @@ func (s *matchSuite) TestApplyMatchOverwrites() {
 	before, err := s.q.GetBook(s.T().Context(), id)
 	s.Require().NoError(err)
 
-	w := s.do(http.MethodPost, "/books/"+itoa(id)+"/match", map[string]string{"volume_id": "vol1"})
+	body := map[string]string{"source": metasearch.SourceGoogleBooks, "volume_id": "vol1"}
+	w := s.do(http.MethodPost, "/books/"+itoa(id)+"/match", body)
 	s.Require().Equal(http.StatusOK, w.Code)
+	s.Equal(metasearch.SourceGoogleBooks, enr.lastSource)
 	s.Equal("vol1", enr.lastVolume)
 
 	after, err := s.q.GetBook(s.T().Context(), id)

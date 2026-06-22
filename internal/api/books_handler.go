@@ -15,7 +15,7 @@ import (
 
 	"github.com/Toshik1978/folio/internal/db/dbq"
 	"github.com/Toshik1978/folio/internal/ebook"
-	"github.com/Toshik1978/folio/internal/googlebooks"
+	"github.com/Toshik1978/folio/internal/metasearch"
 )
 
 // coverFetchTimeout bounds the server-side fetch of a cover URL.
@@ -42,18 +42,18 @@ type MetadataExtractor interface {
 	Backfill(ctx context.Context, bookID int64) (ebook.Metadata, bool, error)
 }
 
-// MetadataEnricher recovers metadata from an online source (Google Books) for
-// books the local tiers can't fill — notably PDFs. It is optional: a nil
-// enricher disables online enrichment. The concrete implementation lives in the
-// ingest package.
+// MetadataEnricher recovers metadata from online sources for books the local
+// tiers can't fill — notably PDFs. It is optional: a nil enricher disables
+// online enrichment. *metasearch.Coordinator satisfies it.
 type MetadataEnricher interface {
 	// Enrich looks the book up online and returns mapped metadata (with a cover).
 	// ok is false when nothing matched.
 	Enrich(ctx context.Context, bookID int64) (ebook.Metadata, bool, error)
-	// Search returns Google Books candidates for a free-text Fix Match query.
-	Search(ctx context.Context, query string) ([]googlebooks.Volume, error)
-	// ApplyMatch maps a specific volume the user picked (with its cover).
-	ApplyMatch(ctx context.Context, volumeID string) (ebook.Metadata, error)
+	// Search returns candidates for a free-text Fix Match query.
+	Search(ctx context.Context, query string) ([]metasearch.Volume, error)
+	// ApplyMatch maps a specific candidate the user picked (with its cover),
+	// routed by its source.
+	ApplyMatch(ctx context.Context, source, id string) (ebook.Metadata, error)
 }
 
 // CoverSaver caches a freshly-acquired cover (e.g. from online enrichment) and
