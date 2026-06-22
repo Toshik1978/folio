@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -66,4 +67,33 @@ func TestSearchCoversNon200(t *testing.T) {
 
 	_, err := src.SearchCovers(context.Background(), metasearch.Query{Title: "Dune"})
 	require.Error(t, err)
+}
+
+func TestSearchCoversRetriesOnTransientBlock(t *testing.T) {
+	data, err := os.ReadFile("testdata/search.html")
+	require.NoError(t, err)
+
+	var reqCount atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		n := reqCount.Add(1)
+		if n == 1 {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		_, _ = w.Write(data)
+	}))
+	defer srv.Close()
+
+	// Lower backoff so the test doesn't wait 400 ms.
+	orig := retryBackoff
+	retryBackoff = time.Millisecond
+	defer func() { retryBackoff = orig }()
+
+	src := New(5 * time.Second)
+	src.BaseURL = srv.URL
+
+	got, err := src.SearchCovers(context.Background(), metasearch.Query{Title: "Dune"})
+	require.NoError(t, err)
+	require.NotEmpty(t, got)
+	require.GreaterOrEqual(t, int(reqCount.Load()), 2, "server should have been hit at least twice")
 }

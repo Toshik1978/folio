@@ -25,7 +25,12 @@ const (
 		" (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
 	maxHTMLBytes = 4 << 20
 	imageClass   = "bookCover"
+	maxAttempts  = 3
 )
+
+// retryBackoff is the base wait between retry attempts. It is a var (not const)
+// so tests can lower it without incurring the full 400 ms wait.
+var retryBackoff = 400 * time.Millisecond //nolint:gochecknoglobals // test-overridable backoff
 
 // Source scrapes Goodreads for cover candidates.
 type Source struct {
@@ -47,7 +52,24 @@ func (s *Source) Capabilities() []metasearch.Capability {
 }
 
 // SearchCovers fetches the Goodreads search page and parses book-cover thumbnails.
+// It retries up to maxAttempts times to recover from transient anti-bot responses
+// (503s or empty interstitials).
 func (s *Source) SearchCovers(ctx context.Context, q metasearch.Query) ([]metasearch.CoverCandidate, error) {
+	out, err := metasearch.RetryCovers(
+		ctx, maxAttempts, retryBackoff,
+		func(c context.Context) ([]metasearch.CoverCandidate, error) {
+			return s.fetchOnce(c, q)
+		},
+	)
+	if err != nil {
+		return nil, fmt.Errorf("goodreads search: %w", err)
+	}
+
+	return out, nil
+}
+
+// fetchOnce performs a single HTTP request to Goodreads and parses the cover results.
+func (s *Source) fetchOnce(ctx context.Context, q metasearch.Query) ([]metasearch.CoverCandidate, error) {
 	params := url.Values{}
 	params.Set("q", strings.TrimSpace(q.Title+" "+q.Author))
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.BaseURL+"/search?"+params.Encode(), http.NoBody)
@@ -56,6 +78,7 @@ func (s *Source) SearchCovers(ctx context.Context, q metasearch.Query) ([]metase
 	}
 	req.Header.Set("User-Agent", userAgent)
 	req.Header.Set("Accept-Language", "en-US,en;q=0.9")
+	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
 
 	resp, err := s.client.Do(req)
 	if err != nil {
