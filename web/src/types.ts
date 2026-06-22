@@ -37,8 +37,9 @@ export interface CoverCandidate {
   height: number;
 }
 
-// MatchCandidate is one Google Books result shown in the Fix Match modal.
+// MatchCandidate is one metadata search result shown in the Fix Match modal.
 export interface MatchCandidate {
+  source: string;
   volume_id: string;
   title: string;
   authors: string[] | null;

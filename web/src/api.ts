@@ -93,12 +93,12 @@ export function searchMatch(id: number, q: string): Promise<MatchCandidate[]> {
   return request<MatchCandidate[]>(`/books/${id}/match?q=${encodeURIComponent(q)}`);
 }
 
-// applyMatch overwrites a book's metadata from a chosen volume, returning the
-// updated book.
-export function applyMatch(id: number, volumeId: string): Promise<Book> {
+// applyMatch overwrites a book's metadata from a chosen candidate, returning the
+// updated book. source routes the candidate to its provider.
+export function applyMatch(id: number, source: string, volumeId: string): Promise<Book> {
   return request<Book>(`/books/${id}/match`, {
     method: 'POST',
-    body: JSON.stringify({ volume_id: volumeId }),
+    body: JSON.stringify({ source, volume_id: volumeId }),
   });
 }
 

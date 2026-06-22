@@ -14,6 +14,7 @@ const mountModal = (props: { bookId: number; open: boolean; initialQuery: string
   mount(FixMatchModal, { props, global: { stubs: { teleport: true } } });
 
 const candidate: MatchCandidate = {
+  source: 'googlebooks',
   volume_id: 'vol1',
   title: 'Dune',
   authors: ['Frank Herbert'],
@@ -60,7 +61,7 @@ describe('FixMatchModal', () => {
     await wrapper.find('[data-testid="fixmatch-results"] button').trigger('click');
     await flushPromises();
 
-    expect(applyMatch).toHaveBeenCalledWith(7, 'vol1');
+    expect(applyMatch).toHaveBeenCalledWith(7, 'googlebooks', 'vol1');
     expect(wrapper.emitted('applied')?.[0]).toEqual([updated]);
     expect(wrapper.emitted('close')).toBeTruthy();
   });

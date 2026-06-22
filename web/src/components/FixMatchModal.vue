@@ -37,7 +37,7 @@
         <ul v-else-if="results.length" data-testid="fixmatch-results" class="flex flex-col gap-2">
           <li
             v-for="c in results"
-            :key="c.volume_id"
+            :key="c.source + c.volume_id"
             class="rounded-box bg-base-200 flex items-center gap-3 p-2"
           >
             <img
@@ -57,7 +57,7 @@
               type="button"
               class="btn btn-primary btn-xs"
               :disabled="applying"
-              @click="apply(c.volume_id)"
+              @click="apply(c)"
             >
               Use this
             </button>
@@ -124,10 +124,10 @@ async function search(): Promise<void> {
   }
 }
 
-async function apply(volumeId: string): Promise<void> {
+async function apply(candidate: MatchCandidate): Promise<void> {
   applying.value = true;
   try {
-    const updated = await applyMatch(props.bookId, volumeId);
+    const updated = await applyMatch(props.bookId, candidate.source, candidate.volume_id);
     toast.success('Metadata updated');
     emit('applied', updated);
     emit('close');
