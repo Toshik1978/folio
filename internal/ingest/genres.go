@@ -1,4 +1,4 @@
-//nolint:goconst,misspell,gochecknoglobals
+//nolint:goconst,misspell
 package ingest
 
 import (
@@ -18,7 +18,7 @@ import (
 // "Contemporary Fiction" (BISAC only has "Contemporary" under specific genres).
 
 // fb2GenreMap maps raw tags/codes (left-side) to canonical target tags (right-side).
-var fb2GenreMap = map[string]string{
+var fb2GenreMap = map[string]string{ //nolint:gochecknoglobals // read-only lookup table
 	"accounting":               "Nonfiction",
 	"adv_animal":               "Action & Adventure",
 	"adv_geo":                  "Travel",
@@ -210,7 +210,7 @@ var fb2GenreMap = map[string]string{
 // targetGenres contains the set of all allowed target categories (right-side whitelist).
 // Every entry is a valid BISAC subject label except the two intentional buckets
 // "Nonfiction" and "Contemporary Fiction" (BISAC has no equivalent for either).
-var targetGenres = map[string]struct{}{
+var targetGenres = map[string]struct{}{ //nolint:gochecknoglobals // read-only set
 	"Action & Adventure":                 {},
 	"Alternative History":                {},
 	"Artificial Intelligence":            {},

@@ -177,7 +177,7 @@ func inpOptional(fields []string, idx int) string {
 // both fields are <= 12 (e.g. 2021-05-06) is inherently ambiguous and parses as
 // Y-M-D — a known, unresolvable limitation that can silently skew added_at (and
 // thus the "Newest" sort) for a Y-D-M source. No error is raised.
-var inpDateFormats = []string{"2006-01-02", "2006-02-01"} //nolint:gochecknoglobals
+var inpDateFormats = []string{"2006-01-02", "2006-02-01"} //nolint:gochecknoglobals // read-only format list
 
 // parseINPXDate parses an INP date column to a unix timestamp; 0 when blank or
 // unrecognized.

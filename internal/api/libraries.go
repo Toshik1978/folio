@@ -30,7 +30,7 @@ const (
 	queuedStatus       = "queued"
 )
 
-var validLibraryTypes = map[string]bool{ //nolint:gochecknoglobals
+var validLibraryTypes = map[string]bool{ //nolint:gochecknoglobals // read-only set
 	libtype.Calibre: true,
 	libtype.INPX:    true,
 	libtype.Folder:  true,

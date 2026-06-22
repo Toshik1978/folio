@@ -364,7 +364,7 @@ func (mf *mobiFile) readRecordImage(recIndex int) []byte {
 	return coverData
 }
 
-var imageSignatures = [][]byte{ //nolint:gochecknoglobals
+var imageSignatures = [][]byte{ //nolint:gochecknoglobals // read-only lookup table
 	{0xFF, 0xD8, 0xFF},    // JPEG
 	{0x89, 'P', 'N', 'G'}, // PNG
 	{'G', 'I', 'F'},       // GIF

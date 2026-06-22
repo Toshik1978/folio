@@ -47,7 +47,7 @@ type BookFilter struct {
 // so a list-sourced dbq.Book is safe to use anywhere a GetBook row is. Its order
 // must match the rows.Scan in scanBook (and the sqlc-generated dbq.Book layout);
 // the TestFilterBooksScanMatchesGetBook guard fails if they drift.
-var bookColumns = []any{ //nolint:gochecknoglobals
+var bookColumns = []any{ //nolint:gochecknoglobals // read-only column projection
 	"b.id", "b.library_id", "b.library_key", "b.title", "b.series_id", "b.series_number",
 	"b.language", "b.annotation", "b.metadata_checked", "b.enrichment_checked",
 	"b.publisher", "b.publisher_fold", "b.year", "b.rating",

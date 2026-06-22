@@ -10,8 +10,6 @@
 //
 // Both share one base entity table; they differ only in how the single curly
 // quotes are resolved (see ftsEntities / DisplayEntities).
-//
-//nolint:gochecknoglobals
 package htmltext
 
 import (
@@ -28,7 +26,7 @@ import (
 // the standard-library XML decoder cannot resolve on its own. The single curly
 // quotes (lsquo/rsquo) are intentionally absent here: each variant below sets
 // them, because that is the sole point where the FTS and display tables differ.
-var baseEntities = map[string]string{
+var baseEntities = map[string]string{ //nolint:gochecknoglobals // read-only lookup table
 	"nbsp": " ", "ndash": "–", "mdash": "—",
 	"ldquo": "“", "rdquo": "”",
 	"copy": "©", "reg": "®", "trade": "™",
@@ -39,11 +37,11 @@ var baseEntities = map[string]string{
 
 // DisplayEntities resolves entities for text kept for display/storage, preserving
 // the typographic single quotes ' '. Assign it to xml.Decoder.Entity.
-var DisplayEntities = withSingleQuotes("‘", "’")
+var DisplayEntities = withSingleQuotes("‘", "’") //nolint:gochecknoglobals // read-only lookup table
 
 // ftsEntities normalizes the single curly quotes to the ASCII apostrophe so that
 // search matches regardless of the quote style used in the source.
-var ftsEntities = withSingleQuotes("'", "'")
+var ftsEntities = withSingleQuotes("'", "'") //nolint:gochecknoglobals // read-only lookup table
 
 // withSingleQuotes returns a copy of baseEntities with lsquo/rsquo set.
 func withSingleQuotes(lsquo, rsquo string) map[string]string {

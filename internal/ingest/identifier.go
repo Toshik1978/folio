@@ -19,7 +19,7 @@ const (
 // strongIdentifierTypes are the cleaned identifier types reliable enough (per
 // edition or per work) to force two records onto the same book. Other types are
 // still stored, but never trigger a merge.
-var strongIdentifierTypes = map[string]struct{}{ //nolint:gochecknoglobals
+var strongIdentifierTypes = map[string]struct{}{ //nolint:gochecknoglobals // read-only set
 	isbnType:      {},
 	amazonType:    {},
 	googleType:    {},

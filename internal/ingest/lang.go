@@ -7,7 +7,7 @@ import (
 )
 
 // iso6392BToT maps bibliographic codes (B) to terminology codes (T).
-var iso6392BToT = map[string]string{ //nolint:gochecknoglobals
+var iso6392BToT = map[string]string{ //nolint:gochecknoglobals // read-only lookup table
 	"alb": "sqi", // Albanian
 	"arm": "hye", // Armenian
 	"baq": "eus", // Basque
