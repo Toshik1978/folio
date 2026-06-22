@@ -56,8 +56,16 @@ func (s *scheduler) shutdown() error {
 }
 
 // every registers a recurring task on the scheduler (used for the purge sweep).
+// WithSingletonMode(LimitModeReschedule) ensures a still-running invocation is
+// never re-entered: any tick that fires while the job is executing is skipped
+// (rescheduled) rather than queued.
 func (s *scheduler) every(d time.Duration, task func()) error {
-	if _, err := s.sched.NewJob(gocron.DurationJob(d), gocron.NewTask(task)); err != nil {
+	_, err := s.sched.NewJob(
+		gocron.DurationJob(d),
+		gocron.NewTask(task),
+		gocron.WithSingletonMode(gocron.LimitModeReschedule),
+	)
+	if err != nil {
 		return fmt.Errorf("schedule recurring task: %w", err)
 	}
 
