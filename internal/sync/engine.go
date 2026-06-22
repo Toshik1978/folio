@@ -473,8 +473,9 @@ func (e *Engine) runSync(ctx context.Context, parser Parser, src dbq.Library, re
 		return
 	}
 
-	e.recordLastSync(ctx, req.id)
-	e.storeCheckpoint(ctx, src.ID, fp)
+	persistCtx := context.WithoutCancel(ctx) // keep values, drop cancellation
+	e.recordLastSync(persistCtx, req.id)
+	e.storeCheckpoint(persistCtx, src.ID, fp)
 	e.log.Info("sync done",
 		slog.Int64("library", req.id), slog.Int("added", res.Added), slog.Int("removed", res.Removed))
 
