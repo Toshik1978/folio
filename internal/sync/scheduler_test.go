@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"os"
+	stdsync "sync"
 	"time"
 
 	"github.com/go-co-op/gocron/v2"
@@ -225,4 +226,61 @@ func (s *schedulerSuite) TestRescheduleTracksSources() {
 func (s *schedulerSuite) TestSchedulerShutdownReturnsNilOnCleanShutdown() {
 	s.engine.scheduler.start()
 	s.Require().NoError(s.engine.scheduler.shutdown(), "clean shutdown must report no error")
+}
+
+// TestPurgeCheckerReentrancy asserts the recurring purge job registered via
+// scheduler.every runs in singleton mode: a second tick fired while the first is
+// still executing must be skipped, not run concurrently.
+//
+// The test registers a job whose body blocks on a gate channel so we can hold it
+// in-flight while a second tick is triggered. A peak-concurrency counter tracks
+// how many invocations were active simultaneously; after the gate is released and
+// both ticks have been given time to complete, we assert the peak was 1.
+func (s *schedulerSuite) TestPurgeCheckerReentrancy() {
+	var (
+		mu          stdsync.Mutex
+		inFlight    int
+		maxInFlight int
+	)
+
+	gate := make(chan struct{}) // blocks the first invocation in-flight
+
+	// Register a recurring job via every() using a very short interval so the
+	// second tick fires quickly while the first is still blocked on gate.
+	const tickInterval = 20 * time.Millisecond
+	err := s.engine.scheduler.every(tickInterval, func() {
+		mu.Lock()
+		inFlight++
+		if inFlight > maxInFlight {
+			maxInFlight = inFlight
+		}
+		mu.Unlock()
+
+		<-gate // hold the first invocation in-flight
+
+		mu.Lock()
+		inFlight--
+		mu.Unlock()
+	})
+	s.Require().NoError(err)
+
+	s.engine.scheduler.start()
+	defer func() { _ = s.engine.scheduler.shutdown() }()
+
+	// Wait long enough for at least two tick intervals to have elapsed, ensuring
+	// a second tick is attempted while the first job is still blocking on gate.
+	time.Sleep(3 * tickInterval)
+
+	// Unblock the held invocation. Any queued ticks under LimitModeWait would
+	// also run; under LimitModeReschedule they are dropped.
+	close(gate)
+
+	// Allow residual goroutines to drain before reading peak.
+	time.Sleep(3 * tickInterval)
+
+	mu.Lock()
+	peak := maxInFlight
+	mu.Unlock()
+
+	s.Equal(1, peak, "purge checker must never run concurrently with itself")
 }
