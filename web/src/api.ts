@@ -3,6 +3,7 @@ import type {
   Book,
   BookFilters,
   BookMetadataUpdate,
+  CoverCandidate,
   FacetsResponse,
   Library,
   MatchCandidate,
@@ -125,6 +126,14 @@ export function uploadCover(id: number, file: Blob): Promise<Book> {
 // fetchGenres returns the canonical genre taxonomy for the edit autocomplete.
 export function fetchGenres(): Promise<string[]> {
   return request<string[]>('/genres');
+}
+
+// fetchCoverCandidates asks the server to aggregate cover options across
+// providers. q overrides the server's title seed when present.
+export function fetchCoverCandidates(id: number, q?: string): Promise<CoverCandidate[]> {
+  const query = q && q.trim() ? `?q=${encodeURIComponent(q.trim())}` : '';
+
+  return request<CoverCandidate[]>(`/books/${id}/cover/search${query}`);
 }
 
 // fetchStats returns catalog totals.

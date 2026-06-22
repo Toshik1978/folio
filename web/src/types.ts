@@ -28,6 +28,15 @@ export interface BookIdentifier {
   url: string | null;
 }
 
+// CoverCandidate is one cover-image option returned by GET /books/:id/cover/search.
+export interface CoverCandidate {
+  source: string;
+  thumb_url: string;
+  full_url: string;
+  width: number;
+  height: number;
+}
+
 // MatchCandidate is one Google Books result shown in the Fix Match modal.
 export interface MatchCandidate {
   volume_id: string;
