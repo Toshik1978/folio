@@ -82,6 +82,13 @@ type CoverSource interface {
 	SearchCovers(ctx context.Context, q Query) ([]CoverCandidate, error)
 }
 
+// BookLookup resolves a book id to the query used to enrich it (title, first
+// author, ISBN). It is the seam that lets the Coordinator build an auto-enrich
+// query without importing the database layer.
+type BookLookup interface {
+	Lookup(ctx context.Context, bookID int64) (Query, bool, error)
+}
+
 // HasCapability reports whether caps contains c.
 func HasCapability(caps []Capability, c Capability) bool {
 	return slices.Contains(caps, c)
