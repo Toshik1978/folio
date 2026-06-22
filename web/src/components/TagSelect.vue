@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue';
+import { computed, ref, watch } from 'vue';
 
 // TagSelect is a select-only, multi-value tag picker: chosen tags render as
 // removable chips and new ones can only be *added from the provided options*
@@ -16,6 +16,7 @@ const emit = defineEmits<{ 'update:modelValue': [value: string[]] }>();
 
 const query = ref('');
 const focused = ref(false);
+const dismissed = ref(false);
 const inputEl = ref<HTMLInputElement | null>(null);
 
 // Addable options: those not already chosen, narrowed by the (case-insensitive)
@@ -30,7 +31,16 @@ const available = computed(() => {
   );
 });
 
-const showDropdown = computed(() => focused.value && available.value.length > 0);
+// dismissed lets Esc hide the dropdown without blurring the input. Typing or
+// re-focusing resets it so the dropdown comes back.
+const showDropdown = computed(
+  () => focused.value && !dismissed.value && available.value.length > 0,
+);
+
+// Re-open the dropdown whenever the query changes (user is actively typing).
+watch(query, () => {
+  dismissed.value = false;
+});
 
 function add(tag: string): void {
   if (props.modelValue.some((t) => t.toLowerCase() === tag.toLowerCase())) return;
@@ -51,6 +61,21 @@ function remove(tag: string): void {
 function onBackspace(): void {
   if (query.value === '' && props.modelValue.length > 0) {
     remove(props.modelValue[props.modelValue.length - 1]);
+  }
+}
+
+function onFocus(): void {
+  focused.value = true;
+  dismissed.value = false;
+}
+
+// Two-stage Escape: first Esc (dropdown open) closes only the dropdown and keeps
+// the modal alive; second Esc (dropdown already closed) lets the event bubble so
+// the modal's own Escape handler can close it — the conventional combobox pattern.
+function onEscape(e: KeyboardEvent): void {
+  if (showDropdown.value) {
+    e.stopPropagation();
+    dismissed.value = true;
   }
 }
 </script>
@@ -85,10 +110,11 @@ function onBackspace(): void {
         type="text"
         class="min-w-24 flex-1 border-none bg-transparent p-0 text-sm focus:outline-none"
         :placeholder="modelValue.length ? '' : (placeholder ?? 'Select tags…')"
-        @focus="focused = true"
+        @focus="onFocus"
         @blur="focused = false"
         @keydown.backspace="onBackspace"
         @keydown.enter.prevent="available[0] && add(available[0])"
+        @keydown.escape="onEscape"
       />
     </div>
 

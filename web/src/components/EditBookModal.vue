@@ -165,6 +165,7 @@ async function save(): Promise<void> {
                 v-model="form.language"
                 data-testid="edit-language"
                 class="select w-full"
+                @keydown.escape.stop
               >
                 <option v-for="lang in languageOptions" :key="lang.code" :value="lang.code">
                   {{ lang.label }}
