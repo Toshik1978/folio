@@ -120,9 +120,8 @@ func parseFB2XML(data []byte) (Metadata, error) {
 
 func parseFB2Reader(r io.Reader) (Metadata, error) {
 	var book fb2Book
-	dec := xml.NewDecoder(r)
+	dec := htmltext.NewDisplayDecoder(r)
 	dec.CharsetReader = charsetReader
-	dec.Entity = htmltext.DisplayEntities
 	if err := dec.Decode(&book); err != nil {
 		return Metadata{}, fmt.Errorf("parse fb2 xml: %w", err)
 	}
@@ -184,8 +183,7 @@ func normalizeFB2Annotation(inner string) string {
 		return ""
 	}
 
-	dec := xml.NewDecoder(strings.NewReader("<root>" + inner + "</root>"))
-	dec.Entity = htmltext.DisplayEntities
+	dec := htmltext.NewDisplayDecoder(strings.NewReader("<root>" + inner + "</root>"))
 
 	var b strings.Builder
 	for {

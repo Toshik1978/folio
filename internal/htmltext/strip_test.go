@@ -1,6 +1,7 @@
 package htmltext
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/suite"
@@ -51,15 +52,27 @@ func (s *htmltextTestSuite) TestStripMarkup() {
 // TestEntityVariants pins the one intentional difference between the display and
 // FTS entity tables: the single curly quotes. Everything else must stay in sync.
 func (s *htmltextTestSuite) TestEntityVariants() {
-	s.Equal("‘", DisplayEntities["lsquo"], "display keeps the typographic left quote")
-	s.Equal("’", DisplayEntities["rsquo"], "display keeps the typographic right quote")
+	s.Equal("‘", displayEntities["lsquo"], "display keeps the typographic left quote")
+	s.Equal("’", displayEntities["rsquo"], "display keeps the typographic right quote")
 	s.Equal("'", ftsEntities["lsquo"], "FTS normalizes the left quote to ASCII")
 	s.Equal("'", ftsEntities["rsquo"], "FTS normalizes the right quote to ASCII")
 
 	// Both variants are otherwise identical (same base + same key set).
-	s.Len(DisplayEntities, len(ftsEntities))
+	s.Len(displayEntities, len(ftsEntities))
 	for k, v := range baseEntities {
-		s.Equal(v, DisplayEntities[k], "display table carries base entity %q", k)
+		s.Equal(v, displayEntities[k], "display table carries base entity %q", k)
 		s.Equal(v, ftsEntities[k], "fts table carries base entity %q", k)
 	}
+}
+
+// TestNewDisplayDecoder pins that the decoder wires the display entity table:
+// named HTML entities resolve, and the single curly quotes stay typographic
+// (unlike the FTS path, which folds them to the ASCII apostrophe).
+func (s *htmltextTestSuite) TestNewDisplayDecoder() {
+	dec := NewDisplayDecoder(strings.NewReader("<r>It&rsquo;s a &lsquo;dash&rsquo;&mdash;done</r>"))
+	var out struct {
+		Text string `xml:",chardata"`
+	}
+	s.Require().NoError(dec.Decode(&out))
+	s.Equal("It’s a ‘dash’—done", out.Text)
 }

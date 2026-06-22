@@ -5,11 +5,11 @@
 //     ingest at sync time and by api on lazy backfill — keeping both on one
 //     implementation so a given annotation yields identical books_fts tokens
 //     regardless of which path indexed it).
-//   - DisplayEntities is an xml.Decoder entity table for parsers that keep the
-//     decoded text for display/storage (consumed by ebook's FB2 parser).
+//   - NewDisplayDecoder returns an xml.Decoder for parsers that keep the decoded
+//     text for display/storage (consumed by ebook's FB2 parser).
 //
 // Both share one base entity table; they differ only in how the single curly
-// quotes are resolved (see ftsEntities / DisplayEntities).
+// quotes are resolved (see ftsEntities / displayEntities).
 package htmltext
 
 import (
@@ -35,9 +35,9 @@ var baseEntities = map[string]string{ //nolint:gochecknoglobals // read-only loo
 	"euro": "€", "pound": "£", "yen": "¥", "cent": "¢",
 }
 
-// DisplayEntities resolves entities for text kept for display/storage, preserving
-// the typographic single quotes ' '. Assign it to xml.Decoder.Entity.
-var DisplayEntities = withSingleQuotes("‘", "’") //nolint:gochecknoglobals // read-only lookup table
+// displayEntities resolves entities for text kept for display/storage, preserving
+// the typographic single quotes ' '. Exposed through NewDisplayDecoder.
+var displayEntities = withSingleQuotes("‘", "’") //nolint:gochecknoglobals // read-only lookup table
 
 // ftsEntities normalizes the single curly quotes to the ASCII apostrophe so that
 // search matches regardless of the quote style used in the source.
@@ -51,6 +51,17 @@ func withSingleQuotes(lsquo, rsquo string) map[string]string {
 	m["rsquo"] = rsquo
 
 	return m
+}
+
+// NewDisplayDecoder returns an xml.Decoder whose entity table resolves named
+// HTML entities for display/storage, preserving the typographic single quotes
+// ‘ ’. Each decoder receives its own copy of the table, so the package's entity
+// map never escapes by reference.
+func NewDisplayDecoder(r io.Reader) *xml.Decoder {
+	dec := xml.NewDecoder(r)
+	dec.Entity = maps.Clone(displayEntities)
+
+	return dec
 }
 
 // StripMarkup reduces an HTML/XML annotation to plain text for FTS indexing.
