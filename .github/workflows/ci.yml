@@ -31,6 +31,9 @@ jobs:
       - name: Setup project
         run: task setup:ci
 
+      - name: Check SQL is ASCII-only
+        run: task lint:sql
+
       - name: Run Golang linter
         uses: golangci/golangci-lint-action@v9
         with:

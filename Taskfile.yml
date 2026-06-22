@@ -66,6 +66,21 @@ tasks:
       - task: test:backend
       - task: test:frontend
 
+  lint:sql:
+    desc: Fail on non-ASCII bytes in the SQL that feeds sqlc (they silently corrupt codegen)
+    cmd: |
+      # sqlc reads both the queries and the migration schema; a stray non-ASCII
+      # byte (e.g. an em-dash in a comment) makes its lexer drop the rest of a
+      # statement — the generated Go builds but runs a truncated query. Allow only
+      # printable ASCII plus tab; newlines never appear inside a grepped line.
+      tab=$(printf '\t')
+      if LC_ALL=C grep -rn --include='*.sql' "[^${tab} -~]" internal/db/queries internal/db/migrations; then
+        echo "" >&2
+        echo "ERROR: non-ASCII byte(s) found in SQL above. Replace them with ASCII" >&2
+        echo "       (e.g. '—' -> '-' or ':') and re-run 'task generate'." >&2
+        exit 1
+      fi
+
   lint:backend:
     desc: Run Go linters
     cmd: golangci-lint run
@@ -83,6 +98,7 @@ tasks:
   lint:
     desc: Full linters run (frontend + backend)
     cmds:
+      - task: lint:sql
       - task: lint:backend
       - task: lint:frontend
       - task: check:frontend
