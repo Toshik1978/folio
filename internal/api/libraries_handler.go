@@ -6,6 +6,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/Toshik1978/folio/internal/db"
 	"github.com/Toshik1978/folio/internal/db/dbq"
 )
 
@@ -13,13 +14,20 @@ import (
 type LibrariesHandler struct {
 	base
 
-	q    *dbq.Queries
-	sync SyncEngine
+	q          *dbq.Queries
+	writeGuard *db.WriteGuard // process-wide single-writer guard, shared with the sync engine
+	sync       SyncEngine
 }
 
 // NewLibraries builds the libraries handler over the folio database and sync engine.
-func NewLibraries(log *slog.Logger, database *sql.DB, syncEngine SyncEngine) *LibrariesHandler {
-	return &LibrariesHandler{base: base{log: log}, q: dbq.New(database), sync: syncEngine}
+// writeGuard is the process-wide single-writer guard shared with the sync engine.
+func NewLibraries(
+	log *slog.Logger,
+	database *sql.DB,
+	writeGuard *db.WriteGuard,
+	syncEngine SyncEngine,
+) *LibrariesHandler {
+	return &LibrariesHandler{base: base{log: log}, q: dbq.New(database), writeGuard: writeGuard, sync: syncEngine}
 }
 
 func (h *LibrariesHandler) Register(r chi.Router) {

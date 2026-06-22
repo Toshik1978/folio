@@ -67,7 +67,10 @@ func (h *BooksHandler) enrichOnline(ctx context.Context, book *dbq.Book) {
 			return // applyEnrichment persisted and marked the book enriched
 		}
 	}
-	if err := h.q.MarkEnrichmentChecked(pctx, book.ID); err != nil {
+	h.writeGuard.Lock()
+	err = h.q.MarkEnrichmentChecked(pctx, book.ID)
+	h.writeGuard.Unlock()
+	if err != nil {
 		h.log.Warn("mark enrichment checked", slog.Int64("book", book.ID), slog.Any("error", err))
 	}
 }
@@ -96,48 +99,51 @@ func (h *BooksHandler) applyEnrichment(
 ) (bool, error) {
 	b := *book // mutate a copy; publish to *book only on commit
 
-	tx, err := h.db.BeginTx(ctx, nil)
-	if err != nil {
-		return false, fmt.Errorf("begin enrichment tx: %w", err)
-	}
-	defer func() { _ = tx.Rollback() }() // no-op after Commit
-	q := dbq.New(tx)
+	// Hold the single-writer guard for the whole transaction (the cover save and
+	// any network fetch already ran before this, outside the guard, so a slow
+	// download never serializes behind it).
+	persisted := false
+	err := h.writeGuard.WithTx(ctx, h.db, func(tx *sql.Tx) error {
+		q := dbq.New(tx)
 
-	changed, err := h.mergeEnrichmentChanges(ctx, q, &b, meta, overwrite)
-	if err != nil {
-		return false, err
-	}
-	if coverSaved {
-		changed = true
-	}
+		changed, mErr := h.mergeEnrichmentChanges(ctx, q, &b, meta, overwrite)
+		if mErr != nil {
+			return mErr
+		}
+		if coverSaved {
+			changed = true
+		}
 
-	if !changed {
-		// Nothing displayable changed; identifiers may still have been written.
-		// A Fix Match still locks the book: the manual marker (not the field
-		// diff) is what keeps future syncs gap-fill-only, so it persists even
-		// here. The caller marks the book enrichment-checked separately.
-		if overwrite {
-			if err := q.MarkManuallyMatched(ctx, b.ID); err != nil {
-				return false, fmt.Errorf("mark manually matched: %w", err)
+		if !changed {
+			// Nothing displayable changed; identifiers may still have been written.
+			// A Fix Match still locks the book: the manual marker (not the field
+			// diff) is what keeps future syncs gap-fill-only, so it persists even
+			// here. The caller marks the book enrichment-checked separately.
+			if overwrite {
+				if mmErr := q.MarkManuallyMatched(ctx, b.ID); mmErr != nil {
+					return fmt.Errorf("mark manually matched: %w", mmErr)
+				}
 			}
+
+			return nil
 		}
-		if err := tx.Commit(); err != nil {
-			return false, fmt.Errorf("commit enrichment: %w", err)
+
+		b.ContentHash = newEnrichmentHash(b.ContentHash)
+		if pErr := h.persistEnrichedScalars(ctx, q, &b, meta, overwrite); pErr != nil {
+			return pErr
 		}
+		persisted = true
 
-		return false, nil
+		return nil
+	})
+	if err != nil {
+		return false, fmt.Errorf("persist enrichment: %w", err)
+	}
+	if persisted {
+		*book = b // publish only on a committed displayable change
 	}
 
-	b.ContentHash = newEnrichmentHash(b.ContentHash)
-	if err := h.persistEnrichedScalars(ctx, q, &b, meta, overwrite); err != nil {
-		return false, err
-	}
-	if err := tx.Commit(); err != nil {
-		return false, fmt.Errorf("commit enrichment: %w", err)
-	}
-	*book = b
-
-	return true, nil
+	return persisted, nil
 }
 
 // mergeEnrichmentChanges applies every in-place change for one enrichment to book

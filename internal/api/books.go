@@ -202,6 +202,12 @@ func (h *BooksHandler) backfillMetadata(ctx context.Context, book *dbq.Book) {
 		h.log.Warn("metadata backfill", slog.Int64("book", book.ID), slog.Any("error", err))
 		return // transient → leave unchecked, retry on next view
 	}
+
+	// The extractor parse above is file I/O and runs outside the guard; take the
+	// single-writer guard only around the DB persists below.
+	h.writeGuard.Lock()
+	defer h.writeGuard.Unlock()
+
 	if ok {
 		if !book.Annotation.Valid {
 			h.persistBackfilledAnnotation(ctx, book, meta.Annotation)

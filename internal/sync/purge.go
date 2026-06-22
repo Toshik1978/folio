@@ -37,7 +37,7 @@ func (e *Engine) checkPurge(ctx context.Context) {
 
 // RequestPurge runs PurgeLibrary on a background goroutine — the asynchronous
 // form behind POST /api/libraries/{id}/purge, which answers 202 immediately
-// instead of blocking (potentially for a full sync's duration) on writeMu, and
+// instead of blocking (potentially for a full sync's duration) on writeGuard, and
 // runs the multi-step teardown on context.Background() so a client disconnect
 // can't cancel it between steps (covers deleted but rows kept, etc.). Failures
 // are logged; the row simply stays pending_purge for the deadline sweep to
@@ -72,10 +72,10 @@ func (e *Engine) PurgeLibrary(ctx context.Context, id int64) error {
 // (rather than relying on the library FK cascade) keeps the books_ad FTS-cleanup
 // trigger firing per row.
 func (e *Engine) purgeLibrary(ctx context.Context, id int64) error {
-	// Serialize against an in-flight sync (the shared single-writer lock) so the
-	// cascade delete never races an indexing transaction; see Engine.writeMu.
-	e.writeMu.Lock()
-	defer e.writeMu.Unlock()
+	// Serialize against an in-flight sync (the shared single-writer guard) so the
+	// cascade delete never races an indexing transaction; see Engine.writeGuard.
+	e.writeGuard.Lock()
+	defer e.writeGuard.Unlock()
 
 	q := dbq.New(e.db)
 

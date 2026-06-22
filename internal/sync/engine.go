@@ -14,6 +14,7 @@ import (
 	stdsync "sync"
 	"time"
 
+	"github.com/Toshik1978/folio/internal/db"
 	"github.com/Toshik1978/folio/internal/db/dbq"
 	"github.com/Toshik1978/folio/internal/events"
 	"github.com/Toshik1978/folio/internal/ingest"
@@ -73,12 +74,13 @@ type Engine struct {
 	stop chan struct{} // closed by Stop
 	done chan struct{} // closed when the worker goroutine exits
 
-	// writeMu serializes the engine's heavy writers — a library sync and a
+	// writeGuard serializes the engine's heavy writers — a library sync and a
 	// library purge — so a teardown never deletes rows while an indexing run is
-	// mid-write. This extends the single-writer invariant (which SQLite needs to
-	// avoid write-lock contention) to cover reclamation, not just indexing. It is
-	// distinct from mu, which only guards the in-memory queue state below.
-	writeMu stdsync.Mutex
+	// mid-write. It is the process-wide single-writer guard (shared with the API
+	// write handlers), so an indexing run also serializes against a concurrent
+	// manual edit / Fix Match / cover upload at the SQLite layer. It is distinct
+	// from mu, which only guards the in-memory queue state below.
+	writeGuard *db.WriteGuard
 
 	// bg tracks detached background goroutines (currently async purges started by
 	// RequestPurge) so Stop can wait for an in-flight teardown to finish cleanly.
@@ -102,25 +104,29 @@ type Engine struct {
 // New builds an engine over the given database, parser registry, and cover
 // store. parsers is keyed by library type (built by the composition root).
 // extractor enables the INPX cover-warming pass; pass nil to disable warming.
+// writeGuard is the process-wide single-writer guard, shared with the API write
+// handlers so an indexing run serializes against concurrent API writes.
 func New(
 	log *slog.Logger,
 	database *sql.DB,
+	writeGuard *db.WriteGuard,
 	parsers map[string]Parser,
 	covers ingest.CoverStore,
 	extractor CoverExtractor,
 	opts ...Option,
 ) (*Engine, error) {
 	e := &Engine{
-		db:       database,
-		parsers:  parsers,
-		covers:   covers,
-		log:      log,
-		now:      time.Now,
-		debounce: defaultWatchDebounce,
-		wake:     make(chan struct{}, 1),
-		stop:     make(chan struct{}),
-		done:     make(chan struct{}),
-		queued:   make(map[int64]bool),
+		db:         database,
+		writeGuard: writeGuard,
+		parsers:    parsers,
+		covers:     covers,
+		log:        log,
+		now:        time.Now,
+		debounce:   defaultWatchDebounce,
+		wake:       make(chan struct{}, 1),
+		stop:       make(chan struct{}),
+		done:       make(chan struct{}),
+		queued:     make(map[int64]bool),
 	}
 
 	sched, err := newScheduler(log, e.TriggerLibrary)
@@ -366,8 +372,8 @@ func (e *Engine) worker() {
 
 // safeSync runs one library sync under a panic guard so a parser/IO panic on the
 // worker goroutine can never crash the process. On a panic it marks the library
-// errored and the worker proceeds to the next item. writeMu is released correctly
-// because syncLibrary defers its unlock.
+// errored and the worker proceeds to the next item. The write guard is released
+// correctly because syncLibrary defers its unlock.
 func (e *Engine) safeSync(req syncReq) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -392,11 +398,11 @@ func (e *Engine) syncLibrary(req syncReq) {
 		}
 	}()
 
-	// Hold the single-writer lock for the whole run so a concurrent library
-	// purge (HTTP "Purge Now" or the deadline sweep) waits rather than deleting
-	// rows underneath the sync.
-	e.writeMu.Lock()
-	defer e.writeMu.Unlock()
+	// Hold the single-writer guard for the whole run so a concurrent library
+	// purge (HTTP "Purge Now" or the deadline sweep) — and any API write — waits
+	// rather than racing the sync at the SQLite layer.
+	e.writeGuard.Lock()
+	defer e.writeGuard.Unlock()
 
 	q := dbq.New(e.db)
 

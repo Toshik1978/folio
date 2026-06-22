@@ -8,6 +8,7 @@ import (
 	stdsync "sync"
 	"time"
 
+	"github.com/Toshik1978/folio/internal/db"
 	"github.com/Toshik1978/folio/internal/db/dbq"
 	"github.com/Toshik1978/folio/internal/ingest"
 )
@@ -92,7 +93,7 @@ func (s *engineSuite) TestCheckpointSkipDoesNotBustCaches() {
 	s.parser.checkpoint = "cp-1"
 	rec := &recordingPublisher{}
 	stats := &recordingStats{}
-	eng, err := New(slog.New(slog.DiscardHandler), s.db,
+	eng, err := New(slog.New(slog.DiscardHandler), s.db, db.NewWriteGuard(),
 		map[string]Parser{"stub": s.parser}, s.store, nil,
 		WithEvents(rec), WithStatsObserver(stats))
 	s.Require().NoError(err)

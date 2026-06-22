@@ -17,7 +17,7 @@ type matchSuite struct {
 
 // handlerWith rebuilds the suite's books handler with the given enricher.
 func (s *matchSuite) handlerWith(enr MetadataEnricher) {
-	s.books = NewBooks(slog.New(slog.DiscardHandler), s.db, s.covers, nil, enr, s.covers, nil)
+	s.books = NewBooks(slog.New(slog.DiscardHandler), s.db, s.guard, s.covers, nil, enr, s.covers, nil)
 	r := chi.NewRouter()
 	s.books.Register(r)
 	s.router = r

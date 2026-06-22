@@ -108,21 +108,21 @@ func (s *schedulerSuite) TestPurgeWaitsForWriteLock() {
 	src := s.insertLibrary("stub", "/lib/locked")
 	_ = s.insertBook(src.ID, "doomed")
 
-	s.engine.writeMu.Lock() // stand in for an in-flight sync holding the lock
+	s.engine.writeGuard.Lock() // stand in for an in-flight sync holding the guard
 
 	done := make(chan error, 1)
 	go func() { done <- s.engine.PurgeLibrary(context.Background(), src.ID) }()
 
 	select {
 	case <-done:
-		s.engine.writeMu.Unlock()
-		s.Fail("purge proceeded while the single-writer lock was held")
+		s.engine.writeGuard.Unlock()
+		s.Fail("purge proceeded while the single-writer guard was held")
 		return
 	case <-time.After(50 * time.Millisecond):
 		// still blocked, as required
 	}
 
-	s.engine.writeMu.Unlock() // release; the purge may now run
+	s.engine.writeGuard.Unlock() // release; the purge may now run
 	s.Require().NoError(<-done)
 
 	_, err := dbq.New(s.db).GetLibrary(context.Background(), src.ID)

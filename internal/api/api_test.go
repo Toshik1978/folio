@@ -120,6 +120,7 @@ type baseSuite struct {
 	dir       string
 	db        *sql.DB
 	q         *dbq.Queries
+	guard     *db.WriteGuard
 	covers    *covers.Store
 	sync      *fakeSync
 	broker    *events.Broker
@@ -140,13 +141,14 @@ func (s *baseSuite) SetupTest() {
 
 	s.db = database
 	s.q = dbq.New(database)
+	s.guard = db.NewWriteGuard()
 	s.covers = store
 	s.sync = &fakeSync{}
 	s.broker = events.NewBroker()
 	log := slog.New(slog.DiscardHandler)
-	s.books = NewBooks(log, database, store, nil, nil, store, nil)
+	s.books = NewBooks(log, database, s.guard, store, nil, nil, store, nil)
 	s.catalog = NewCatalog(log, database, ingest.CanonicalGenres())
-	s.libraries = NewLibraries(log, database, s.sync)
+	s.libraries = NewLibraries(log, database, s.guard, s.sync)
 	s.syncH = NewSync(log, s.sync, s.broker)
 
 	r := chi.NewRouter()
