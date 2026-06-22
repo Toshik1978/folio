@@ -11,7 +11,6 @@ import (
 	"path"
 	"regexp"
 	"strings"
-	"sync"
 )
 
 type opfPackage struct {
@@ -257,50 +256,26 @@ func readZipEntry(f *zip.File) ([]byte, error) {
 	return data, nil
 }
 
-// seriesPrefixPattern matches a leading "{series} - {index} - " decoration,
-// where {index} may be a (possibly zero-padded or fractional) number. The series
-// name is injected as a quoted literal by stripSeriesPrefix.
-var seriesPrefixCache = struct { //nolint:gochecknoglobals
-	mu    sync.Mutex
-	cache map[string]*regexp.Regexp
-}{
-	cache: map[string]*regexp.Regexp{},
-}
+// seriesPrefixRe matches Calibre's "{series} - {index} - {title}" decoration,
+// where {index} may be a (possibly zero-padded or fractional) number. Group 1 is
+// the leading series name and group 2 the clean title; stripSeriesPrefix only
+// trusts the match when group 1 equals the known series, so unrelated titles that
+// merely contain a " - N - " segment are left untouched.
+var seriesPrefixRe = regexp.MustCompile(`^(.+?)\s*-\s*\d+(?:\.\d+)?\s*-\s*(.+)$`)
 
 // stripSeriesPrefix removes a "{series} - {index} - " prefix that Calibre embeds
 // in an EPUB's dc:title, returning the clean title. It is a no-op when series is
-// empty or the title is not decorated with that exact pattern.
+// empty or the title is not decorated with that exact pattern for this series.
 func stripSeriesPrefix(title, series string) string {
 	t := strings.TrimSpace(title)
 	if series == "" {
 		return t
 	}
-	re := seriesPrefixRegexp(series)
-	if m := re.FindStringSubmatch(t); m != nil {
-		return strings.TrimSpace(m[1])
+	if m := seriesPrefixRe.FindStringSubmatch(t); len(m) == 3 && strings.TrimSpace(m[1]) == series {
+		return strings.TrimSpace(m[2])
 	}
 
 	return t
-}
-
-// seriesPrefixCacheLimit caps the per-series regex cache; on overflow the map
-// is reset wholesale rather than evicted entry-by-entry — recompiling is cheap
-// and the cache only short-circuits repeats within a sync run.
-const seriesPrefixCacheLimit = 1024
-
-func seriesPrefixRegexp(series string) *regexp.Regexp {
-	seriesPrefixCache.mu.Lock()
-	defer seriesPrefixCache.mu.Unlock()
-	if re, ok := seriesPrefixCache.cache[series]; ok {
-		return re
-	}
-	if len(seriesPrefixCache.cache) >= seriesPrefixCacheLimit {
-		seriesPrefixCache.cache = map[string]*regexp.Regexp{}
-	}
-	re := regexp.MustCompile(`^` + regexp.QuoteMeta(series) + `\s*-\s*\d+(?:\.\d+)?\s*-\s*(.+)$`)
-	seriesPrefixCache.cache[series] = re
-
-	return re
 }
 
 func firstNonEmpty(ss []string) string {

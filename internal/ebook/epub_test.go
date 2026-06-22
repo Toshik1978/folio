@@ -3,7 +3,6 @@ package ebook
 import (
 	"archive/zip"
 	"context"
-	"fmt"
 	"os"
 	"path/filepath"
 )
@@ -36,16 +35,9 @@ func (s *epubSuite) TestStripSeriesPrefix() {
 	s.Equal("Clean Title", stripSeriesPrefix("Clean Title", ""))
 	s.Equal("Clean Title", stripSeriesPrefix("Clean Title", "Other"))
 	s.Equal("Dune Messiah", stripSeriesPrefix("Dune Messiah", "Dune"))
-}
-
-func (s *epubSuite) TestSeriesPrefixCacheIsBounded() {
-	for i := range seriesPrefixCacheLimit + 10 {
-		_ = seriesPrefixRegexp(fmt.Sprintf("Bound Check Series %d", i))
-	}
-
-	seriesPrefixCache.mu.Lock()
-	defer seriesPrefixCache.mu.Unlock()
-	s.LessOrEqual(len(seriesPrefixCache.cache), seriesPrefixCacheLimit)
+	// A title decorated for a different series than the one we know must be left
+	// alone — the captured prefix is compared against series, not blindly stripped.
+	s.Equal("Other Series - 02 - Real Title", stripSeriesPrefix("Other Series - 02 - Real Title", "My Series"))
 }
 
 func (s *epubSuite) TestSeriesIndex() {
