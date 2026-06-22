@@ -334,3 +334,28 @@ func (s *engineSuite) TestCheckpointStoredFromPreSyncFingerprint() {
 	s.engine.syncLibrary(syncReq{id: src.ID})
 	s.Equal(2, s.parser.callCount())
 }
+
+// TestCheckpointPersistsWhenRunContextCancelled guards against the race where
+// the sync completes just as the server shuts down: the run context is already
+// cancelled at the point recordLastSync/storeCheckpoint are called, so both
+// writes must use a detached context that ignores cancellation.
+func (s *engineSuite) TestCheckpointPersistsWhenRunContextCancelled() {
+	const fp = "cp-persist"
+	s.parser.checkpoint = fp
+	src := s.insertLibrary("stub", "/lib/persist-on-cancel")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // simulate shutdown cancelling the run ctx at completion
+
+	// Call runSync directly so we can inject the already-cancelled context.
+	// The stubParser ignores ctx cancellation and returns success, exercising
+	// exactly the window where the context is cancelled between Sync returning
+	// and the persist calls.
+	s.engine.runSync(ctx, s.parser, src, syncReq{id: src.ID}, fp)
+
+	// Both the last-sync timestamp and the checkpoint must be written despite
+	// the cancelled context.
+	got := s.getLibrary(src.ID)
+	s.True(got.LastSyncAt.Valid, "last-sync stamp must persist despite cancelled context")
+	s.Equal(fp, got.Checkpoint.String, "checkpoint must persist despite cancelled context")
+}
