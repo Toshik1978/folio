@@ -55,6 +55,11 @@ func run() int { //revive:disable:function-length
 	}
 	defer func() { _ = database.Close() }()
 
+	// One process-wide write guard enforces SQLite's single-writer invariant: the
+	// sync engine and every API write handler serialize on it instead of racing at
+	// the SQLite layer. Readers do not take it (WAL allows them alongside a writer).
+	writeGuard := db.NewWriteGuard()
+
 	// One ebook dispatcher owns the per-format parser set; injected into every consumer.
 	parser := ebook.NewDispatcher(ebook.NewEPUB(), ebook.NewFB2(), ebook.NewMOBI(), ebook.NewPDF())
 
@@ -100,6 +105,7 @@ func run() int { //revive:disable:function-length
 	syncEngine, err := sync.New(
 		log,
 		database,
+		writeGuard,
 		map[string]sync.Parser{
 			libtype.Calibre: ingest.NewCalibreParser(log),
 			libtype.INPX:    ingest.NewINPXParser(log),
@@ -120,9 +126,9 @@ func run() int { //revive:disable:function-length
 		Addr: ":" + cfg.Port,
 		Handler: server.New(log, server.Handlers{
 			API: []server.Registrar{
-				api.NewBooks(log, database, coverStore, extractor, enricher, coverStore, coverSearch),
+				api.NewBooks(log, database, writeGuard, coverStore, extractor, enricher, coverStore, coverSearch),
 				catalogHandler,
-				api.NewLibraries(log, database, syncEngine),
+				api.NewLibraries(log, database, writeGuard, syncEngine),
 				api.NewSync(log, syncEngine, broker),
 				settings.New(log, authn),
 			},

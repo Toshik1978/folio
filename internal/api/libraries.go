@@ -129,6 +129,7 @@ func (h *LibrariesHandler) createLibrary(w http.ResponseWriter, r *http.Request)
 		req.SyncIntervalSeconds = 3600
 	}
 
+	h.writeGuard.Lock()
 	id, err := h.q.InsertLibrary(r.Context(), dbq.InsertLibraryParams{
 		Name:                req.Name,
 		Type:                req.Type,
@@ -136,6 +137,7 @@ func (h *LibrariesHandler) createLibrary(w http.ResponseWriter, r *http.Request)
 		SyncIntervalSeconds: req.SyncIntervalSeconds,
 		CreatedAt:           time.Now().Unix(),
 	})
+	h.writeGuard.Unlock()
 	if err != nil {
 		if db.IsUniqueViolation(err) {
 			h.writeError(w, http.StatusConflict, "a library with this path already exists")
@@ -181,9 +183,12 @@ func (h *LibrariesHandler) updateLibrary(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	if err := h.q.UpdateLibrary(r.Context(), dbq.UpdateLibraryParams{
+	h.writeGuard.Lock()
+	err = h.q.UpdateLibrary(r.Context(), dbq.UpdateLibraryParams{
 		Name: req.Name, Path: req.Path, SyncIntervalSeconds: req.SyncIntervalSeconds, ID: id,
-	}); err != nil {
+	})
+	h.writeGuard.Unlock()
+	if err != nil {
 		if db.IsUniqueViolation(err) {
 			h.writeError(w, http.StatusConflict, "a library with this path already exists")
 			return
@@ -203,10 +208,13 @@ func (h *LibrariesHandler) updateLibrary(w http.ResponseWriter, r *http.Request)
 	// When the path changes the old checkpoint fingerprint is stale; clear it
 	// so the triggered sync does not skip based on a mismatched artifact.
 	if req.Path != prev.Path {
-		if err := h.q.UpdateLibraryCheckpoint(r.Context(), dbq.UpdateLibraryCheckpointParams{
+		h.writeGuard.Lock()
+		cpErr := h.q.UpdateLibraryCheckpoint(r.Context(), dbq.UpdateLibraryCheckpointParams{
 			Checkpoint: sql.NullString{}, ID: id,
-		}); err != nil {
-			h.log.Error("clear library checkpoint", slog.Int64("library", id), slog.Any("error", err))
+		})
+		h.writeGuard.Unlock()
+		if cpErr != nil {
+			h.log.Error("clear library checkpoint", slog.Int64("library", id), slog.Any("error", cpErr))
 		}
 	}
 	h.reschedule(r)
@@ -273,11 +281,14 @@ func (h *LibrariesHandler) deleteLibrary(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	purgeAt := time.Now().Add(purgeGracePeriod).Unix()
-	if err := h.q.UpdateLibraryStatus(r.Context(), dbq.UpdateLibraryStatusParams{
+	h.writeGuard.Lock()
+	err := h.q.UpdateLibraryStatus(r.Context(), dbq.UpdateLibraryStatusParams{
 		Status:  pendingPurgeStatus,
 		PurgeAt: sql.NullInt64{Int64: purgeAt, Valid: true},
 		ID:      id,
-	}); err != nil {
+	})
+	h.writeGuard.Unlock()
+	if err != nil {
 		h.log.Error("delete library", slog.Int64("library", id), slog.Any("error", err))
 		h.writeError(w, http.StatusInternalServerError, "failed to delete library")
 		return
@@ -293,9 +304,12 @@ func (h *LibrariesHandler) reactivateLibrary(w http.ResponseWriter, r *http.Requ
 	if !ok {
 		return
 	}
-	if err := h.q.UpdateLibraryStatus(r.Context(), dbq.UpdateLibraryStatusParams{
+	h.writeGuard.Lock()
+	err := h.q.UpdateLibraryStatus(r.Context(), dbq.UpdateLibraryStatusParams{
 		Status: "active", PurgeAt: sql.NullInt64{}, ID: id,
-	}); err != nil {
+	})
+	h.writeGuard.Unlock()
+	if err != nil {
 		h.log.Error("reactivate library", slog.Int64("library", id), slog.Any("error", err))
 		h.writeError(w, http.StatusInternalServerError, "failed to reactivate library")
 		return
@@ -315,11 +329,14 @@ func (h *LibrariesHandler) forcePurgeLibrary(w http.ResponseWriter, r *http.Requ
 	// of the library's prior state, and so the minute-interval deadline sweep
 	// retries promptly if the async purge fails. The async purge almost always
 	// wins; the sweep is the universal fallback.
-	if err := h.q.UpdateLibraryStatus(r.Context(), dbq.UpdateLibraryStatusParams{
+	h.writeGuard.Lock()
+	err := h.q.UpdateLibraryStatus(r.Context(), dbq.UpdateLibraryStatusParams{
 		Status:  pendingPurgeStatus,
 		PurgeAt: sql.NullInt64{Int64: time.Now().Unix(), Valid: true},
 		ID:      id,
-	}); err != nil {
+	})
+	h.writeGuard.Unlock()
+	if err != nil {
 		h.log.Error("stamp purge", slog.Int64("library", id), slog.Any("error", err))
 		h.writeError(w, http.StatusInternalServerError, "failed to purge library")
 		return

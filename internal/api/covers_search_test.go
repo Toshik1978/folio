@@ -24,7 +24,7 @@ type coverSearchSuite struct {
 }
 
 func (s *coverSearchSuite) newWithSearcher(srch CoverSearcher) {
-	s.books = NewBooks(s.books.log, s.db, s.covers, nil, nil, s.covers, srch)
+	s.books = NewBooks(s.books.log, s.db, s.guard, s.covers, nil, nil, s.covers, srch)
 	s.rebuildRouter()
 }
 

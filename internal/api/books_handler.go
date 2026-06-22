@@ -13,6 +13,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/microcosm-cc/bluemonday"
 
+	"github.com/Toshik1978/folio/internal/db"
 	"github.com/Toshik1978/folio/internal/db/dbq"
 	"github.com/Toshik1978/folio/internal/ebook"
 	"github.com/Toshik1978/folio/internal/metasearch"
@@ -74,6 +75,7 @@ type BooksHandler struct {
 
 	db          *sql.DB
 	q           *dbq.Queries
+	writeGuard  *db.WriteGuard // process-wide single-writer guard, shared with the sync engine
 	covers      CoverServer
 	extractor   MetadataExtractor // optional; nil disables lazy backfill
 	enricher    MetadataEnricher  // optional; nil disables online enrichment
@@ -102,9 +104,11 @@ type BooksHandler struct {
 }
 
 // NewBooks builds the books handler. extractor, enricher, coverSaver, and coverSearch may be nil.
+// writeGuard is the process-wide single-writer guard shared with the sync engine.
 func NewBooks(
 	log *slog.Logger,
 	database *sql.DB,
+	writeGuard *db.WriteGuard,
 	covers CoverServer,
 	extractor MetadataExtractor,
 	enricher MetadataEnricher,
@@ -115,6 +119,7 @@ func NewBooks(
 		base:             base{log: log},
 		db:               database,
 		q:                dbq.New(database),
+		writeGuard:       writeGuard,
 		covers:           covers,
 		extractor:        extractor,
 		enricher:         enricher,

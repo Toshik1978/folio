@@ -10,4 +10,5 @@ import (
 func TestDB(t *testing.T) {
 	suite.Run(t, new(booksFilterSuite))
 	suite.Run(t, new(connSuite))
+	suite.Run(t, new(writeGuardSuite))
 }

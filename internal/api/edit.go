@@ -39,8 +39,13 @@ func (h *BooksHandler) saveManualCover(ctx context.Context, bookID int64, data [
 		return fmt.Errorf("save cover: %w", err)
 	}
 
+	// Take the single-writer guard only around the DB write — the cover transcode
+	// and file write above must not serialize behind it.
 	params := dbq.UpdateBookCoverPrioParams{CoverPrio: manualCoverPrio, ID: bookID}
-	if err := h.q.UpdateBookCoverPrio(ctx, params); err != nil {
+	h.writeGuard.Lock()
+	err := h.q.UpdateBookCoverPrio(ctx, params)
+	h.writeGuard.Unlock()
+	if err != nil {
 		return fmt.Errorf("pin cover prio: %w", err)
 	}
 
@@ -320,25 +325,23 @@ func (h *BooksHandler) reconcileBookIdentifiers(ctx context.Context, bookID int6
 	}
 	cleaned := ingest.CleanIdentifiers(raw)
 
-	tx, err := h.db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("begin identifier tx: %w", err)
-	}
-	defer func() { _ = tx.Rollback() }() // no-op after Commit
-	q := dbq.New(tx)
+	if err := h.writeGuard.WithTx(ctx, h.db, func(tx *sql.Tx) error {
+		q := dbq.New(tx)
 
-	if err := q.DeleteBookIdentifiers(ctx, bookID); err != nil {
-		return fmt.Errorf("clear identifiers: %w", err)
-	}
-	for _, id := range cleaned {
-		if err := q.InsertBookIdentifier(ctx, dbq.InsertBookIdentifierParams{
-			BookID: bookID, Type: id.Type, Value: id.Value,
-		}); err != nil {
-			return fmt.Errorf("insert identifier %s: %w", id.Type, err)
+		if err := q.DeleteBookIdentifiers(ctx, bookID); err != nil {
+			return fmt.Errorf("clear identifiers: %w", err)
 		}
-	}
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit identifiers: %w", err)
+		for _, id := range cleaned {
+			if err := q.InsertBookIdentifier(ctx, dbq.InsertBookIdentifierParams{
+				BookID: bookID, Type: id.Type, Value: id.Value,
+			}); err != nil {
+				return fmt.Errorf("insert identifier %s: %w", id.Type, err)
+			}
+		}
+
+		return nil
+	}); err != nil {
+		return fmt.Errorf("reconcile identifiers: %w", err)
 	}
 
 	return nil

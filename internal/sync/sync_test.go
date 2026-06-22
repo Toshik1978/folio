@@ -53,7 +53,7 @@ func (s *baseSuite) SetupTest() {
 	s.Require().NoError(err)
 
 	parser := &stubParser{result: ingest.Result{Added: 1}}
-	engine, err := New(slog.New(slog.DiscardHandler), database, map[string]Parser{
+	engine, err := New(slog.New(slog.DiscardHandler), database, db.NewWriteGuard(), map[string]Parser{
 		"stub":         parser,
 		libtype.Folder: parser,
 		libtype.INPX:   parser,
