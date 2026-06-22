@@ -93,7 +93,7 @@ func sampleVolume() googlebooks.Volume {
 }
 
 func (s *enrichSuite) TestVolumeToMetadata() {
-	meta := volumeToMetadata(sampleVolume())
+	meta := VolumeToMetadata(sampleVolume())
 	s.Equal("Desert planet.", meta.Annotation)
 	s.Equal("Ace", meta.Publisher)
 	s.Equal(1965, meta.Year)

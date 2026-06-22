@@ -127,7 +127,7 @@ func (e *Enricher) firstAuthor(ctx context.Context, q *dbq.Queries, bookID int64
 // toMetadataWithCover maps a volume and downloads its cover thumbnail (best
 // effort — a failed image fetch just leaves Cover empty).
 func (e *Enricher) toMetadataWithCover(ctx context.Context, vol googlebooks.Volume) ebook.Metadata {
-	meta := volumeToMetadata(vol)
+	meta := VolumeToMetadata(vol)
 	if vol.VolumeInfo.ImageLinks.Thumbnail != "" {
 		if data, err := e.client.FetchImage(ctx, vol.VolumeInfo.ImageLinks.Thumbnail); err == nil {
 			meta.Cover = data
@@ -137,10 +137,11 @@ func (e *Enricher) toMetadataWithCover(ctx context.Context, vol googlebooks.Volu
 	return meta
 }
 
-// volumeToMetadata maps a Google Books volume to Folio's domain metadata,
+// VolumeToMetadata maps a Google Books volume to Folio's domain metadata,
 // reusing ingest's identifier cleaning, year parsing, and genre normalization so
-// online-sourced data lands identical to locally-parsed data.
-func volumeToMetadata(v googlebooks.Volume) ebook.Metadata {
+// online-sourced data lands identical to locally-parsed data. Exported so the
+// metasearch Google Books adapter can reuse the exact same mapping.
+func VolumeToMetadata(v googlebooks.Volume) ebook.Metadata {
 	raw := make([]ebook.Identifier, 0, len(v.VolumeInfo.IndustryIdentifiers)+1)
 	for _, ii := range v.VolumeInfo.IndustryIdentifiers {
 		raw = append(raw, ebook.Identifier{Type: ii.Type, Value: ii.Identifier})
