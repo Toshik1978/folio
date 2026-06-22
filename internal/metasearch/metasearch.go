@@ -70,14 +70,14 @@ type CoverCandidate struct {
 
 // MetadataSource returns structured metadata. Search is light (grid candidates);
 // Get fetches the full record by the provider-local id. (Wired in Phase 3.)
-type MetadataSource interface { //nolint:iface // exported API consumed by Phase 3 providers
+type MetadataSource interface {
 	Source
 	Search(ctx context.Context, q Query) ([]Volume, error)
 	Get(ctx context.Context, id string) (ebook.Metadata, error)
 }
 
 // CoverSource returns cover-image candidates for a query.
-type CoverSource interface { //nolint:iface // exported API consumed by Phase 3 providers
+type CoverSource interface {
 	Source
 	SearchCovers(ctx context.Context, q Query) ([]CoverCandidate, error)
 }
