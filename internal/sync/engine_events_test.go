@@ -2,7 +2,6 @@ package sync
 
 import (
 	stdsync "sync"
-	"testing"
 
 	"github.com/stretchr/testify/suite"
 
@@ -46,10 +45,6 @@ func (p *recordingPublisher) libraryIDs() []int64 {
 
 type engineEventsSuite struct {
 	suite.Suite
-}
-
-func TestEngineEventsSuite(t *testing.T) {
-	suite.Run(t, new(engineEventsSuite))
 }
 
 func (s *engineEventsSuite) newEngine(p Publisher) *Engine {

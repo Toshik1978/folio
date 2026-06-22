@@ -339,3 +339,13 @@ func (s *listsSuite) TestLettersHelpers() {
 	s.Empty(lo)
 	s.Empty(hi)
 }
+
+func (s *listsSuite) TestListGenres() {
+	w := s.do(http.MethodGet, "/genres", nil)
+	s.Require().Equal(http.StatusOK, w.Code)
+
+	var got []string
+	s.decode(w, &got)
+	s.NotEmpty(got)
+	s.Contains(got, "Science Fiction")
+}

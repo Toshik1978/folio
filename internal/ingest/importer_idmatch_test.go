@@ -2,19 +2,12 @@ package ingest
 
 import (
 	"context"
-	"testing"
-
-	"github.com/stretchr/testify/suite"
 
 	"github.com/Toshik1978/folio/internal/db/dbq"
 )
 
 type idMatchSuite struct {
 	baseSuite
-}
-
-func TestIDMatchSuite(t *testing.T) {
-	suite.Run(t, new(idMatchSuite))
 }
 
 // rec with a shared ISBN but a different LibraryKey (simulating author-order drift).

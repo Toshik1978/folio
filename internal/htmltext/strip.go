@@ -10,6 +10,8 @@
 //
 // Both share one base entity table; they differ only in how the single curly
 // quotes are resolved (see ftsEntities / DisplayEntities).
+//
+//nolint:gochecknoglobals
 package htmltext
 
 import (

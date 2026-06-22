@@ -30,8 +30,6 @@ const (
 	queuedStatus       = "queued"
 )
 
-var validLibraryTypes = map[string]bool{libtype.Calibre: true, libtype.INPX: true, libtype.Folder: true}
-
 type libraryView struct {
 	ID                  int64   `json:"id"`
 	Name                string  `json:"name"`
@@ -104,6 +102,8 @@ func (h *LibrariesHandler) getLibrary(w http.ResponseWriter, r *http.Request) {
 
 // createLibrary handles POST /api/libraries.
 func (h *LibrariesHandler) createLibrary(w http.ResponseWriter, r *http.Request) {
+	validLibraryTypes := map[string]bool{libtype.Calibre: true, libtype.INPX: true, libtype.Folder: true}
+
 	var req createLibraryRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		h.writeError(w, http.StatusBadRequest, "invalid JSON body")

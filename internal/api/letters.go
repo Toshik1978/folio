@@ -23,11 +23,6 @@ const (
 	latHi rune = 'Z'
 )
 
-// alphabet is the fixed superset of buckets the UI renders, in display order:
-// Cyrillic, then Latin, then '#'. The frontend mirrors this order so it can
-// pick the first available letter as the default.
-var alphabet = buildAlphabet()
-
 func buildAlphabet() []string {
 	out := make([]string, 0, int(cyrHi-cyrLo+1)+int(latHi-latLo+1)+1)
 	for r := cyrLo; r <= cyrHi; r++ {
@@ -74,13 +69,13 @@ func letterBounds(letter string) (lo, hi string, ok bool) {
 // availableLetters reduces the distinct first characters of an entity to the
 // set of alphabet buckets that have data, returned in display order so the
 // frontend can light up its selector and default to the first one.
-func availableLetters(firstChars []string) []string {
+func (h *CatalogHandler) availableLetters(firstChars []string) []string {
 	present := make(map[string]bool, len(firstChars))
 	for _, c := range firstChars {
 		present[bucketOf(c)] = true
 	}
 	out := make([]string, 0, len(present))
-	for _, letter := range alphabet {
+	for _, letter := range h.alphabet {
 		if present[letter] {
 			out = append(out, letter)
 		}

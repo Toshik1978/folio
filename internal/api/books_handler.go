@@ -3,16 +3,23 @@ package api
 import (
 	"context"
 	"database/sql"
+	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	stdsync "sync"
+	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/microcosm-cc/bluemonday"
 
 	"github.com/Toshik1978/folio/internal/db/dbq"
 	"github.com/Toshik1978/folio/internal/ebook"
 	"github.com/Toshik1978/folio/internal/googlebooks"
 )
+
+// coverFetchTimeout bounds the server-side fetch of a cover URL.
+const coverFetchTimeout = 15 * time.Second
 
 // CoverServer serves a book cover image (cache hit, lazy extraction, or
 // placeholder fallback) and reports the cover-file component of the ?v= cache
@@ -71,6 +78,23 @@ type BooksHandler struct {
 	extractor  MetadataExtractor // optional; nil disables lazy backfill
 	enricher   MetadataEnricher  // optional; nil disables online enrichment
 	coverSaver CoverSaver        // optional; caches online-fetched covers
+	// annotationPolicy sanitizes stored annotation HTML before it is served, so the
+	// frontend can render it via v-html without an XSS risk. UGCPolicy permits
+	// common formatting tags (p, em, strong, lists, links, …) and strips scripts,
+	// event handlers, and other dangerous markup. Sanitizing here, at the serve
+	// boundary, covers every library and any already-stored data.
+	annotationPolicy *bluemonday.Policy
+
+	// blockedHost is the SSRF guard used in production. Tests may replace it with a
+	// stub that allows loopback httptest servers while still exercising fetch logic.
+	// Production code always uses isBlockedHost; this indirection is the only seam.
+	blockedHost func(ctx context.Context, host string) bool
+	// coverFetchClient fetches cover URLs the user picked. A dedicated client keeps
+	// the timeout off the shared default transport and rejects redirects to internal
+	// addresses (SSRF guard). CheckRedirect calls isBlockedHost directly (not via
+	// the blockedHost var) so the real guard is always active, even in tests that
+	// override blockedHost to allow loopback httptest servers for the initial URL.
+	coverFetchClient *http.Client
 
 	lazyMu       stdsync.Mutex
 	lazyInflight map[int64]bool // book ids whose lazy write-on-read tiers are running
@@ -86,13 +110,33 @@ func NewBooks(
 	coverSaver CoverSaver,
 ) *BooksHandler {
 	return &BooksHandler{
-		base:         base{log: log},
-		db:           database,
-		q:            dbq.New(database),
-		covers:       covers,
-		extractor:    extractor,
-		enricher:     enricher,
-		coverSaver:   coverSaver,
+		base:             base{log: log},
+		db:               database,
+		q:                dbq.New(database),
+		covers:           covers,
+		extractor:        extractor,
+		enricher:         enricher,
+		coverSaver:       coverSaver,
+		annotationPolicy: bluemonday.UGCPolicy(),
+		blockedHost:      isBlockedHost,
+		coverFetchClient: &http.Client{
+			Timeout: coverFetchTimeout,
+			CheckRedirect: func(req *http.Request, via []*http.Request) error {
+				if len(via) >= 5 {
+					return errors.New("too many redirects")
+				}
+
+				if req.URL.Scheme != "http" && req.URL.Scheme != "https" {
+					return fmt.Errorf("redirect to non-http(s) scheme %q", req.URL.Scheme)
+				}
+
+				if isBlockedHost(req.Context(), req.URL.Host) {
+					return errors.New("redirect to internal address blocked")
+				}
+
+				return nil
+			},
+		},
 		lazyInflight: map[int64]bool{},
 	}
 }

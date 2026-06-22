@@ -16,16 +16,6 @@ const (
 	goodreadsType = "goodreads"
 )
 
-// strongIdentifierTypes are the cleaned identifier types reliable enough (per
-// edition or per work) to force two records onto the same book. Other types are
-// still stored, but never trigger a merge.
-var strongIdentifierTypes = map[string]struct{}{
-	isbnType:      {},
-	amazonType:    {},
-	googleType:    {},
-	goodreadsType: {},
-}
-
 // validStrongIdentifier reports whether a cleaned strong identifier is trustworthy
 // enough to force two records onto the same book. cleanIdentifiers normalizes
 // shape but never validates content, so a placeholder or garbage value (a

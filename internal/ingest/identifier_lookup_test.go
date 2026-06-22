@@ -3,19 +3,12 @@ package ingest
 import (
 	"context"
 	"database/sql"
-	"testing"
-
-	"github.com/stretchr/testify/suite"
 
 	"github.com/Toshik1978/folio/internal/db/dbq"
 )
 
 type identifierLookupSuite struct {
 	baseSuite
-}
-
-func TestIdentifierLookupSuite(t *testing.T) {
-	suite.Run(t, new(identifierLookupSuite))
 }
 
 func (s *identifierLookupSuite) TestFindBookByIdentifierLowestID() {

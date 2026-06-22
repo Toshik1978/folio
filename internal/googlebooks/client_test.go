@@ -14,6 +14,7 @@ import (
 
 func TestGoogleBooks(t *testing.T) {
 	suite.Run(t, new(clientSuite))
+	suite.Run(t, new(transportSuite))
 }
 
 type clientSuite struct {

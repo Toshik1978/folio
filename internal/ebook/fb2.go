@@ -162,7 +162,7 @@ func parseFB2Reader(r io.Reader) (Metadata, error) {
 // subset that survives the serve-time sanitizer (bluemonday UGCPolicy). FB2 uses
 // its own tag names (e.g. <emphasis>, <strikethrough>) which the browser and the
 // sanitizer would otherwise drop, flattening the annotation to a wall of text.
-var fb2AnnotationTags = map[string]string{
+var fb2AnnotationTags = map[string]string{ //nolint:gochecknoglobals
 	"p":             "p",
 	"emphasis":      "em",
 	"strong":        "strong",

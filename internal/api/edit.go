@@ -12,7 +12,6 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
-	"time"
 
 	"github.com/Toshik1978/folio/internal/db/dbq"
 	"github.com/Toshik1978/folio/internal/ebook"
@@ -120,14 +119,14 @@ func (h *BooksHandler) loadBook(ctx context.Context, w http.ResponseWriter, id i
 	return book, true
 }
 
-// coverFetchTimeout bounds the server-side fetch of a cover URL.
-const coverFetchTimeout = 15 * time.Second
-
 // isBlockedIP reports whether ip is a private, loopback, link-local, or
 // unspecified address — any of which must not be reachable via a user-supplied URL.
 func isBlockedIP(ip net.IP) bool {
-	return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() ||
-		ip.IsLinkLocalMulticast() || ip.IsUnspecified()
+	return ip.IsLoopback() ||
+		ip.IsPrivate() ||
+		ip.IsLinkLocalUnicast() ||
+		ip.IsLinkLocalMulticast() ||
+		ip.IsUnspecified()
 }
 
 // isBlockedHost reports whether host resolves to any private, loopback,
@@ -157,35 +156,6 @@ func isBlockedHost(ctx context.Context, host string) bool {
 	return false
 }
 
-// blockedHost is the SSRF guard used in production. Tests may replace it with a
-// stub that allows loopback httptest servers while still exercising fetch logic.
-// Production code always uses isBlockedHost; this indirection is the only seam.
-var blockedHost = isBlockedHost
-
-// coverFetchClient fetches cover URLs the user picked. A dedicated client keeps
-// the timeout off the shared default transport and rejects redirects to internal
-// addresses (SSRF guard). CheckRedirect calls isBlockedHost directly (not via
-// the blockedHost var) so the real guard is always active, even in tests that
-// override blockedHost to allow loopback httptest servers for the initial URL.
-var coverFetchClient = &http.Client{
-	Timeout: coverFetchTimeout,
-	CheckRedirect: func(req *http.Request, via []*http.Request) error {
-		if len(via) >= 5 {
-			return errors.New("too many redirects")
-		}
-
-		if req.URL.Scheme != "http" && req.URL.Scheme != "https" {
-			return fmt.Errorf("redirect to non-http(s) scheme %q", req.URL.Scheme)
-		}
-
-		if isBlockedHost(req.Context(), req.URL.Host) {
-			return errors.New("redirect to internal address blocked")
-		}
-
-		return nil
-	},
-}
-
 // parseCoverURL decodes the JSON body of a cover-URL request and validates the
 // scheme and host; it returns the raw URL string and true, or writes a 400 and
 // returns false. Only http/https are accepted and the host must not resolve to a
@@ -203,7 +173,7 @@ func (h *BooksHandler) parseCoverURL(w http.ResponseWriter, r *http.Request) (st
 		h.writeError(w, http.StatusBadRequest, "url must be http(s)")
 		return "", false
 	}
-	if blockedHost(r.Context(), u.Host) {
+	if h.blockedHost(r.Context(), u.Host) {
 		h.writeError(w, http.StatusBadRequest, "url host not allowed")
 		return "", false
 	}
@@ -323,7 +293,7 @@ func (h *BooksHandler) fetchCover(ctx context.Context, w http.ResponseWriter, ra
 		h.writeError(w, http.StatusBadRequest, "invalid url")
 		return nil, false
 	}
-	resp, err := coverFetchClient.Do(req)
+	resp, err := h.coverFetchClient.Do(req)
 	if err != nil {
 		h.writeError(w, http.StatusBadGateway, "failed to fetch cover")
 		return nil, false

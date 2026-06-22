@@ -1,4 +1,4 @@
-//nolint:goconst,misspell
+//nolint:goconst,misspell,gochecknoglobals
 package ingest
 
 import (

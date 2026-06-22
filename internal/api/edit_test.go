@@ -5,9 +5,6 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
-	"testing"
-
-	"github.com/stretchr/testify/suite"
 )
 
 // allowAllHosts is a blockedHost stub that permits every host, including
@@ -19,21 +16,17 @@ type editSuite struct {
 	baseSuite
 }
 
-func TestEditSuite(t *testing.T) {
-	suite.Run(t, new(editSuite))
-}
-
 // SetupTest bypasses the SSRF host guard for the whole editSuite so that
 // httptest servers bound to 127.0.0.1 can be reached by fetch-path tests.
 // Dedicated SSRF tests (TestIsBlockedHost, TestSetCoverRejectsLoopbackURL,
 // TestSetCoverRejectsRedirectToLoopback) restore or use the real guard directly.
 func (s *editSuite) SetupTest() {
 	s.baseSuite.SetupTest()
-	blockedHost = allowAllHosts
+	s.books.blockedHost = allowAllHosts
 }
 
 func (s *editSuite) TearDownTest() {
-	blockedHost = isBlockedHost // restore production guard after each test
+	s.books.blockedHost = isBlockedHost // restore production guard after each test
 	s.baseSuite.TearDownTest()
 }
 
@@ -183,8 +176,8 @@ func (s *editSuite) TestIsBlockedHost() {
 // initial URL is rejected with 400 before any fetch attempt. The real blockedHost
 // is used (SetupTest installed allowAllHosts, so we restore it for this test).
 func (s *editSuite) TestSetCoverRejectsLoopbackURL() {
-	blockedHost = isBlockedHost // use real guard for this test
-	defer func() { blockedHost = allowAllHosts }()
+	s.books.blockedHost = isBlockedHost // use real guard for this test
+	defer func() { s.books.blockedHost = allowAllHosts }()
 
 	src := s.seedLibrary("folder", "/lib")
 	id := s.seedBook(src, bookSeed{Title: "x"})

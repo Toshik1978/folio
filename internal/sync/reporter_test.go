@@ -2,7 +2,6 @@ package sync
 
 import (
 	"encoding/json"
-	"testing"
 	"time"
 
 	"github.com/stretchr/testify/suite"
@@ -10,10 +9,6 @@ import (
 
 type reporterSuite struct {
 	suite.Suite
-}
-
-func TestReporterSuite(t *testing.T) {
-	suite.Run(t, new(reporterSuite))
 }
 
 func (s *reporterSuite) TestThrottlesAddButFlushesFinal() {

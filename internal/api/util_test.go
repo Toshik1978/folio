@@ -6,15 +6,18 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strconv"
-	"testing"
+
+	"github.com/stretchr/testify/suite"
 )
+
+type utilSuite struct {
+	suite.Suite
+}
 
 // TestPaginationClampsHugePage guards against a hostile ?page= overflowing
 // (pageNo-1)*limit into a negative SQL OFFSET. SQLite treats a negative OFFSET
 // as 0, but the arithmetic must never wrap in the first place.
-func TestPaginationClampsHugePage(t *testing.T) {
-	t.Parallel()
-
+func (s *utilSuite) TestPaginationClampsHugePage() {
 	cases := []string{
 		strconv.FormatInt(1<<62, 10), // huge but valid int64
 		"9223372036854775807",        // math.MaxInt64
@@ -24,26 +27,22 @@ func TestPaginationClampsHugePage(t *testing.T) {
 	const sane = int64(1) << 40
 	for _, page := range cases {
 		req := httptest.NewRequestWithContext(
-			context.Background(), http.MethodGet, "/?"+url.Values{"page": {page}}.Encode(), http.NoBody)
+			context.Background(), http.MethodGet, "/?"+url.Values{"page": {page}}.Encode(), http.NoBody,
+		)
 		pageNo, limit, offset := pagination(req)
-		if offset < 0 {
-			t.Fatalf("page=%s: offset %d must not be negative", page, offset)
-		}
-		if offset > sane {
-			t.Fatalf("page=%s: offset %d must be clamped to a sane bound", page, offset)
-		}
-		if pageNo < 1 || limit < 1 {
-			t.Fatalf("page=%s: pageNo=%d limit=%d must stay positive", page, pageNo, limit)
-		}
+
+		s.GreaterOrEqual(offset, int64(0))
+		s.LessOrEqual(offset, sane)
+		s.Positive(pageNo)
+		s.Positive(limit)
 	}
 }
 
-func TestPaginationDefaults(t *testing.T) {
-	t.Parallel()
-
+func (s *utilSuite) TestPaginationDefaults() {
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", http.NoBody)
 	pageNo, limit, offset := pagination(req)
-	if pageNo != 1 || limit != defaultLimit || offset != 0 {
-		t.Fatalf("defaults: got page=%d limit=%d offset=%d", pageNo, limit, offset)
-	}
+
+	s.Equal(int64(1), pageNo)
+	s.Equal(int64(defaultLimit), limit)
+	s.Equal(int64(0), offset)
 }

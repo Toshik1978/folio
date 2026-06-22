@@ -43,18 +43,6 @@ type BookFilter struct {
 	Offset    int64
 }
 
-// bookColumns is the projection selected by FilterBooks: the complete books row,
-// so a list-sourced dbq.Book is safe to use anywhere a GetBook row is. Its order
-// must match the rows.Scan in scanBook (and the sqlc-generated dbq.Book layout);
-// the TestFilterBooksScanMatchesGetBook guard fails if they drift.
-var bookColumns = []any{
-	"b.id", "b.library_id", "b.library_key", "b.title", "b.series_id", "b.series_number",
-	"b.language", "b.annotation", "b.metadata_checked", "b.enrichment_checked",
-	"b.publisher", "b.publisher_fold", "b.year", "b.rating",
-	"b.content_hash", "b.metadata_format", "b.added_at", "b.imported_at",
-	"b.manually_matched", "b.cover_prio",
-}
-
 // quoteToken wraps a single token as an FTS5 string literal, escaping embedded
 // double quotes so user input cannot inject FTS query operators.
 func quoteToken(tok string) string {
@@ -107,6 +95,18 @@ func (f BookFilter) ftsMatch() string {
 // FilterBooks returns the page of books matching f, ordered by relevance (when
 // searching) or recency.
 func FilterBooks(ctx context.Context, db *sql.DB, f BookFilter) ([]dbq.Book, error) {
+	// bookColumns is the projection selected by FilterBooks: the complete books row,
+	// so a list-sourced dbq.Book is safe to use anywhere a GetBook row is. Its order
+	// must match the rows.Scan in scanBook (and the sqlc-generated dbq.Book layout);
+	// the TestFilterBooksScanMatchesGetBook guard fails if they drift.
+	bookColumns := []any{
+		"b.id", "b.library_id", "b.library_key", "b.title", "b.series_id", "b.series_number",
+		"b.language", "b.annotation", "b.metadata_checked", "b.enrichment_checked",
+		"b.publisher", "b.publisher_fold", "b.year", "b.rating",
+		"b.content_hash", "b.metadata_format", "b.added_at", "b.imported_at",
+		"b.manually_matched", "b.cover_prio",
+	}
+
 	mods := f.filterMods()
 	mods = append(mods, sm.Columns(bookColumns...))
 	switch {

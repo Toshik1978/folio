@@ -27,6 +27,8 @@ func TestSync(t *testing.T) {
 	suite.Run(t, new(schedulerSuite))
 	suite.Run(t, new(watcherSuite))
 	suite.Run(t, new(warmSuite))
+	suite.Run(t, new(reporterSuite))
+	suite.Run(t, new(engineEventsSuite))
 }
 
 // baseSuite gives each test a fresh folio database, cover store, and a stub

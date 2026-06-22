@@ -73,5 +73,5 @@ func (s *contractSuite) TestAlphabetMatchesSharedFixture() {
 
 	var want []string
 	s.Require().NoError(json.Unmarshal(fixture, &want))
-	s.Equal(want, alphabet)
+	s.Equal(want, buildAlphabet())
 }

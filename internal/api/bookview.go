@@ -5,17 +5,8 @@ import (
 	"database/sql"
 	"fmt"
 
-	"github.com/microcosm-cc/bluemonday"
-
 	"github.com/Toshik1978/folio/internal/db/dbq"
 )
-
-// annotationPolicy sanitizes stored annotation HTML before it is served, so the
-// frontend can render it via v-html without an XSS risk. UGCPolicy permits
-// common formatting tags (p, em, strong, lists, links, …) and strips scripts,
-// event handlers, and other dangerous markup. Sanitizing here, at the serve
-// boundary, covers every library and any already-stored data.
-var annotationPolicy = bluemonday.UGCPolicy()
 
 // bookView is the JSON shape consumed by the frontend (web/src/types.ts Book).
 type bookView struct {
@@ -192,7 +183,7 @@ func (h *BooksHandler) toBookView(
 		CoverURL:    &cover,
 	}
 	if b.Annotation.Valid {
-		clean := annotationPolicy.Sanitize(b.Annotation.String)
+		clean := h.annotationPolicy.Sanitize(b.Annotation.String)
 		view.Annotation = &clean
 	}
 	h.resolveSeries(ctx, b, sc, &view)

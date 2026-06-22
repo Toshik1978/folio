@@ -9,20 +9,12 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/microcosm-cc/bluemonday"
-
 	"github.com/Toshik1978/folio/internal/bookfile"
 	"github.com/Toshik1978/folio/internal/db"
 	"github.com/Toshik1978/folio/internal/db/dbq"
 )
 
 const defaultLimit = 50
-
-// annotationPolicy sanitizes stored annotation HTML before it reaches reader
-// apps via <content type="html">, matching the REST serve-boundary sanitizer
-// (api.toBookView). XML escaping already prevents feed injection; this strips
-// scripts/handlers from the HTML the reader renders.
-var annotationPolicy = bluemonday.UGCPolicy()
 
 // root handles GET /opds/ — the navigation feed linking to the catalog sections.
 func (h *Handler) root(w http.ResponseWriter, _ *http.Request) {
@@ -239,7 +231,7 @@ func (h *Handler) bookEntry(b dbq.Book, rel entryRelations) entry {
 		e.Issued = strconv.FormatInt(b.Year.Int64, 10)
 	}
 	if b.Annotation.Valid {
-		e.Content = &content{Type: "html", Value: annotationPolicy.Sanitize(b.Annotation.String)}
+		e.Content = &content{Type: "html", Value: h.annotationPolicy.Sanitize(b.Annotation.String)}
 	}
 	for _, name := range rel.authors[b.ID] {
 		e.Authors = append(e.Authors, author{Name: name})

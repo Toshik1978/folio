@@ -260,10 +260,12 @@ func readZipEntry(f *zip.File) ([]byte, error) {
 // seriesPrefixPattern matches a leading "{series} - {index} - " decoration,
 // where {index} may be a (possibly zero-padded or fractional) number. The series
 // name is injected as a quoted literal by stripSeriesPrefix.
-var seriesPrefixCache = struct {
+var seriesPrefixCache = struct { //nolint:gochecknoglobals
 	mu    sync.Mutex
 	cache map[string]*regexp.Regexp
-}{cache: map[string]*regexp.Regexp{}}
+}{
+	cache: map[string]*regexp.Regexp{},
+}
 
 // stripSeriesPrefix removes a "{series} - {index} - " prefix that Calibre embeds
 // in an EPUB's dc:title, returning the clean title. It is a no-op when series is

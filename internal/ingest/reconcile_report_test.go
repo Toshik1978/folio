@@ -1,8 +1,6 @@
 package ingest
 
 import (
-	"testing"
-
 	"github.com/stretchr/testify/suite"
 
 	"github.com/Toshik1978/folio/internal/db/dbq"
@@ -18,10 +16,6 @@ func (c *countingReporter) Add(n int)      { c.processed += n }
 
 type reconcileReportSuite struct {
 	suite.Suite
-}
-
-func TestReconcileReportSuite(t *testing.T) {
-	suite.Run(t, new(reconcileReportSuite))
 }
 
 func (s *reconcileReportSuite) TestMarkSeenCountsProgress() {

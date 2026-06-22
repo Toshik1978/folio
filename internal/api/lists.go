@@ -42,7 +42,7 @@ func (h *CatalogHandler) writeLetters(
 		h.writeError(w, http.StatusInternalServerError, "failed to list "+label+" letters")
 		return
 	}
-	h.writeJSON(w, http.StatusOK, availableLetters(chars))
+	h.writeJSON(w, http.StatusOK, h.availableLetters(chars))
 }
 
 // browseByLetter is the shared body of the by-letter browse endpoints. It picks
@@ -203,4 +203,9 @@ func (h *CatalogHandler) listPublishers(w http.ResponseWriter, r *http.Request) 
 			return nameCountView{Name: p.Name, BookCount: p.BookCount}
 		},
 	)
+}
+
+// listGenres returns the canonical genre taxonomy for the edit autocomplete.
+func (h *CatalogHandler) listGenres(w http.ResponseWriter, _ *http.Request) {
+	h.writeJSON(w, http.StatusOK, h.genres)
 }

@@ -364,14 +364,14 @@ func (mf *mobiFile) readRecordImage(recIndex int) []byte {
 	return coverData
 }
 
-var imageSignatures = [][]byte{
-	{0xFF, 0xD8, 0xFF},    // JPEG
-	{0x89, 'P', 'N', 'G'}, // PNG
-	{'G', 'I', 'F'},       // GIF
-	{'B', 'M'},            // BMP
-}
-
 func isImageHeader(data []byte) bool {
+	imageSignatures := [][]byte{
+		{0xFF, 0xD8, 0xFF},    // JPEG
+		{0x89, 'P', 'N', 'G'}, // PNG
+		{'G', 'I', 'F'},       // GIF
+		{'B', 'M'},            // BMP
+	}
+
 	for _, sig := range imageSignatures {
 		if len(data) >= len(sig) && bytes.Equal(data[:len(sig)], sig) {
 			return true

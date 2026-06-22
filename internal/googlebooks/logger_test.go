@@ -4,14 +4,9 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
-	"testing"
 
 	"github.com/stretchr/testify/suite"
 )
-
-func TestLoggingTransport(t *testing.T) {
-	suite.Run(t, new(transportSuite))
-}
 
 type transportSuite struct {
 	suite.Suite

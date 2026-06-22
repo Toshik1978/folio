@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/microcosm-cc/bluemonday"
 
 	"github.com/Toshik1978/folio/internal/db/dbq"
 )
@@ -42,6 +43,11 @@ type Handler struct {
 	covers    CoverServer
 	authn     Authenticator
 	publicURL string
+	// annotationPolicy sanitizes stored annotation HTML before it reaches reader
+	// apps via <content type="html">, matching the REST serve-boundary sanitizer
+	// (api.toBookView). XML escaping already prevents feed injection; this strips
+	// scripts/handlers from the HTML the reader renders.
+	annotationPolicy *bluemonday.Policy
 }
 
 // New builds an OPDS handler over the folio database and cover server. publicURL
@@ -50,12 +56,13 @@ type Handler struct {
 // routes with Basic Auth.
 func New(log *slog.Logger, database *sql.DB, covers CoverServer, authn Authenticator, publicURL string) *Handler {
 	return &Handler{
-		log:       log,
-		db:        database,
-		q:         dbq.New(database),
-		covers:    covers,
-		authn:     authn,
-		publicURL: publicURL,
+		log:              log,
+		db:               database,
+		q:                dbq.New(database),
+		covers:           covers,
+		authn:            authn,
+		publicURL:        publicURL,
+		annotationPolicy: bluemonday.UGCPolicy(),
 	}
 }
 
