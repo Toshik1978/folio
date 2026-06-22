@@ -73,7 +73,7 @@ func matchCandidates(vols []metasearch.Volume) []matchCandidate {
 }
 
 // applyMatch handles POST /api/books/{id}/match — overwrite a book's metadata
-// from a user-chosen Google Books volume and return the updated book.
+// from a user-chosen candidate and return the updated book.
 func (h *BooksHandler) applyMatch(w http.ResponseWriter, r *http.Request) {
 	if h.enricher == nil {
 		h.writeError(w, http.StatusNotImplemented, "enrichment disabled")

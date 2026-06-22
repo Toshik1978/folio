@@ -167,8 +167,8 @@ func (h *BooksHandler) runLazyTiers(r *http.Request, id int64, book *dbq.Book) {
 // claimLazy marks a book's lazy write-on-read tiers (backfill + online
 // enrichment) as in flight. It returns false when another request already runs
 // them; that caller serves the current row and the persisted result shows on a
-// later view — without this, two concurrent first views both hit Google Books
-// and both run the merge.
+// later view — without this, two concurrent first views both hit the metadata
+// provider and both run the merge.
 func (h *BooksHandler) claimLazy(bookID int64) bool {
 	h.lazyMu.Lock()
 	defer h.lazyMu.Unlock()

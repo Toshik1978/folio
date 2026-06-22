@@ -24,7 +24,7 @@
           <input
             v-model="query"
             type="text"
-            placeholder="Search Google Books…"
+            placeholder="Search metadata providers…"
             class="input input-bordered input-sm flex-1"
           />
           <button type="submit" class="btn btn-primary btn-sm" :disabled="loading">Search</button>

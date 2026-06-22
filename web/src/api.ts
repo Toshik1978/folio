@@ -88,7 +88,7 @@ export function fetchBook(id: number): Promise<Book> {
   return request<Book>(`/books/${id}`);
 }
 
-// searchMatch queries Google Books for Fix Match candidates for a book.
+// searchMatch queries the online metadata providers for Fix Match candidates for a book.
 export function searchMatch(id: number, q: string): Promise<MatchCandidate[]> {
   return request<MatchCandidate[]>(`/books/${id}/match?q=${encodeURIComponent(q)}`);
 }
