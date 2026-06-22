@@ -103,7 +103,7 @@ func run() int { //revive:disable:function-length
 		Addr: ":" + cfg.Port,
 		Handler: server.New(log, server.Handlers{
 			API: []server.Registrar{
-				api.NewBooks(log, database, coverStore, extractor, enricher, coverStore),
+				api.NewBooks(log, database, coverStore, extractor, enricher, coverStore, nil),
 				catalogHandler,
 				api.NewLibraries(log, database, syncEngine),
 				api.NewSync(log, syncEngine, broker),

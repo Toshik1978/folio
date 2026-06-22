@@ -22,7 +22,7 @@ func NewLibraries(log *slog.Logger, database *sql.DB, syncEngine SyncEngine) *Li
 	return &LibrariesHandler{base: base{log: log}, q: dbq.New(database), sync: syncEngine}
 }
 
-func (h *LibrariesHandler) Register(r chi.Router) { //nolint:dupl // chi route groups share structural shape, not logic
+func (h *LibrariesHandler) Register(r chi.Router) {
 	r.Route("/libraries", func(r chi.Router) {
 		r.Get("/", h.listLibraries)
 		r.Post("/", h.createLibrary)

@@ -72,12 +72,13 @@ type CoverSaver interface {
 type BooksHandler struct {
 	base
 
-	db         *sql.DB
-	q          *dbq.Queries
-	covers     CoverServer
-	extractor  MetadataExtractor // optional; nil disables lazy backfill
-	enricher   MetadataEnricher  // optional; nil disables online enrichment
-	coverSaver CoverSaver        // optional; caches online-fetched covers
+	db          *sql.DB
+	q           *dbq.Queries
+	covers      CoverServer
+	extractor   MetadataExtractor // optional; nil disables lazy backfill
+	enricher    MetadataEnricher  // optional; nil disables online enrichment
+	coverSaver  CoverSaver        // optional; caches online-fetched covers
+	coverSearch CoverSearcher     // optional; nil disables online cover search
 	// annotationPolicy sanitizes stored annotation HTML before it is served, so the
 	// frontend can render it via v-html without an XSS risk. UGCPolicy permits
 	// common formatting tags (p, em, strong, lists, links, …) and strips scripts,
@@ -100,7 +101,7 @@ type BooksHandler struct {
 	lazyInflight map[int64]bool // book ids whose lazy write-on-read tiers are running
 }
 
-// NewBooks builds the books handler. extractor, enricher, and coverSaver may be nil.
+// NewBooks builds the books handler. extractor, enricher, coverSaver, and coverSearch may be nil.
 func NewBooks(
 	log *slog.Logger,
 	database *sql.DB,
@@ -108,6 +109,7 @@ func NewBooks(
 	extractor MetadataExtractor,
 	enricher MetadataEnricher,
 	coverSaver CoverSaver,
+	coverSearch CoverSearcher,
 ) *BooksHandler {
 	return &BooksHandler{
 		base:             base{log: log},
@@ -117,6 +119,7 @@ func NewBooks(
 		extractor:        extractor,
 		enricher:         enricher,
 		coverSaver:       coverSaver,
+		coverSearch:      coverSearch,
 		annotationPolicy: bluemonday.UGCPolicy(),
 		blockedHost:      isBlockedHost,
 		coverFetchClient: &http.Client{
@@ -141,12 +144,13 @@ func NewBooks(
 	}
 }
 
-func (h *BooksHandler) Register(r chi.Router) { //nolint:dupl // chi route groups share structural shape, not logic
+func (h *BooksHandler) Register(r chi.Router) {
 	r.Route("/books", func(r chi.Router) {
 		r.Get("/", h.listBooks)
 		r.Get("/{id}", h.getBook)
 		r.Get("/{id}/files/{fileID}", h.downloadBook)
 		r.Get("/{id}/cover", h.serveCover)
+		r.Get("/{id}/cover/search", h.searchCovers)
 		r.Get("/{id}/match", h.searchMatch)
 		r.Post("/{id}/match", h.applyMatch)
 		r.Put("/{id}", h.updateBook)

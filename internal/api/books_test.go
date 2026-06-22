@@ -205,7 +205,7 @@ func (s *booksSuite) TestBooksFilterByPublisher() {
 
 func (s *booksSuite) TestGetBookBackfillsAnnotation() {
 	ext := &fakeExtractor{annotation: "Recovered annotation"}
-	bh := NewBooks(slog.New(slog.DiscardHandler), s.db, s.covers, ext, nil, s.covers)
+	bh := NewBooks(slog.New(slog.DiscardHandler), s.db, s.covers, ext, nil, s.covers, nil)
 	r := chi.NewRouter()
 	bh.Register(r)
 	s.router = r
@@ -234,7 +234,7 @@ func (s *booksSuite) TestGetBookBackfillsAnnotation() {
 // re-parsed afterwards (the slow-detail-view bug).
 func (s *booksSuite) TestGetBookCachesMissingAnnotation() {
 	ext := &fakeExtractor{} // empty annotation → returns (ok=false)
-	bh := NewBooks(slog.New(slog.DiscardHandler), s.db, s.covers, ext, nil, s.covers)
+	bh := NewBooks(slog.New(slog.DiscardHandler), s.db, s.covers, ext, nil, s.covers, nil)
 	r := chi.NewRouter()
 	bh.Register(r)
 	s.router = r
@@ -269,7 +269,7 @@ func (s *booksSuite) TestGetBookOnlineEnrichmentFillsGaps() {
 		},
 		ok: true,
 	}
-	bh := NewBooks(slog.New(slog.DiscardHandler), s.db, s.covers, nil, enr, s.covers)
+	bh := NewBooks(slog.New(slog.DiscardHandler), s.db, s.covers, nil, enr, s.covers, nil)
 	r := chi.NewRouter()
 	bh.Register(r)
 	s.router = r
@@ -308,7 +308,7 @@ func (s *booksSuite) TestGetBookBackfillsIdentifiers() {
 		annotation:  "Recovered annotation",
 		identifiers: []ebook.Identifier{{Type: "isbn", Value: "9780441013593"}},
 	}
-	bh := NewBooks(slog.New(slog.DiscardHandler), s.db, s.covers, ext, nil, s.covers)
+	bh := NewBooks(slog.New(slog.DiscardHandler), s.db, s.covers, ext, nil, s.covers, nil)
 	r := chi.NewRouter()
 	bh.Register(r)
 	s.router = r
@@ -336,7 +336,7 @@ func (s *booksSuite) TestBackfillTriggersOnMissingIdentifiers() {
 		annotation:  "from-file",
 		identifiers: []ebook.Identifier{{Type: "isbn", Value: "9781234567897"}},
 	}
-	bh := NewBooks(slog.New(slog.DiscardHandler), s.db, s.covers, ext, nil, s.covers)
+	bh := NewBooks(slog.New(slog.DiscardHandler), s.db, s.covers, ext, nil, s.covers, nil)
 	r := chi.NewRouter()
 	bh.Register(r)
 	s.router = r

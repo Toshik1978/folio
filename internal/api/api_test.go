@@ -141,7 +141,7 @@ func (s *baseSuite) SetupTest() {
 	s.sync = &fakeSync{}
 	s.broker = events.NewBroker()
 	log := slog.New(slog.DiscardHandler)
-	s.books = NewBooks(log, database, store, nil, nil, store)
+	s.books = NewBooks(log, database, store, nil, nil, store, nil)
 	s.catalog = NewCatalog(log, database, ingest.CanonicalGenres())
 	s.libraries = NewLibraries(log, database, s.sync)
 	s.syncH = NewSync(log, s.sync, s.broker)
@@ -158,6 +158,18 @@ func (s *baseSuite) TearDownTest() {
 	if s.db != nil {
 		_ = s.db.Close()
 	}
+}
+
+// rebuildRouter re-registers all handlers on a fresh chi router. Call this
+// after replacing s.books (or another handler) mid-test so the new handler is
+// wired to s.router.
+func (s *baseSuite) rebuildRouter() {
+	r := chi.NewRouter()
+	s.books.Register(r)
+	s.catalog.Register(r)
+	s.libraries.Register(r)
+	s.syncH.Register(r)
+	s.router = r
 }
 
 // jpegFixture returns a tiny real JPEG, since the cover store transcodes covers

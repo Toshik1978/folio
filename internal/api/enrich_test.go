@@ -26,7 +26,7 @@ func (s *enrichSuite) TestClaimLazyIsExclusivePerBook() {
 
 func (s *enrichSuite) TestViewSkipsLazyTiersWhileAnotherRequestRunsThem() {
 	// Wire an enricher so a normal first view would mark the book checked.
-	bh := NewBooks(slog.New(slog.DiscardHandler), s.db, s.covers, nil, &fakeEnricher{}, s.covers)
+	bh := NewBooks(slog.New(slog.DiscardHandler), s.db, s.covers, nil, &fakeEnricher{}, s.covers, nil)
 	r := chi.NewRouter()
 	bh.Register(r)
 	s.books = bh
