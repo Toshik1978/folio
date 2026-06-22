@@ -32,12 +32,12 @@ const (
 // Source scrapes Amazon for cover candidates.
 type Source struct {
 	BaseURL string
-	http    *http.Client
+	client  *http.Client
 }
 
 // New builds an Amazon cover source with the given per-request timeout.
 func New(timeout time.Duration) *Source {
-	return &Source{BaseURL: defaultBaseURL, http: &http.Client{Timeout: timeout}}
+	return &Source{BaseURL: defaultBaseURL, client: &http.Client{Timeout: timeout}}
 }
 
 // Name identifies the source.
@@ -61,7 +61,7 @@ func (s *Source) SearchCovers(ctx context.Context, q metasearch.Query) ([]metase
 	req.Header.Set("User-Agent", userAgent)
 	req.Header.Set("Accept-Language", "en-US,en;q=0.9")
 
-	resp, err := s.http.Do(req)
+	resp, err := s.client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("amazon request: %w", err)
 	}
