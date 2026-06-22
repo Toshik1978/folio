@@ -75,7 +75,7 @@ func (c *Coordinator) ApplyMatch(ctx context.Context, source, id string) (ebook.
 		lastErr = err
 	}
 	if lastErr != nil {
-		return ebook.Metadata{}, lastErr
+		return ebook.Metadata{}, fmt.Errorf("get metadata from fallback: %w", lastErr)
 	}
 
 	return ebook.Metadata{}, errors.New("no metadata sources configured")

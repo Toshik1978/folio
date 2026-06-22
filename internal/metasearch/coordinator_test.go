@@ -111,3 +111,14 @@ func (s *coreSuite) TestCoordinatorEnrichUnknownBook() {
 	s.Require().NoError(err)
 	s.False(ok)
 }
+
+func (s *coreSuite) TestCoordinatorEnrichSurfacesError() {
+	// Every source errors and returns no volumes: Enrich must surface the error
+	// and return ok=false (the lastErr return path of the Enrich loop).
+	gb := &fakeMeta{name: SourceGoogleBooks, searchErr: errors.New("upstream down")}
+	c := coord(NewRegistry(gb), fakeLookup{q: Query{Title: "x"}, ok: true})
+
+	_, ok, err := c.Enrich(context.Background(), 42)
+	s.Require().Error(err)
+	s.False(ok)
+}
