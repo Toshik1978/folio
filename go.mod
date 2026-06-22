@@ -18,6 +18,7 @@ require (
 	github.com/stretchr/testify v1.11.1
 	golang.org/x/crypto v0.53.0
 	golang.org/x/image v0.42.0
+	golang.org/x/net v0.55.0
 	golang.org/x/text v0.38.0
 	modernc.org/sqlite v1.52.0
 )
@@ -46,7 +47,6 @@ require (
 	github.com/sethvargo/go-retry v0.3.0 // indirect
 	github.com/stephenafamo/scan v0.7.0 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
-	golang.org/x/net v0.55.0 // indirect
 	golang.org/x/sync v0.21.0 // indirect
 	golang.org/x/sys v0.46.0 // indirect
 	gopkg.in/yaml.v2 v2.4.0 // indirect
