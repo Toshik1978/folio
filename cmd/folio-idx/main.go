@@ -23,6 +23,11 @@ import (
 	"github.com/Toshik1978/folio/internal/ingest"
 	"github.com/Toshik1978/folio/internal/libtype"
 	"github.com/Toshik1978/folio/internal/logging"
+	"github.com/Toshik1978/folio/internal/metasearch"
+	msamazon "github.com/Toshik1978/folio/internal/metasearch/providers/amazon"
+	msgoodreads "github.com/Toshik1978/folio/internal/metasearch/providers/goodreads"
+	msgoogle "github.com/Toshik1978/folio/internal/metasearch/providers/googlebooks"
+	msopenlibrary "github.com/Toshik1978/folio/internal/metasearch/providers/openlibrary"
 	"github.com/Toshik1978/folio/internal/opds"
 	"github.com/Toshik1978/folio/internal/server"
 	"github.com/Toshik1978/folio/internal/settings"
@@ -68,6 +73,18 @@ func run() int { //revive:disable:function-length
 	// quota. Covers it fetches are cached via the cover store.
 	enricher := ingest.NewEnricher(database, googlebooks.NewClient(log, cfg.GoogleKey))
 
+	// Cover search aggregates candidates from several providers. Google Books is
+	// reused here as a cover-only source; Amazon/Goodreads scrape; Open Library
+	// is REST. The providers carry their own per-request timeouts.
+	const providerTimeout = 8 * time.Second
+	coverRegistry := metasearch.NewRegistry(
+		msamazon.New(providerTimeout),
+		msgoodreads.New(providerTimeout),
+		msopenlibrary.New(providerTimeout),
+		msgoogle.New(googlebooks.NewClient(log, cfg.GoogleKey)),
+	)
+	coverSearch := metasearch.NewAggregator(log, coverRegistry)
+
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -103,7 +120,7 @@ func run() int { //revive:disable:function-length
 		Addr: ":" + cfg.Port,
 		Handler: server.New(log, server.Handlers{
 			API: []server.Registrar{
-				api.NewBooks(log, database, coverStore, extractor, enricher, coverStore, nil),
+				api.NewBooks(log, database, coverStore, extractor, enricher, coverStore, coverSearch),
 				catalogHandler,
 				api.NewLibraries(log, database, syncEngine),
 				api.NewSync(log, syncEngine, broker),
