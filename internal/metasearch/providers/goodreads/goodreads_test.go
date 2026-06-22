@@ -25,8 +25,8 @@ func TestParseCoversFromFixture(t *testing.T) {
 		require.Equal(t, metasearch.SourceGoodreads, c.Source)
 		require.NotEmpty(t, c.FullURL)
 	}
-	// Goodreads serves small thumbnails (_SX50_); upgrade to a larger size for FullURL.
-	require.Equal(t, "https://images-na.ssl-images-amazon.com/images/S/aaa._SX320_.jpg", got[0].FullURL)
+	// Goodreads serves small Amazon-CDN thumbnails (_SX50_); strip the modifier entirely for the original.
+	require.Equal(t, "https://images-na.ssl-images-amazon.com/images/S/aaa.jpg", got[0].FullURL)
 }
 
 func TestCapabilities(t *testing.T) {

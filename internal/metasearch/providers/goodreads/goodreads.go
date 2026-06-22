@@ -9,7 +9,6 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -27,10 +26,6 @@ const (
 	maxHTMLBytes = 4 << 20
 	imageClass   = "bookCover"
 )
-
-// sizeToken matches the Goodreads/Amazon-CDN size segment (e.g. "_SX50_") so we
-// can upgrade a search thumbnail to a larger render.
-var sizeToken = regexp.MustCompile(`\._S[XY]\d+_`)
 
 // Source scrapes Goodreads for cover candidates.
 type Source struct {
@@ -90,7 +85,7 @@ func parseCovers(r io.Reader) ([]metasearch.CoverCandidate, error) {
 				out = append(out, metasearch.CoverCandidate{
 					Source:   metasearch.SourceGoodreads,
 					ThumbURL: thumb,
-					FullURL:  sizeToken.ReplaceAllString(thumb, "._SX320_"),
+					FullURL:  metasearch.OriginalAmazonImage(thumb),
 				})
 			}
 		}

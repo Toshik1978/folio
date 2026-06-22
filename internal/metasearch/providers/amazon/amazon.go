@@ -89,7 +89,7 @@ func parseCovers(r io.Reader) ([]metasearch.CoverCandidate, error) {
 				out = append(out, metasearch.CoverCandidate{
 					Source:   metasearch.SourceAmazon,
 					ThumbURL: attr(n, "src"),
-					FullURL:  full,
+					FullURL:  metasearch.OriginalAmazonImage(full),
 				})
 			}
 		}

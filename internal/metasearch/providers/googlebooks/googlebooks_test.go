@@ -76,6 +76,21 @@ func TestSearchCoversMapsThumbnails(t *testing.T) {
 	require.Equal(t, "https://books.google.com/x.jpg", got[0].FullURL)
 }
 
+func TestSearchCoversStripsEdgeCurl(t *testing.T) {
+	src := New(stubClient{searchVols: []gb.Volume{
+		newVolume("1", "Dune", "http://books.google.com/x.jpg?zoom=1&edge=curl&source=gbs_api"),
+	}}, mapTitle)
+
+	got, err := src.SearchCovers(context.Background(), metasearch.Query{Title: "Dune"})
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	// ThumbURL keeps the original (small, with curl) for the grid preview.
+	require.Contains(t, got[0].ThumbURL, "edge=curl", "ThumbURL must retain edge=curl")
+	// FullURL has edge=curl stripped.
+	require.NotContains(t, got[0].FullURL, "edge=curl", "FullURL must not contain edge=curl")
+	require.Equal(t, "https://books.google.com/x.jpg?zoom=1&source=gbs_api", got[0].FullURL)
+}
+
 func TestSearchByISBNUsesISBNLookup(t *testing.T) {
 	src := New(stubClient{isbnVol: newVolume("isbn1", "Dune", ""), isbnOK: true}, mapTitle)
 

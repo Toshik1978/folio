@@ -58,7 +58,9 @@ func (s *Source) SearchCovers(ctx context.Context, q metasearch.Query) ([]metase
 			continue
 		}
 		u := httpsURL(thumb)
-		out = append(out, metasearch.CoverCandidate{Source: metasearch.SourceGoogleBooks, ThumbURL: u, FullURL: u})
+		out = append(out, metasearch.CoverCandidate{
+			Source: metasearch.SourceGoogleBooks, ThumbURL: u, FullURL: upscale(u),
+		})
 	}
 
 	return out, nil
@@ -128,6 +130,22 @@ func (s *Source) toVolume(v gb.Volume) metasearch.Volume {
 		Year:         ebook.ParseYear(v.VolumeInfo.PublishedDate),
 		ThumbnailURL: httpsURL(v.VolumeInfo.ImageLinks.Thumbnail),
 	}
+}
+
+// upscale returns a slightly higher-quality Google Books image URL by removing
+// the &edge=curl decoration (which adds a page-curl rendering artefact and
+// implies a smaller image). The transform is conservative — no zoom params are
+// added — so a rare miss simply falls back to the thumbnail, which the server
+// validates on apply anyway.
+func upscale(u string) string {
+	// Strip all three positional variants of the edge=curl parameter.
+	for _, pat := range []string{"&edge=curl", "edge=curl&", "edge=curl"} {
+		if stripped := strings.ReplaceAll(u, pat, ""); stripped != u {
+			return stripped
+		}
+	}
+
+	return u
 }
 
 // httpsURL upgrades an http:// image link to https://.

@@ -27,9 +27,9 @@ func TestParseCoversFromFixture(t *testing.T) {
 		require.Equal(t, metasearch.SourceAmazon, c.Source)
 		require.Contains(t, c.FullURL, "https://m.media-amazon.com/images/I/")
 	}
-	// The highest-density srcset entry is chosen as FullURL.
-	require.Equal(t, "https://m.media-amazon.com/images/I/aaa._AC_UL320_.jpg", got[0].FullURL)
-	require.Equal(t, "https://m.media-amazon.com/images/I/bbb._AC_UL640_.jpg", got[1].FullURL)
+	// The highest-density srcset entry is chosen and the size modifier is stripped to get the original.
+	require.Equal(t, "https://m.media-amazon.com/images/I/aaa.jpg", got[0].FullURL)
+	require.Equal(t, "https://m.media-amazon.com/images/I/bbb.jpg", got[1].FullURL)
 }
 
 func TestCapabilities(t *testing.T) {
