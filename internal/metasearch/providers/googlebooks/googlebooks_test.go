@@ -21,6 +21,7 @@ type stubClient struct {
 	getVol     gb.Volume
 	image      []byte
 	err        error
+	imageErr   error
 }
 
 func (s stubClient) Search(context.Context, string, string) ([]gb.Volume, error) {
@@ -40,7 +41,7 @@ func (s stubClient) GetVolume(context.Context, string) (gb.Volume, error) {
 }
 
 func (s stubClient) FetchImage(context.Context, string) ([]byte, error) {
-	return s.image, s.err
+	return s.image, s.imageErr
 }
 
 func newVolume(id, title, thumb string) gb.Volume {
@@ -111,12 +112,28 @@ func TestGetMapsAndDownloadsCover(t *testing.T) {
 	require.Equal(t, []byte("JPEGBYTES"), meta.Cover, "Get downloads the thumbnail into Cover")
 }
 
+// TestGetCoverFetchFailureIsNonFatal verifies the actual non-fatal path:
+// GetVolume succeeds (returns a volume with a thumbnail) but FetchImage fails —
+// Get must still return metadata with an empty Cover, not an error.
 func TestGetCoverFetchFailureIsNonFatal(t *testing.T) {
-	// A volume with a thumbnail but a failing image fetch still returns metadata.
 	src := New(stubClient{
-		getVol: newVolume("g", "Dune", "https://books.google.com/c.jpg"),
-		err:    errors.New("net"),
+		getVol:   newVolume("g", "Dune", "https://books.google.com/c.jpg"),
+		imageErr: errors.New("net"),
 	}, mapTitle)
+
+	meta, err := src.Get(context.Background(), "g")
+	require.NoError(t, err, "a failing image fetch is non-fatal")
+	require.Equal(t, "Dune", meta.Title)
+	require.Empty(t, meta.Cover, "cover is empty when fetch fails")
+}
+
+// TestGetVolumeErrorPropagates verifies that an error from GetVolume itself
+// (the shared err field) surfaces as an error from Get.
+func TestGetVolumeErrorPropagates(t *testing.T) {
+	src := New(stubClient{
+		err: errors.New("rpc unavailable"),
+	}, mapTitle)
+
 	_, err := src.Get(context.Background(), "g")
-	require.Error(t, err, "GetVolume itself failing is an error")
+	require.Error(t, err, "GetVolume failing is a real error")
 }
