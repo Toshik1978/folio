@@ -1,0 +1,110 @@
+package metasearch
+
+import (
+	"context"
+	"log/slog"
+	"slices"
+	"sync"
+	"time"
+)
+
+// defaultCoverTimeout bounds each provider's contribution to a cover search, so
+// one slow source can't stall the grid.
+const defaultCoverTimeout = 8 * time.Second
+
+// coverPriority ranks providers highest-quality first. Unknown sources sort last.
+var coverPriority = map[string]int{ //nolint:gochecknoglobals // package-level lookup table, not mutable state
+	SourceAmazon:      4,
+	SourceGoodreads:   3,
+	SourceOpenLibrary: 2,
+	SourceGoogleBooks: 1,
+}
+
+// Aggregator fans a cover query out to every CoverSource in its registry,
+// concurrently and best-effort: a provider error or timeout is logged and its
+// results dropped, never failing the whole search.
+type Aggregator struct {
+	log      *slog.Logger
+	registry *Registry
+	timeout  time.Duration
+}
+
+// NewAggregator builds an aggregator over the registry's cover sources.
+func NewAggregator(log *slog.Logger, reg *Registry) *Aggregator {
+	return &Aggregator{log: log, registry: reg, timeout: defaultCoverTimeout}
+}
+
+// SearchCovers queries all cover sources concurrently and returns the merged,
+// deduped, ranked candidates. It never returns an error: partial results are the
+// contract (the caller always has manual upload/URL as the floor).
+func (a *Aggregator) SearchCovers(ctx context.Context, q Query) []CoverCandidate {
+	sources := a.registry.CoverSources()
+	results := make([][]CoverCandidate, len(sources))
+
+	var wg sync.WaitGroup
+	for i, src := range sources {
+		wg.Go(func() {
+			cctx, cancel := context.WithTimeout(ctx, a.timeout)
+			defer cancel()
+			out, err := src.SearchCovers(cctx, q)
+			if err != nil {
+				a.log.Warn("cover source failed",
+					slog.String("source", src.Name()), slog.Any("error", err))
+				return
+			}
+			results[i] = out
+		})
+	}
+	wg.Wait()
+
+	return rankCovers(flatten(results))
+}
+
+// flatten concatenates per-source results in source order.
+func flatten(groups [][]CoverCandidate) []CoverCandidate {
+	var out []CoverCandidate
+	for _, g := range groups {
+		out = append(out, g...)
+	}
+
+	return out
+}
+
+// rankCovers dedupes by FullURL (keeping the higher-priority/higher-res copy)
+// then sorts by (provider priority desc, resolution desc).
+func rankCovers(in []CoverCandidate) []CoverCandidate {
+	best := make(map[string]CoverCandidate, len(in))
+	for _, c := range in {
+		if existing, ok := best[c.FullURL]; ok && !better(c, existing) {
+			continue
+		}
+		best[c.FullURL] = c
+	}
+	out := make([]CoverCandidate, 0, len(best))
+	for _, c := range best {
+		out = append(out, c)
+	}
+	slices.SortStableFunc(out, func(a, b CoverCandidate) int {
+		if better(a, b) {
+			return -1
+		}
+		if better(b, a) {
+			return 1
+		}
+
+		return 0
+	})
+
+	return out
+}
+
+// better reports whether a should rank ahead of b: higher provider priority
+// first, then larger pixel area.
+func better(a, b CoverCandidate) bool {
+	pa, pb := coverPriority[a.Source], coverPriority[b.Source]
+	if pa != pb {
+		return pa > pb
+	}
+
+	return a.Width*a.Height > b.Width*b.Height
+}
