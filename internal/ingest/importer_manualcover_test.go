@@ -7,6 +7,36 @@ import (
 	"github.com/Toshik1978/folio/internal/db/dbq"
 )
 
+// TestCoverWritesAreDeferredUntilCommit verifies that cover filesystem mutations
+// are not applied until the import batch commits: a rollback after a queued
+// cover save leaves no file on disk, while a subsequent commit does write it.
+func (s *importerSuite) TestCoverWritesAreDeferredUntilCommit() {
+	ctx := context.Background()
+	lib := s.insertLibrary("folder", "/lib/defer")
+
+	// Insert the book in a committed batch so we have a stable bookID.
+	seed := newImporter(s.log, s.db, s.store, 1)
+	base := s.rec(lib, "epub", "a.epub")
+	bookID, err := seed.add(ctx, base, 1)
+	s.Require().NoError(err)
+	s.Require().NoError(seed.commit())
+	s.False(s.store.Has(bookID), "no cover seeded yet")
+
+	// Queue a cover save for the existing book, then roll back: nothing on disk.
+	im := newImporter(s.log, s.db, s.store, 1000) // large batch; auto-commit disabled
+	r := s.rec(lib, "epub", "a.epub")
+	r.Cover = s.coverFixture()
+	im.saveCoverIfBetter(ctx, bookID, 0, r)
+	im.rollback()
+	s.False(s.store.Has(bookID), "rollback must not leave a cover on disk")
+
+	// Queue again on a fresh importer, then commit: cover must appear.
+	im2 := newImporter(s.log, s.db, s.store, 1000)
+	im2.saveCoverIfBetter(ctx, bookID, 0, r)
+	s.Require().NoError(im2.commit())
+	s.True(s.store.Has(bookID), "commit must flush the deferred cover to disk")
+}
+
 // TestManualCoverSurvivesResync proves a cover pinned at the manual sentinel
 // priority (1000, matching api.manualCoverPrio) is never downgraded by a later
 // import, whatever the incoming file's format priority. This is the end-to-end

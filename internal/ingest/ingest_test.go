@@ -238,33 +238,35 @@ func (s *helpersSuite) TestIngestHelpers() {
 	s.NotEmpty(inpxCP)
 }
 
-func (s *helpersSuite) TestRollbackRemovesCoversOfUncommittedBooks() {
+func (s *helpersSuite) TestRollbackLeavesNoCoverOnDisk() {
+	// With cover writes deferred until commit, a rollback must leave no cover on
+	// disk — even for new books whose DB row was never persisted.
 	lib := s.insertLibrary("folder", "/lib/rollback")
-	im := newImporter(s.log, s.db, s.store, 1000) // keep the batch open across the add
+	im := newImporter(s.log, s.db, s.store, 1000) // large batch; auto-commit disabled
 
 	bookID, err := im.add(context.Background(), bookRecord{
 		LibraryID: lib.ID, LibraryKey: "k1", Title: "T",
 		FileFormat: "epub", SourcePath: "a.epub", Cover: s.coverFixture(),
 	}, time.Now().Unix())
 	s.Require().NoError(err)
-	s.True(s.store.Has(bookID), "cover is written eagerly while the batch is open")
+	s.False(s.store.Has(bookID), "cover must not be written before commit")
 
 	im.rollback()
 
-	s.False(s.store.Has(bookID), "rolled-back books must not leave orphaned covers")
+	s.False(s.store.Has(bookID), "rollback must leave no cover on disk")
 }
 
-func (s *helpersSuite) TestRollbackCleansCoversWhenTxAlreadyClosed() {
-	// After a failed commit the tx is already nil but newBooks still lists the
-	// uncommitted books; the deferred rollback must clean their covers anyway.
+func (s *helpersSuite) TestRollbackDiscardsPendingCoversWhenTxNil() {
+	// A rollback with tx == nil (e.g. after a failed commit) must still discard
+	// queued cover ops so the caller never finds a cover that disagrees with the DB.
 	im := newImporter(s.log, s.db, s.store, 1)
 	const bookID = int64(9999)
-	s.Require().NoError(s.store.Save(bookID, s.coverFixture()))
-	im.newBooks = []int64{bookID} // as left behind by a failed commit
+	// Manually queue a cover save (simulates what saveCoverIfBetter would enqueue).
+	im.pendingCovers = []coverOp{{bookID: bookID, data: s.coverFixture()}}
 
-	im.rollback() // tx is nil; cleanup must still run
+	im.rollback() // tx is nil; pending ops must be discarded, not flushed
 
-	s.False(s.store.Has(bookID), "covers must be cleaned even when tx is already nil")
+	s.False(s.store.Has(bookID), "pending cover ops must be discarded on rollback")
 }
 
 func (s *helpersSuite) TestInsertBookDeduplicatesFTSAuthors() {

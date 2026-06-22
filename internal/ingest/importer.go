@@ -20,6 +20,13 @@ const undefinedLanguage = "und"
 // author-order-drift heals; the attributes let a human tell them apart.
 const msgIdentifierOverride = "identifier grouping overrode key-based grouping"
 
+// coverOp is a deferred cover filesystem mutation: non-nil data means Save,
+// nil data means Delete. Ops are queued during a batch and replayed on commit.
+type coverOp struct {
+	bookID int64
+	data   []byte // non-nil = Save; nil = Delete
+}
+
 // importer wraps the writable folio database and cover store, providing a
 // single place that knows how to persist a bookRecord (book row + authors +
 // genres + series + FTS entry) atomically and cache its cover.
@@ -31,11 +38,10 @@ type importer struct {
 	covers    CoverStore
 	batchSize int
 	coverPrio map[int64]int // bookID -> priority of the cover currently saved this run
-	// newBooks are books inserted in the current uncommitted batch. Their covers
-	// are written to disk eagerly, but AUTOINCREMENT ids are never reused, so a
-	// rolled-back batch would orphan those files forever; rollback deletes them.
-	newBooks []int64
-	count    int
+	// pendingCovers holds cover filesystem mutations deferred until commit, so a
+	// rolled-back batch never leaves a cover that disagrees with the DB.
+	pendingCovers []coverOp
+	count         int
 }
 
 // newImporter builds an importer with an initialized cover-priority tracker. The
@@ -67,19 +73,36 @@ func (im *importer) begin(ctx context.Context) error {
 
 func (im *importer) commit() error {
 	if im.tx == nil {
+		// No open transaction: flush any pending cover ops accumulated without
+		// an explicit begin (e.g. saveCoverIfBetter called after a prior commit).
+		im.flushPendingCovers()
 		return nil
 	}
 	err := im.tx.Commit()
 	im.tx = nil
 	im.queries = nil
 	if err != nil {
-		// newBooks intentionally survives a failed commit: the rows never
-		// persisted, so the deferred rollback must still delete their covers.
+		// On a failed commit the DB rows never persisted; discard the pending
+		// cover ops so the caller's deferred rollback leaves disk clean.
+		im.pendingCovers = nil
 		return fmt.Errorf("commit import tx: %w", err)
 	}
-	im.newBooks = nil
+	im.flushPendingCovers()
 
 	return nil
+}
+
+// flushPendingCovers replays all queued cover operations in order, then clears
+// the queue. Called only after the DB transaction has successfully committed.
+func (im *importer) flushPendingCovers() {
+	for _, op := range im.pendingCovers {
+		if op.data != nil {
+			_ = im.covers.Save(op.bookID, op.data)
+		} else {
+			_ = im.covers.Delete(op.bookID)
+		}
+	}
+	im.pendingCovers = nil
 }
 
 func (im *importer) rollback() {
@@ -88,10 +111,9 @@ func (im *importer) rollback() {
 		im.tx = nil
 		im.queries = nil
 	}
-	for _, id := range im.newBooks {
-		_ = im.covers.Delete(id) // best-effort orphan cleanup
-	}
-	im.newBooks = nil
+	// Discard any queued cover ops: nothing was written to disk during the
+	// batch, so there is nothing to clean up.
+	im.pendingCovers = nil
 }
 
 func (im *importer) getQueries(ctx context.Context) (*dbq.Queries, error) {
@@ -130,7 +152,6 @@ func (im *importer) add(ctx context.Context, rec bookRecord, addedAt int64) (int
 		if err != nil {
 			return 0, err
 		}
-		im.newBooks = append(im.newBooks, bookID)
 	case err != nil:
 		return 0, fmt.Errorf("find book by key: %w", err)
 	default:
@@ -239,9 +260,7 @@ func (im *importer) saveCoverIfBetter(ctx context.Context, bookID, persistedPrio
 	if cur, ok := im.coverPrio[bookID]; ok && int(p) <= cur {
 		return
 	}
-	if err := im.covers.Save(bookID, rec.Cover); err != nil {
-		return
-	}
+	im.pendingCovers = append(im.pendingCovers, coverOp{bookID: bookID, data: rec.Cover})
 	im.coverPrio[bookID] = int(p)
 	if p == persistedPrio {
 		return
@@ -261,9 +280,7 @@ func (im *importer) remove(ctx context.Context, bookID int64) error {
 	if err := q.DeleteBook(ctx, bookID); err != nil {
 		return fmt.Errorf("delete book %d: %w", bookID, err)
 	}
-	if err := im.covers.Delete(bookID); err != nil {
-		return fmt.Errorf("delete cover %d: %w", bookID, err)
-	}
+	im.pendingCovers = append(im.pendingCovers, coverOp{bookID: bookID})
 
 	return nil
 }
