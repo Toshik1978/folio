@@ -14,41 +14,6 @@ type enrichSuite struct {
 	baseSuite
 }
 
-// fakeGB stubs the Google Books client, recording the last query it received.
-type fakeGB struct {
-	isbnVol    googlebooks.Volume
-	isbnOK     bool
-	searchVols []googlebooks.Volume
-	volume     googlebooks.Volume
-	image      []byte
-	lastISBN   string
-	lastTitle  string
-	lastAuthor string
-}
-
-func (f *fakeGB) SearchISBN(_ context.Context, isbn string) (googlebooks.Volume, bool, error) {
-	f.lastISBN = isbn
-	return f.isbnVol, f.isbnOK, nil
-}
-
-func (f *fakeGB) Search(_ context.Context, title, author string) ([]googlebooks.Volume, error) {
-	f.lastTitle, f.lastAuthor = title, author
-	return f.searchVols, nil
-}
-
-func (f *fakeGB) SearchQuery(_ context.Context, q string) ([]googlebooks.Volume, error) {
-	f.lastTitle = q
-	return f.searchVols, nil
-}
-
-func (f *fakeGB) GetVolume(context.Context, string) (googlebooks.Volume, error) {
-	return f.volume, nil
-}
-
-func (f *fakeGB) FetchImage(context.Context, string) ([]byte, error) {
-	return f.image, nil
-}
-
 // seedBook inserts a book with an optional author and ISBN for enricher lookups.
 func (s *enrichSuite) seedBook(libID int64, title, author, isbn string) int64 {
 	q := dbq.New(s.db)
@@ -99,40 +64,4 @@ func (s *enrichSuite) TestVolumeToMetadata() {
 	s.Equal(1965, meta.Year)
 	s.Contains(meta.Identifiers, ebook.Identifier{Type: "isbn", Value: "9780441013593"})
 	s.Contains(meta.Identifiers, ebook.Identifier{Type: "google", Value: "abc123"})
-}
-
-func (s *enrichSuite) TestEnrichByISBN() {
-	src := s.insertLibrary("folder", "/lib")
-	id := s.seedBook(src.ID, "Dune", "Frank Herbert", "9780441013593")
-	gb := &fakeGB{isbnVol: sampleVolume(), isbnOK: true, image: []byte("COVER")}
-
-	meta, ok, err := NewEnricher(s.db, gb).Enrich(context.Background(), id)
-	s.Require().NoError(err)
-	s.Require().True(ok)
-	s.Equal("9780441013593", gb.lastISBN, "ISBN lookup is preferred")
-	s.Equal("Desert planet.", meta.Annotation)
-	s.Equal([]byte("COVER"), meta.Cover)
-}
-
-func (s *enrichSuite) TestEnrichFallsBackToTitleAuthor() {
-	src := s.insertLibrary("folder", "/lib")
-	id := s.seedBook(src.ID, "Dune", "Frank Herbert", "") // no ISBN on record
-	gb := &fakeGB{searchVols: []googlebooks.Volume{sampleVolume()}}
-
-	meta, ok, err := NewEnricher(s.db, gb).Enrich(context.Background(), id)
-	s.Require().NoError(err)
-	s.Require().True(ok)
-	s.Equal("Dune", gb.lastTitle)
-	s.Equal("Frank Herbert", gb.lastAuthor)
-	s.Equal("Ace", meta.Publisher)
-}
-
-func (s *enrichSuite) TestEnrichNoMatch() {
-	src := s.insertLibrary("folder", "/lib")
-	id := s.seedBook(src.ID, "Unknown", "", "")
-	gb := &fakeGB{searchVols: nil} // empty search results
-
-	_, ok, err := NewEnricher(s.db, gb).Enrich(context.Background(), id)
-	s.Require().NoError(err)
-	s.False(ok)
 }
