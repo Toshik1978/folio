@@ -58,7 +58,67 @@
           </button>
         </form>
 
-        <!-- Phase 2 mounts the provider search grid below this line. -->
+        <div class="divider my-3 text-xs">or search providers</div>
+
+        <form class="mb-3 flex gap-2" @submit.prevent="runSearch">
+          <input
+            v-model="searchTerm"
+            data-testid="cover-search-input"
+            type="text"
+            placeholder="Search Amazon, Goodreads, Open Library, Google Books"
+            class="input input-bordered input-sm flex-1"
+          />
+          <button
+            type="submit"
+            data-testid="cover-search-go"
+            class="btn btn-sm"
+            :disabled="searching"
+            @click.prevent="runSearch"
+          >
+            Search
+          </button>
+        </form>
+
+        <p v-if="searching" class="text-base-content/60 text-xs">Searching…</p>
+        <p v-else-if="searched && candidates.length === 0" class="text-base-content/60 text-xs">
+          No covers found — try a deep link below.
+        </p>
+
+        <div v-if="candidates.length" class="grid grid-cols-4 gap-2">
+          <button
+            v-for="(c, i) in candidates"
+            :key="c.full_url + i"
+            type="button"
+            data-testid="cover-candidate"
+            class="border-base-300 hover:border-primary rounded border p-1"
+            :title="c.source"
+            :disabled="busy"
+            @click="applyCandidate(c)"
+          >
+            <img
+              :src="c.thumb_url"
+              :alt="c.source"
+              class="h-28 w-full object-contain"
+              loading="lazy"
+            />
+            <span class="text-base-content/60 block truncate text-[10px]">{{ c.source }}</span>
+          </button>
+        </div>
+
+        <div class="mt-3 flex flex-wrap gap-2">
+          <a
+            v-for="dl in deepLinks"
+            :key="dl.label"
+            :data-testid="`deeplink-${dl.label.toLowerCase()}`"
+            :href="dl.href"
+            target="_blank"
+            rel="noopener noreferrer"
+            class="btn btn-ghost btn-xs"
+          >
+            <i class="pi pi-external-link" />
+            {{ dl.label }}
+          </a>
+        </div>
       </div>
       <div class="modal-backdrop" @click="emit('close')"></div>
     </dialog>
@@ -66,12 +126,12 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref } from 'vue';
+import { computed, ref, watch } from 'vue';
 
-import { setCoverFromUrl, uploadCover } from '@/api';
+import { fetchCoverCandidates, setCoverFromUrl, uploadCover } from '@/api';
 import { useModalFocus } from '@/composables/useModalFocus';
 import { useToast } from '@/composables/useToast';
-import type { Book } from '@/types';
+import type { Book, CoverCandidate } from '@/types';
 
 const props = defineProps<{ book: Book; open: boolean }>();
 const emit = defineEmits<{ close: []; applied: [book: Book] }>();
@@ -129,4 +189,45 @@ function applyURL(): void {
   const u = url.value.trim();
   if (u) void send(() => setCoverFromUrl(props.book.id, u));
 }
+
+const searchTerm = ref('');
+const searching = ref(false);
+const searched = ref(false);
+const candidates = ref<CoverCandidate[]>([]);
+
+// Seed the provider search from the book's title so one click usually suffices.
+watch(
+  () => props.open,
+  (open) => {
+    if (open && !searchTerm.value) searchTerm.value = props.book.title;
+  },
+  { immediate: true },
+);
+
+async function runSearch(): Promise<void> {
+  searching.value = true;
+  try {
+    candidates.value = await fetchCoverCandidates(props.book.id, searchTerm.value);
+  } catch (err) {
+    toast.error(`Cover search failed: ${(err as Error).message}`);
+    candidates.value = [];
+  } finally {
+    searching.value = false;
+    searched.value = true;
+  }
+}
+
+function applyCandidate(c: CoverCandidate): void {
+  void send(() => setCoverFromUrl(props.book.id, c.full_url));
+}
+
+const deepLinks = computed(() => {
+  const term = encodeURIComponent(searchTerm.value || props.book.title);
+
+  return [
+    { label: 'Amazon', href: `https://www.amazon.com/s?k=${term}&i=stripbooks` },
+    { label: 'Goodreads', href: `https://www.goodreads.com/search?q=${term}` },
+    { label: 'Google', href: `https://www.google.com/search?tbm=isch&q=${term}+book+cover` },
+  ];
+});
 </script>
