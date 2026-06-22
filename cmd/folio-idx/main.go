@@ -81,7 +81,7 @@ func run() int { //revive:disable:function-length
 		msamazon.New(providerTimeout),
 		msgoodreads.New(providerTimeout),
 		msopenlibrary.New(providerTimeout),
-		msgoogle.New(googlebooks.NewClient(log, cfg.GoogleKey)),
+		msgoogle.New(googlebooks.NewClient(log, cfg.GoogleKey), ingest.VolumeToMetadata),
 	)
 	coverSearch := metasearch.NewAggregator(log, coverRegistry)
 
