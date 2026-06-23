@@ -12,9 +12,16 @@ const props = defineProps<{ modelValue: IdentifierInput[] }>();
 const emit = defineEmits<{ 'update:modelValue': [value: IdentifierInput[]] }>();
 
 // --- Stable-key infrastructure -------------------------------------------
-// Each row carries a uid so Vue keys by row identity, not position. Removing a
-// middle row therefore reuses the surviving DOM nodes rather than destroying and
-// recreating them, which preserves focus and IME composition state.
+// `rows` is the source of truth for row identity. Each row carries a stable
+// `_uid` so Vue keys by identity, not position: removing a middle row reuses the
+// surviving DOM nodes, and editing a value keeps the same <input> node — both
+// preserving focus and IME composition state.
+//
+// User actions mutate `rows` in place (same uid on edit, splice on remove, push
+// on add) and then emit. The parent echoes every emit back as a new modelValue;
+// the watch below recognises that echo and skips re-seeding, so our in-place
+// rows survive. Only a genuine external change (e.g. loading a different book)
+// re-seeds rows with fresh uids.
 
 let nextUid = 0;
 function uid(): number {
@@ -25,34 +32,45 @@ interface Row extends IdentifierInput {
   _uid: number;
 }
 
-// Internal row list. Reconciled from modelValue on every external change.
-const rows = ref<Row[]>([]);
-
-// Reconcile modelValue -> rows: assign a stable uid to each incoming item by
-// matching on (type, value). Items already present keep their uid; genuinely
-// new items get a fresh one. This preserves identity for items that haven't
-// changed while correctly handling parent-driven additions.
-function reconcile(incoming: IdentifierInput[]): void {
-  const prev = rows.value;
-  const used = new Set<number>();
-
-  rows.value = incoming.map((item) => {
-    // Try to find an existing row with the same type+value that hasn't been
-    // matched yet (handles duplicates correctly).
-    const match = prev.find(
-      (r) => !used.has(r._uid) && r.type === item.type && r.value === item.value,
-    );
-    if (match) {
-      used.add(match._uid);
-      return match;
-    }
-    return { ...item, _uid: uid() };
-  });
+// strip drops the internal `_uid`, yielding the public IdentifierInput shape.
+function strip(rs: Row[]): IdentifierInput[] {
+  return rs.map((row) => ({ type: row.type, value: row.value }));
 }
 
-// Seed on mount, then track parent changes.
-reconcile(props.modelValue);
-watch(() => props.modelValue, reconcile, { deep: false });
+// seed replaces rows wholesale, assigning a fresh uid to every item. Used on
+// mount and on genuine external modelValue changes.
+function seed(incoming: IdentifierInput[]): void {
+  rows.value = incoming.map((item) => ({ type: item.type, value: item.value, _uid: uid() }));
+}
+
+// sameAsRows reports whether `incoming` deep-equals what we'd currently emit —
+// i.e. it is the echo of our own change rather than an external edit.
+function sameAsRows(incoming: IdentifierInput[]): boolean {
+  const current = rows.value;
+  if (incoming.length !== current.length) {
+    return false;
+  }
+  return incoming.every(
+    (item, i) => item.type === current[i].type && item.value === current[i].value,
+  );
+}
+
+// Internal row list. Seeded from modelValue on mount and on external changes.
+const rows = ref<Row[]>([]);
+seed(props.modelValue);
+
+// Re-seed only on external modelValue changes. The echo of our own emit
+// deep-equals the current rows, so we skip it and keep the in-place rows (and
+// thus stable uids / DOM nodes).
+watch(
+  () => props.modelValue,
+  (incoming) => {
+    if (!sameAsRows(incoming)) {
+      seed(incoming);
+    }
+  },
+  { deep: false },
+);
 
 // --- Known types -----------------------------------------------------------
 
@@ -66,8 +84,10 @@ const knownValues = KNOWN_TYPES.map((t) => t.value);
 
 // The first known type not already used, so a new row defaults to something
 // useful (identifiers are one-per-type) and falls back to ISBN when all are taken.
+// Reads `rows` (the source of truth) so it is correct even before the echoed
+// modelValue arrives.
 function nextDefaultType(): string {
-  const used = new Set(props.modelValue.map((r) => r.type));
+  const used = new Set(rows.value.map((r) => r.type));
   return knownValues.find((t) => !used.has(t)) ?? 'isbn';
 }
 
@@ -81,24 +101,25 @@ function typeOptions(rowType: string): { value: string; label: string }[] {
   return KNOWN_TYPES;
 }
 
-// --- Mutations (props-down / events-up; never mutate the prop) -------------
-
-function strip(rs: Row[]): IdentifierInput[] {
-  return rs.map(({ _uid: _uid, ...item }) => item);
-}
+// --- Mutations -------------------------------------------------------------
+// Each handler mutates `rows` in place (preserving uids where identity is kept)
+// then emits the stripped list. We never mutate the `modelValue` prop itself.
 
 function patch(index: number, change: Partial<IdentifierInput>): void {
-  const updated = rows.value.map((row, i) => (i === index ? { ...row, ...change } : row));
-  emit('update:modelValue', strip(updated));
+  // In place: same _uid, so the row's DOM node (and focus/IME) survives the edit.
+  rows.value[index] = { ...rows.value[index], ...change };
+  emit('update:modelValue', strip(rows.value));
 }
 
 function remove(index: number): void {
-  const updated = rows.value.filter((_, i) => i !== index);
-  emit('update:modelValue', strip(updated));
+  // Splice keeps every surviving row's _uid, so their DOM nodes are reused.
+  rows.value.splice(index, 1);
+  emit('update:modelValue', strip(rows.value));
 }
 
 function add(): void {
-  emit('update:modelValue', [...strip(rows.value), { type: nextDefaultType(), value: '' }]);
+  rows.value.push({ type: nextDefaultType(), value: '', _uid: uid() });
+  emit('update:modelValue', strip(rows.value));
 }
 </script>
 
