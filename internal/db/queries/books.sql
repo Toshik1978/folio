@@ -63,6 +63,8 @@ SELECT COALESCE(publisher, '') AS name, COUNT(*) AS book_count
 FROM books
 WHERE publisher_fold IS NOT NULL
   AND publisher_fold != ''
+  -- char() bounds mirror cyrLo/cyrHi/latLo/latHi in internal/api/letters.go;
+  -- drift guard: internal/api/letters_bounds_test.go TestSQLBucketBoundsMatchGoConstants
   AND NOT ((publisher_fold >= char(1040) AND publisher_fold < char(1072)) OR
            (publisher_fold >= char(65) AND publisher_fold < char(91)))
   AND (CAST(@library_id AS INTEGER) = 0 OR library_id = @library_id)

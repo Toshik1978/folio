@@ -50,6 +50,8 @@ SELECT s.id,
         WHERE b.series_id = s.id
           AND (CAST(@library_id AS INTEGER) = 0 OR b.library_id = @library_id)) AS book_count
 FROM series s
+-- char() bounds mirror cyrLo/cyrHi/latLo/latHi in internal/api/letters.go;
+-- drift guard: internal/api/letters_bounds_test.go TestSQLBucketBoundsMatchGoConstants
 WHERE NOT ((s.name_fold >= char(1040) AND s.name_fold < char(1072)) OR
            (s.name_fold >= char(65) AND s.name_fold < char(91)))
   AND EXISTS (SELECT 1
