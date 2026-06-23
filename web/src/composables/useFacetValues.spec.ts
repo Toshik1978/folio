@@ -1,11 +1,15 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { ref } from 'vue';
 
 import { fetchFacets } from '@/api';
 
 import { useFacetValues } from './useFacetValues';
 
 vi.mock('@/api', () => ({ fetchFacets: vi.fn() }));
-vi.mock('./useLibrary', () => ({ useLibrary: () => ({ libraryId: { value: null } }) }));
+
+// Mutable libraryId so tests can simulate a library switch mid-load.
+const libraryId = ref<number | null>(null);
+vi.mock('./useLibrary', () => ({ useLibrary: () => ({ libraryId }) }));
 const toastError = vi.fn();
 vi.mock('./useToast', () => ({
   useToast: () => ({
@@ -25,6 +29,7 @@ describe('useFacetValues', () => {
   beforeEach(() => {
     vi.mocked(fetchFacets).mockReset();
     toastError.mockClear();
+    libraryId.value = null;
   });
 
   it('loads format/language values', async () => {
@@ -49,5 +54,41 @@ describe('useFacetValues', () => {
     await load();
     expect(toastError).toHaveBeenCalledWith(expect.stringContaining('boom'));
     expect(formats.value).toEqual([]);
+  });
+
+  it('ignores out-of-order load: later fetch for lib A resolves after lib B load', async () => {
+    // Library A facets that will arrive LATE.
+    const facetsA = { formats: ['mobi'], languages: ['de'] };
+    // Library B facets that will arrive FIRST (but for a newer load).
+    const facetsB = { formats: ['epub', 'fb2'], languages: ['en', 'ru'] };
+
+    let resolveA!: (v: typeof facetsA) => void;
+    const promiseA = new Promise<typeof facetsA>((res) => {
+      resolveA = res;
+    });
+
+    // fetchFacets: first call (lib A) returns a promise we control; second call
+    // (lib B) resolves immediately.
+    vi.mocked(fetchFacets)
+      .mockImplementationOnce(() => promiseA)
+      .mockResolvedValueOnce(facetsB);
+
+    libraryId.value = 1; // lib A
+    const { formats, languages, load } = useFacetValues();
+
+    // Start load for lib A — it is suspended at the await.
+    const loadAPromise = load();
+
+    // Switch to lib B and complete its load before A resolves.
+    libraryId.value = 2;
+    await load(); // lib B resolves immediately; B's facets now committed.
+
+    // Now let lib A's stale response arrive.
+    resolveA(facetsA);
+    await loadAPromise;
+
+    // B's facets must survive; A's stale response must be discarded.
+    expect(formats.value).toEqual(facetsB.formats);
+    expect(languages.value).toEqual(facetsB.languages);
   });
 });
