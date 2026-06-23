@@ -288,20 +288,16 @@ func (h *BooksHandler) updateBook(w http.ResponseWriter, r *http.Request) {
 		Language:     strings.TrimSpace(req.Language),
 		Annotation:   req.Annotation,
 	}
-	if _, err := h.applyEnrichment(r.Context(), &book, meta, true, false); err != nil {
+	// Apply the scalar edit and the identifier reconcile in ONE transaction so a
+	// failure can never leave the book's fields updated but its identifiers stale.
+	// Identifiers are reconciled here rather than inside the shared applyEnrichment
+	// engine because the manual edit is the only authoritative-replacement path (it
+	// may delete), whereas the engine — also used by Fix Match — only ever upserts.
+	book, err := h.saveManualEdit(r.Context(), book, meta, req.Identifiers)
+	if err != nil {
 		h.log.Error("manual edit", slog.Int64("book", id), slog.Any("error", err))
 		h.writeError(w, http.StatusInternalServerError, "failed to save edit")
 		return
-	}
-	// Identifiers are reconciled outside applyEnrichment: the manual edit is the
-	// only authoritative-replacement path (it may delete), whereas the shared
-	// engine — also used by Fix Match — only ever upserts.
-	if req.Identifiers != nil {
-		if err := h.reconcileBookIdentifiers(r.Context(), id, *req.Identifiers); err != nil {
-			h.log.Error("manual edit identifiers", slog.Int64("book", id), slog.Any("error", err))
-			h.writeError(w, http.StatusInternalServerError, "failed to save identifiers")
-			return
-		}
 	}
 	view, err := h.toSingleBookView(r.Context(), book)
 	if err != nil {
@@ -312,36 +308,73 @@ func (h *BooksHandler) updateBook(w http.ResponseWriter, r *http.Request) {
 	h.writeJSON(w, http.StatusOK, view)
 }
 
-// reconcileBookIdentifiers replaces a book's entire identifier set with the
-// user's submitted one. It cleans the input through the importer's rules (so a
-// manually-typed ISBN lands canonical and useless schemes are dropped), then in a
-// single transaction clears the existing rows and re-inserts the cleaned set —
-// the only path allowed to delete identifiers. An empty input therefore clears
-// them all, which is what a user who removed every row intends.
-func (h *BooksHandler) reconcileBookIdentifiers(ctx context.Context, bookID int64, in []identifierInput) error {
+// saveManualEdit applies a manual metadata edit — the scalar fields and, when
+// identifiers is non-nil, the full identifier replacement — in ONE transaction,
+// so the edit commits or rolls back atomically and a failure can never leave the
+// book's fields updated but its identifiers stale. Identifiers are reconciled
+// here rather than inside the shared applyEnrichment engine because the manual
+// edit is the only authoritative-replacement path (it may delete), whereas the
+// engine — also used by Fix Match — only ever upserts. It returns book with any
+// committed scalar change published.
+func (h *BooksHandler) saveManualEdit(
+	ctx context.Context,
+	book dbq.Book,
+	meta ebook.Metadata,
+	identifiers *[]identifierInput,
+) (dbq.Book, error) {
+	b := book
+	changed := false
+	if err := h.writeGuard.WithTx(ctx, h.db, func(tx *sql.Tx) error {
+		q := dbq.New(tx)
+		c, aErr := h.applyEnrichmentTx(ctx, q, &b, meta, true, false)
+		if aErr != nil {
+			return aErr
+		}
+		changed = c
+		if identifiers != nil {
+			if iErr := reconcileIdentifiersTx(ctx, q, b.ID, *identifiers); iErr != nil {
+				return iErr
+			}
+		}
+		if h.editTxHook != nil {
+			return h.editTxHook()
+		}
+
+		return nil
+	}); err != nil {
+		return book, fmt.Errorf("save manual edit: %w", err)
+	}
+	if changed {
+		return b, nil // publish only on a committed displayable change
+	}
+
+	return book, nil
+}
+
+// reconcileIdentifiersTx replaces a book's entire identifier set with the user's
+// submitted one, within the caller's transaction q. It cleans the input through
+// the importer's rules (so a manually-typed ISBN lands canonical and useless
+// schemes are dropped), then clears the existing rows and re-inserts the cleaned
+// set — the only path allowed to delete identifiers. An empty input therefore
+// clears them all, which is what a user who removed every row intends. It runs in
+// updateBook's single edit transaction so the identifier change commits or rolls
+// back together with the scalar edit.
+func reconcileIdentifiersTx(ctx context.Context, q *dbq.Queries, bookID int64, in []identifierInput) error {
 	raw := make([]ebook.Identifier, 0, len(in))
 	for _, id := range in {
 		raw = append(raw, ebook.Identifier{Type: id.Type, Value: id.Value})
 	}
 	cleaned := ingest.CleanIdentifiers(raw)
 
-	if err := h.writeGuard.WithTx(ctx, h.db, func(tx *sql.Tx) error {
-		q := dbq.New(tx)
-
-		if err := q.DeleteBookIdentifiers(ctx, bookID); err != nil {
-			return fmt.Errorf("clear identifiers: %w", err)
+	if err := q.DeleteBookIdentifiers(ctx, bookID); err != nil {
+		return fmt.Errorf("clear identifiers: %w", err)
+	}
+	for _, id := range cleaned {
+		if err := q.InsertBookIdentifier(ctx, dbq.InsertBookIdentifierParams{
+			BookID: bookID, Type: id.Type, Value: id.Value,
+		}); err != nil {
+			return fmt.Errorf("insert identifier %s: %w", id.Type, err)
 		}
-		for _, id := range cleaned {
-			if err := q.InsertBookIdentifier(ctx, dbq.InsertBookIdentifierParams{
-				BookID: bookID, Type: id.Type, Value: id.Value,
-			}); err != nil {
-				return fmt.Errorf("insert identifier %s: %w", id.Type, err)
-			}
-		}
-
-		return nil
-	}); err != nil {
-		return fmt.Errorf("reconcile identifiers: %w", err)
 	}
 
 	return nil
