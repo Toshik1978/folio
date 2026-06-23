@@ -8,6 +8,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/Toshik1978/folio/internal/ebook"
+	"github.com/Toshik1978/folio/internal/ingest"
 )
 
 // enrichSuite unit-tests applyEnrichment directly (the shared persist path behind
@@ -140,4 +141,25 @@ func (s *enrichSuite) TestApplyEnrichmentKeepsExistingGenres() {
 	s.Require().NoError(err)
 	s.Require().Len(genres, 1, "gap-fill leaves existing genres untouched")
 	s.Equal("Existing", genres[0].Name)
+}
+
+// TestApplyMatchCanonicalizesGenres asserts that a Fix Match whose genres include
+// a raw FB2 code (e.g. "sf") stores the canonical taxonomy name, not the raw code.
+// This regression guard ensures the edit/enrich path matches what the importer stores.
+func (s *enrichSuite) TestApplyMatchCanonicalizesGenres() {
+	src := s.seedLibrary("folder", "/lib")
+	id := s.seedBook(src, bookSeed{Title: "x"})
+	book, err := s.q.GetBook(s.T().Context(), id)
+	s.Require().NoError(err)
+
+	// "sf" is a raw FB2 code; the canonical form must be stored, not "sf" itself.
+	meta := ebook.Metadata{Annotation: "desc", Genres: []string{"sf"}}
+	_, err = s.books.applyEnrichment(s.T().Context(), &book, meta, true, false) // overwrite = Fix Match
+	s.Require().NoError(err)
+
+	genres, err := s.q.ListGenresForBook(s.T().Context(), id)
+	s.Require().NoError(err)
+	s.Require().Len(genres, 1)
+	s.NotEqual("sf", genres[0].Name, "raw FB2 code must not be stored")
+	s.Equal(ingest.CanonicalizeGenres([]string{"sf"})[0], genres[0].Name, "canonical name must be stored")
 }
