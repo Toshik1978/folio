@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
 )
@@ -12,6 +13,10 @@ import (
 // loopback. Tests that need to exercise the fetch path (not the host-check path)
 // install this override in SetupTest so httptest.NewServer URLs are not blocked.
 func allowAllHosts(_ context.Context, _ string) bool { return false }
+
+// allowAllIPs is a dialIPBlocked stub that permits every resolved IP, including
+// loopback, so fetch-path tests can dial httptest servers bound to 127.0.0.1.
+func allowAllIPs(net.IP) bool { return false }
 
 type editSuite struct {
 	baseSuite
@@ -24,10 +29,12 @@ type editSuite struct {
 func (s *editSuite) SetupTest() {
 	s.baseSuite.SetupTest()
 	s.books.blockedHost = allowAllHosts
+	s.books.dialIPBlocked = allowAllIPs
 }
 
 func (s *editSuite) TearDownTest() {
 	s.books.blockedHost = isBlockedHost // restore production guard after each test
+	s.books.dialIPBlocked = isBlockedIP
 	s.baseSuite.TearDownTest()
 }
 
@@ -301,6 +308,31 @@ func (s *editSuite) TestSetCoverRejectsLoopbackURL() {
 	w := s.do(http.MethodPost, "/books/"+itoa(id)+"/cover", map[string]string{"url": "http://127.0.0.1:1/x"})
 	s.Equal(http.StatusBadRequest, w.Code)
 	s.False(s.covers.Has(id), "no cover must be saved for a blocked URL")
+}
+
+// TestSetCoverBlocksDialToInternalIP verifies the dial-time SSRF backstop: a host
+// that passes the pre-flight blockedHost check (here bypassed via allowAllHosts,
+// standing in for a DNS-rebinding answer that resolves to a public IP at check
+// time) is still refused when the transport actually dials a blocked address. The
+// initial URL targets a live loopback httptest server, so only the connect-time
+// guard — not the host-name pre-check — can stop it.
+func (s *editSuite) TestSetCoverBlocksDialToInternalIP() {
+	s.books.dialIPBlocked = isBlockedIP // real connect-time guard for this test
+	defer func() { s.books.dialIPBlocked = allowAllIPs }()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write(s.jpegFixture())
+	}))
+	defer srv.Close()
+
+	src := s.seedLibrary("folder", "/lib")
+	id := s.seedBook(src, bookSeed{Title: "x"})
+
+	// blockedHost is allowAllHosts (SetupTest), so the URL passes the pre-flight
+	// host check; the dial to 127.0.0.1 must still be refused by the Dialer guard.
+	w := s.do(http.MethodPost, "/books/"+itoa(id)+"/cover", map[string]string{"url": srv.URL})
+	s.Equal(http.StatusBadGateway, w.Code, "a dial to a blocked IP must fail the fetch")
+	s.False(s.covers.Has(id), "no cover must be saved when the dial is blocked")
 }
 
 // TestSetCoverRejectsRedirectToLoopback verifies that a redirect from a

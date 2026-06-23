@@ -6,8 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	stdsync "sync"
+	"syscall"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -88,10 +90,19 @@ type BooksHandler struct {
 	// boundary, covers every library and any already-stored data.
 	annotationPolicy *bluemonday.Policy
 
-	// blockedHost is the SSRF guard used in production. Tests may replace it with a
-	// stub that allows loopback httptest servers while still exercising fetch logic.
-	// Production code always uses isBlockedHost; this indirection is the only seam.
+	// blockedHost is the pre-flight SSRF guard: it resolves the user-supplied host
+	// and rejects one that maps to an internal address before any fetch. Tests may
+	// replace it with a stub that allows loopback httptest servers while still
+	// exercising fetch logic. Production code always uses isBlockedHost.
 	blockedHost func(ctx context.Context, host string) bool
+	// dialIPBlocked is the authoritative connect-time SSRF guard. blockedHost
+	// validates the hostname before the fetch, but coverFetchClient's transport
+	// resolves DNS again at dial time, so a rebinding answer (public IP at check
+	// time, internal IP at dial time) could otherwise slip past the pre-flight
+	// check. The dialer's Control hook runs this against the concrete IP the
+	// transport is about to connect to, closing that gap. Defaults to isBlockedIP;
+	// tests relax it to allow loopback httptest servers.
+	dialIPBlocked func(net.IP) bool
 	// coverFetchClient fetches cover URLs the user picked. A dedicated client keeps
 	// the timeout off the shared default transport and rejects redirects to internal
 	// addresses (SSRF guard). CheckRedirect calls isBlockedHost directly (not via
@@ -121,7 +132,7 @@ func NewBooks(
 	coverSaver CoverSaver,
 	coverSearch CoverSearcher,
 ) *BooksHandler {
-	return &BooksHandler{
+	h := &BooksHandler{
 		base:             base{log: log},
 		db:               database,
 		q:                dbq.New(database),
@@ -133,26 +144,45 @@ func NewBooks(
 		coverSearch:      coverSearch,
 		annotationPolicy: bluemonday.UGCPolicy(),
 		blockedHost:      isBlockedHost,
-		coverFetchClient: &http.Client{
-			Timeout: coverFetchTimeout,
-			CheckRedirect: func(req *http.Request, via []*http.Request) error {
-				if len(via) >= 5 {
-					return errors.New("too many redirects")
-				}
-
-				if req.URL.Scheme != "http" && req.URL.Scheme != "https" {
-					return fmt.Errorf("redirect to non-http(s) scheme %q", req.URL.Scheme)
-				}
-
-				if isBlockedHost(req.Context(), req.URL.Host) {
-					return errors.New("redirect to internal address blocked")
-				}
-
-				return nil
-			},
-		},
-		lazyInflight: map[int64]bool{},
+		dialIPBlocked:    isBlockedIP,
+		lazyInflight:     map[int64]bool{},
 	}
+	// A dedicated client keeps the timeout off the shared default transport and
+	// rejects internal addresses (SSRF guard). The dialer's Control hook is the
+	// authoritative guard: it validates the concrete IP the transport dials, so a
+	// DNS-rebinding answer cannot slip an internal IP past the pre-flight host
+	// check. CheckRedirect re-checks each hop's host (via isBlockedHost directly,
+	// not the blockedHost var) so the real guard is always active even in tests
+	// that override blockedHost to allow loopback httptest servers.
+	dialer := &net.Dialer{
+		Timeout:   10 * time.Second,
+		KeepAlive: 30 * time.Second,
+		Control:   h.controlDial,
+	}
+	h.coverFetchClient = &http.Client{
+		Timeout: coverFetchTimeout,
+		Transport: &http.Transport{
+			DialContext:         dialer.DialContext,
+			TLSHandshakeTimeout: 10 * time.Second,
+		},
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) >= 5 {
+				return errors.New("too many redirects")
+			}
+
+			if req.URL.Scheme != "http" && req.URL.Scheme != "https" {
+				return fmt.Errorf("redirect to non-http(s) scheme %q", req.URL.Scheme)
+			}
+
+			if isBlockedHost(req.Context(), req.URL.Host) {
+				return errors.New("redirect to internal address blocked")
+			}
+
+			return nil
+		},
+	}
+
+	return h
 }
 
 func (h *BooksHandler) Register(r chi.Router) {
@@ -168,4 +198,22 @@ func (h *BooksHandler) Register(r chi.Router) {
 		r.Put("/{id}/cover", h.uploadCover)
 		r.Post("/{id}/cover", h.setCoverFromURL)
 	})
+}
+
+// controlDial is the net.Dialer Control hook on coverFetchClient: it runs after
+// DNS resolution with the concrete address the transport is about to connect to,
+// rejecting any dial whose resolved IP is internal. Because it inspects the IP
+// actually being dialed (not a separately-resolved hostname), it is immune to the
+// DNS-rebinding TOCTOU that a pre-flight host check alone cannot prevent.
+func (h *BooksHandler) controlDial(_, address string, _ syscall.RawConn) error {
+	host, _, err := net.SplitHostPort(address)
+	if err != nil {
+		return fmt.Errorf("split dial address %q: %w", address, err)
+	}
+	ip := net.ParseIP(host)
+	if ip == nil || h.dialIPBlocked(ip) {
+		return fmt.Errorf("dial to blocked address %q", address)
+	}
+
+	return nil
 }
