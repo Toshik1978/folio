@@ -54,7 +54,7 @@ describe('EditBookModal', () => {
     await flushPromises();
 
     await wrapper.find('[data-testid="edit-title"]').setValue('Dune');
-    await wrapper.find('[data-testid="edit-save"]').trigger('click');
+    await wrapper.find('form').trigger('submit');
     await flushPromises();
 
     expect(updateBookMetadata).toHaveBeenCalledWith(1, expect.objectContaining({ title: 'Dune' }));
@@ -66,7 +66,7 @@ describe('EditBookModal', () => {
     await flushPromises();
 
     await wrapper.find('[data-testid="edit-title"]').setValue('   ');
-    await wrapper.find('[data-testid="edit-save"]').trigger('click');
+    await wrapper.find('form').trigger('submit');
     await flushPromises();
 
     expect(updateBookMetadata).not.toHaveBeenCalled();

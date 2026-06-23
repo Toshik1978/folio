@@ -208,7 +208,6 @@ async function save(): Promise<void> {
               data-testid="edit-save"
               class="btn btn-primary"
               :disabled="saving"
-              @click.prevent="save"
             >
               Save
             </button>
