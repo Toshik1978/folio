@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/Toshik1978/folio/internal/sync"
 )
@@ -86,6 +87,33 @@ func (s *librariesSuite) TestUpdateLibraryTriggersSync() {
 	// must enqueue a sync so the error clears and re-index starts promptly,
 	// rather than waiting up to a full interval for the scheduled job.
 	s.Equal([]int64{id}, s.sync.triggered)
+}
+
+// TestWriteReturns503WhileIndexing asserts a user-facing library write fails fast
+// with 503 — rather than blocking past the HTTP WriteTimeout — when an indexing
+// run (modeled here by holding the shared single-writer guard) owns the guard, and
+// that the same write succeeds once the guard is released.
+func (s *librariesSuite) TestWriteReturns503WhileIndexing() {
+	id := s.seedLibrary("folder", "/lib")
+
+	// Shrink the acquire budget so the test does not wait the production 2s.
+	restore := writeAcquireBudget
+	writeAcquireBudget = 20 * time.Millisecond
+	defer func() { writeAcquireBudget = restore }()
+
+	// Model an in-flight sync holding the guard for the whole write. Keep the path
+	// unchanged so the request exercises the main update guard, not the checkpoint.
+	s.Require().NoError(s.guard.Lock(context.Background()))
+	body := map[string]any{"name": "Renamed", "path": "/lib", "sync_interval_seconds": 3600}
+
+	start := time.Now()
+	w := s.do(http.MethodPut, "/libraries/"+itoa(id), body)
+	s.Equal(http.StatusServiceUnavailable, w.Code)
+	s.Less(time.Since(start), time.Second) // failed fast; did not block on the guard
+
+	// Once the sync releases the guard, the same write succeeds.
+	s.guard.Unlock()
+	s.Equal(http.StatusOK, s.do(http.MethodPut, "/libraries/"+itoa(id), body).Code)
 }
 
 func (s *librariesSuite) TestDeleteStartsPurgeAndReactivateCancels() {

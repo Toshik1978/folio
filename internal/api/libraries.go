@@ -129,7 +129,10 @@ func (h *LibrariesHandler) createLibrary(w http.ResponseWriter, r *http.Request)
 		req.SyncIntervalSeconds = 3600
 	}
 
-	h.writeGuard.Lock()
+	release, ok := h.acquireWrite(r.Context(), w, h.writeGuard)
+	if !ok {
+		return
+	}
 	id, err := h.q.InsertLibrary(r.Context(), dbq.InsertLibraryParams{
 		Name:                req.Name,
 		Type:                req.Type,
@@ -137,7 +140,7 @@ func (h *LibrariesHandler) createLibrary(w http.ResponseWriter, r *http.Request)
 		SyncIntervalSeconds: req.SyncIntervalSeconds,
 		CreatedAt:           time.Now().Unix(),
 	})
-	h.writeGuard.Unlock()
+	release()
 	if err != nil {
 		if db.IsUniqueViolation(err) {
 			h.writeError(w, http.StatusConflict, "a library with this path already exists")
@@ -183,11 +186,14 @@ func (h *LibrariesHandler) updateLibrary(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	h.writeGuard.Lock()
+	release, ok := h.acquireWrite(r.Context(), w, h.writeGuard)
+	if !ok {
+		return
+	}
 	err = h.q.UpdateLibrary(r.Context(), dbq.UpdateLibraryParams{
 		Name: req.Name, Path: req.Path, SyncIntervalSeconds: req.SyncIntervalSeconds, ID: id,
 	})
-	h.writeGuard.Unlock()
+	release()
 	if err != nil {
 		if db.IsUniqueViolation(err) {
 			h.writeError(w, http.StatusConflict, "a library with this path already exists")
@@ -208,14 +214,7 @@ func (h *LibrariesHandler) updateLibrary(w http.ResponseWriter, r *http.Request)
 	// When the path changes the old checkpoint fingerprint is stale; clear it
 	// so the triggered sync does not skip based on a mismatched artifact.
 	if req.Path != prev.Path {
-		h.writeGuard.Lock()
-		cpErr := h.q.UpdateLibraryCheckpoint(r.Context(), dbq.UpdateLibraryCheckpointParams{
-			Checkpoint: sql.NullString{}, ID: id,
-		})
-		h.writeGuard.Unlock()
-		if cpErr != nil {
-			h.log.Error("clear library checkpoint", slog.Int64("library", id), slog.Any("error", cpErr))
-		}
+		h.clearStaleCheckpoint(r, id)
 	}
 	h.reschedule(r)
 	// Enqueue a sync so an edit (e.g. correcting a bad path) clears the error and
@@ -223,6 +222,26 @@ func (h *LibrariesHandler) updateLibrary(w http.ResponseWriter, r *http.Request)
 	// Checkpoint gating still skips the read+reconcile when nothing relevant changed.
 	h.sync.TriggerLibrary(id)
 	h.respondLibrary(w, r, id)
+}
+
+// clearStaleCheckpoint best-effort clears a library's checkpoint after its path
+// changed, so the sync triggered by the edit re-reads instead of skipping on a
+// stale fingerprint. If an indexing run holds the guard it is skipped: the path
+// change already makes the stored fingerprint mismatch the new artifact, so the
+// sync re-reads regardless.
+func (h *LibrariesHandler) clearStaleCheckpoint(r *http.Request, id int64) {
+	release, ok := h.tryAcquireWrite(r.Context(), h.writeGuard)
+	if !ok {
+		h.log.Warn("clear library checkpoint skipped: indexing in progress", slog.Int64("library", id))
+		return
+	}
+	defer release()
+
+	if err := h.q.UpdateLibraryCheckpoint(r.Context(), dbq.UpdateLibraryCheckpointParams{
+		Checkpoint: sql.NullString{}, ID: id,
+	}); err != nil {
+		h.log.Error("clear library checkpoint", slog.Int64("library", id), slog.Any("error", err))
+	}
 }
 
 // decodeUpdateLibraryRequest decodes and validates the body of an updateLibrary
@@ -281,13 +300,16 @@ func (h *LibrariesHandler) deleteLibrary(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	purgeAt := time.Now().Add(purgeGracePeriod).Unix()
-	h.writeGuard.Lock()
+	release, ok := h.acquireWrite(r.Context(), w, h.writeGuard)
+	if !ok {
+		return
+	}
 	err := h.q.UpdateLibraryStatus(r.Context(), dbq.UpdateLibraryStatusParams{
 		Status:  pendingPurgeStatus,
 		PurgeAt: sql.NullInt64{Int64: purgeAt, Valid: true},
 		ID:      id,
 	})
-	h.writeGuard.Unlock()
+	release()
 	if err != nil {
 		h.log.Error("delete library", slog.Int64("library", id), slog.Any("error", err))
 		h.writeError(w, http.StatusInternalServerError, "failed to delete library")
@@ -304,11 +326,14 @@ func (h *LibrariesHandler) reactivateLibrary(w http.ResponseWriter, r *http.Requ
 	if !ok {
 		return
 	}
-	h.writeGuard.Lock()
+	release, ok := h.acquireWrite(r.Context(), w, h.writeGuard)
+	if !ok {
+		return
+	}
 	err := h.q.UpdateLibraryStatus(r.Context(), dbq.UpdateLibraryStatusParams{
 		Status: "active", PurgeAt: sql.NullInt64{}, ID: id,
 	})
-	h.writeGuard.Unlock()
+	release()
 	if err != nil {
 		h.log.Error("reactivate library", slog.Int64("library", id), slog.Any("error", err))
 		h.writeError(w, http.StatusInternalServerError, "failed to reactivate library")
@@ -329,13 +354,16 @@ func (h *LibrariesHandler) forcePurgeLibrary(w http.ResponseWriter, r *http.Requ
 	// of the library's prior state, and so the minute-interval deadline sweep
 	// retries promptly if the async purge fails. The async purge almost always
 	// wins; the sweep is the universal fallback.
-	h.writeGuard.Lock()
+	release, ok := h.acquireWrite(r.Context(), w, h.writeGuard)
+	if !ok {
+		return
+	}
 	err := h.q.UpdateLibraryStatus(r.Context(), dbq.UpdateLibraryStatusParams{
 		Status:  pendingPurgeStatus,
 		PurgeAt: sql.NullInt64{Int64: time.Now().Unix(), Valid: true},
 		ID:      id,
 	})
-	h.writeGuard.Unlock()
+	release()
 	if err != nil {
 		h.log.Error("stamp purge", slog.Int64("library", id), slog.Any("error", err))
 		h.writeError(w, http.StatusInternalServerError, "failed to purge library")

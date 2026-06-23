@@ -42,9 +42,12 @@ func (h *BooksHandler) saveManualCover(ctx context.Context, bookID int64, data [
 	// Take the single-writer guard only around the DB write — the cover transcode
 	// and file write above must not serialize behind it.
 	params := dbq.UpdateBookCoverPrioParams{CoverPrio: manualCoverPrio, ID: bookID}
-	h.writeGuard.Lock()
-	err := h.q.UpdateBookCoverPrio(ctx, params)
-	h.writeGuard.Unlock()
+	release, err := h.acquireWriteErr(ctx, h.writeGuard)
+	if err != nil {
+		return err // busy/cancelled; applyManualCover maps it via handleGuardErr
+	}
+	err = h.q.UpdateBookCoverPrio(ctx, params)
+	release()
 	if err != nil {
 		return fmt.Errorf("pin cover prio: %w", err)
 	}
@@ -93,10 +96,14 @@ func (h *BooksHandler) applyManualCover(ctx context.Context, w http.ResponseWrit
 		return
 	}
 	if err := h.saveManualCover(ctx, book.ID, data); err != nil {
+		if h.handleGuardErr(w, err) {
+			return // 503 (indexing) or client gone — not an image problem
+		}
 		// On these endpoints the body is user input the cover store just tried
 		// to decode; the dominant failure is an invalid image, so report 400.
 		h.log.Warn("save manual cover", slog.Int64("book", book.ID), slog.Any("error", err))
 		h.writeError(w, http.StatusBadRequest, "invalid image")
+
 		return
 	}
 	view, err := h.toSingleBookView(ctx, book)
@@ -295,8 +302,12 @@ func (h *BooksHandler) updateBook(w http.ResponseWriter, r *http.Request) {
 	// may delete), whereas the engine — also used by Fix Match — only ever upserts.
 	book, err := h.saveManualEdit(r.Context(), book, meta, req.Identifiers)
 	if err != nil {
+		if h.handleGuardErr(w, err) {
+			return
+		}
 		h.log.Error("manual edit", slog.Int64("book", id), slog.Any("error", err))
 		h.writeError(w, http.StatusInternalServerError, "failed to save edit")
+
 		return
 	}
 	view, err := h.toSingleBookView(r.Context(), book)
@@ -324,6 +335,11 @@ func (h *BooksHandler) saveManualEdit(
 ) (dbq.Book, error) {
 	b := book
 	changed := false
+	// Bound the wait for the single-writer guard so a manual edit returns promptly
+	// (mapped to 503 by the caller via handleGuardErr) during a long indexing run
+	// instead of blocking past the WriteTimeout.
+	ctx, cancel := context.WithTimeout(ctx, writeAcquireBudget)
+	defer cancel()
 	if err := h.writeGuard.WithTx(ctx, h.db, func(tx *sql.Tx) error {
 		q := dbq.New(tx)
 		c, aErr := h.applyEnrichmentTx(ctx, q, &b, meta, true, false)

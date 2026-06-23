@@ -43,6 +43,13 @@ All `/api/*` routes are protected externally by Cloudflare Access (browser SSO/M
 > triggers (scheduled, watcher, startup) respect it — a library whose source
 > fingerprint is unchanged is skipped.
 
+> **Single-writer 503:** every write endpoint (the `POST`/`PUT`/`DELETE` book and
+> library routes) shares one process-wide write guard with the indexing engine
+> (see [DATABASE.md](./DATABASE.md#design-constraints)). While a long re-index holds
+> it, a write waits a short budget (≈2s) and then returns
+> `503 {"error":"indexing in progress; retry shortly"}` instead of blocking — the
+> client should retry. Reads are never blocked.
+
 ### Library Management (`/api/libraries`)
 
 | Method | Path | Description | Response |
