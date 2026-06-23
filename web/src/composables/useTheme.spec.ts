@@ -54,4 +54,31 @@ describe('useTheme', () => {
     const { useTheme } = await loadFresh({ prefersLight: false });
     expect(useTheme().theme.value).toBe('dark');
   });
+
+  it('falls back to default theme without throwing when matchMedia and localStorage are unavailable', async () => {
+    // Simulate an environment where matchMedia is absent and localStorage throws (privacy mode).
+    vi.resetModules();
+    const savedMatchMedia = window.matchMedia;
+    // @ts-expect-error intentionally removing matchMedia to test guard
+    delete window.matchMedia;
+
+    const getItemSpy = vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => {
+      throw new Error('Storage unavailable');
+    });
+    const setItemSpy = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+      throw new Error('Storage unavailable');
+    });
+
+    let mod: typeof import('./useTheme');
+    try {
+      // Fresh import re-executes module-level code; must not throw.
+      mod = await import('./useTheme');
+    } finally {
+      window.matchMedia = savedMatchMedia;
+      getItemSpy.mockRestore();
+      setItemSpy.mockRestore();
+    }
+
+    expect(mod!.useTheme().theme.value).toBe('dark');
+  });
 });

@@ -20,17 +20,33 @@ const STORAGE_KEY = 'folio-theme';
 const DEFAULT_DARK = 'dark';
 const DEFAULT_LIGHT = 'light';
 
+function prefersLight(): boolean {
+  return (
+    typeof window !== 'undefined' &&
+    typeof window.matchMedia === 'function' &&
+    window.matchMedia('(prefers-color-scheme: light)').matches
+  );
+}
+
 function getStoredTheme(): string {
-  const stored = localStorage.getItem(STORAGE_KEY);
-  if (stored && THEMES.some((t) => t.id === stored)) return stored;
-  return window.matchMedia('(prefers-color-scheme: light)').matches ? DEFAULT_LIGHT : DEFAULT_DARK;
+  try {
+    const stored = localStorage.getItem(STORAGE_KEY);
+    if (stored && THEMES.some((t) => t.id === stored)) return stored;
+  } catch {
+    /* storage unavailable */
+  }
+  return prefersLight() ? DEFAULT_LIGHT : DEFAULT_DARK;
 }
 
 const theme = ref<string>(getStoredTheme());
 
 function applyTheme(t: string): void {
   document.documentElement.setAttribute('data-theme', t);
-  localStorage.setItem(STORAGE_KEY, t);
+  try {
+    localStorage.setItem(STORAGE_KEY, t);
+  } catch {
+    /* storage unavailable */
+  }
 }
 
 applyTheme(theme.value);
