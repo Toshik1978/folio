@@ -66,7 +66,7 @@ The output binary is `./bin/folio-idx`.
 | `build:frontend` | `npm run build` (in `web/`) | Type-check + bundle frontend |
 | `build:backend` | depends on `build:frontend` | Compile static Go binary (`CGO_ENABLED=0`, `-ldflags="-w -s"`) with embedded SPA |
 | `build` | depends on `build:backend` | Full production build |
-| `test:backend` | `go test -v -coverpkg=./cmd/...,./internal/...,./web ./cmd/... ./internal/... ./web` | Run all Go tests (with cross-package coverage instrumentation; patterns scoped away from `web/node_modules`, see note below) |
+| `test:backend` | `go test -v -coverpkg=./internal/... ./internal/...` | Run all Go tests with coverage |
 | `test:frontend` | `npm run test` (in `web/`) | Run Vitest unit/component tests (`test:frontend:ci` adds coverage + JSON) |
 | `test` | `test:backend` + `test:frontend` | Run all tests |
 | `lint:backend` | `golangci-lint run` | Run Go linters |
@@ -92,14 +92,13 @@ either stack below 80% should ship with the tests that bring it back up.
 Coverage is measured exactly as CI does (`.github/workflows/ci.yml`), so the
 numbers are reproducible locally:
 
-- **Backend** — `go test -coverpkg=./cmd/...,./internal/...,./web ./cmd/... ./internal/... ./web -covermode=count -coverprofile=coverage.out`,
-  then exclude generated/boilerplate (`internal/db/dbq`, `cmd/`, `web/embed.go`,
-  `internal/logging`, `internal/config`) and take the `go tool cover -func` total:
+- **Backend** — `go test -v -coverpkg=./internal/... ./internal/...` (the `test:backend` Taskfile task).
+  For a filtered coverage report excluding generated/boilerplate packages:
 
   ```bash
-  go test -coverpkg=./cmd/...,./internal/...,./web ./cmd/... ./internal/... ./web \
+  go test -v -coverpkg=./internal/... ./internal/... \
     -covermode=count -coverprofile=coverage.out
-  grep -vE "/internal/db/dbq|/web/node|/cmd/|web/embed.go|/internal/logging|/internal/config" \
+  grep -vE "/internal/db/dbq|/internal/logging|/internal/config" \
     coverage.out > coverage.filtered.out
   go tool cover -func=coverage.filtered.out | tail -1
   ```
@@ -107,15 +106,14 @@ numbers are reproducible locally:
 - **Frontend** — `npm run test:ci` (in `web/`), then read `total.lines.pct` from
   `web/coverage/coverage-summary.json`.
 
-> **Note (why the patterns are scoped):** the `flatted` npm package vendors a
+> **Note (why `./internal/...` not `./...`):** the `flatted` npm package vendors a
 > Go file (`web/node_modules/flatted/golang/`), so a bare `go test ./...` /
 > `-coverpkg=./...` wildcard would compile and instrument arbitrary third-party
 > code once `npm install` has run — and a broken Go file inside any npm package
-> would break `task test`. The Taskfile and CI therefore scope the patterns to
-> the module's own trees (`./cmd/... ./internal/... ./web`). Keep that in mind
-> when pointing other Go tooling at the repo. (The Dockerfile's `go test ./...`
-> is unaffected: its build stage copies only the Go sources, never
-> `node_modules`.)
+> would break `task test`. The `test:backend` task therefore scopes patterns to
+> `./internal/...` only. Keep that in mind when pointing other Go tooling at the
+> repo. (The Dockerfile's `go test ./...` is unaffected: its build stage copies
+> only the Go sources, never `node_modules`.)
 
 CI **enforces** this floor: the `test` job's final "Check test and coverage
 gates" step fails the workflow when either stack falls below 80% (after still
