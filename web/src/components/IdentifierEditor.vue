@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from 'vue';
+import { ref, watch } from 'vue';
 
 import type { IdentifierInput } from '@/types';
 
@@ -11,6 +11,51 @@ import type { IdentifierInput } from '@/types';
 const props = defineProps<{ modelValue: IdentifierInput[] }>();
 const emit = defineEmits<{ 'update:modelValue': [value: IdentifierInput[]] }>();
 
+// --- Stable-key infrastructure -------------------------------------------
+// Each row carries a uid so Vue keys by row identity, not position. Removing a
+// middle row therefore reuses the surviving DOM nodes rather than destroying and
+// recreating them, which preserves focus and IME composition state.
+
+let nextUid = 0;
+function uid(): number {
+  return ++nextUid;
+}
+
+interface Row extends IdentifierInput {
+  _uid: number;
+}
+
+// Internal row list. Reconciled from modelValue on every external change.
+const rows = ref<Row[]>([]);
+
+// Reconcile modelValue -> rows: assign a stable uid to each incoming item by
+// matching on (type, value). Items already present keep their uid; genuinely
+// new items get a fresh one. This preserves identity for items that haven't
+// changed while correctly handling parent-driven additions.
+function reconcile(incoming: IdentifierInput[]): void {
+  const prev = rows.value;
+  const used = new Set<number>();
+
+  rows.value = incoming.map((item) => {
+    // Try to find an existing row with the same type+value that hasn't been
+    // matched yet (handles duplicates correctly).
+    const match = prev.find(
+      (r) => !used.has(r._uid) && r.type === item.type && r.value === item.value,
+    );
+    if (match) {
+      used.add(match._uid);
+      return match;
+    }
+    return { ...item, _uid: uid() };
+  });
+}
+
+// Seed on mount, then track parent changes.
+reconcile(props.modelValue);
+watch(() => props.modelValue, reconcile, { deep: false });
+
+// --- Known types -----------------------------------------------------------
+
 const KNOWN_TYPES = [
   { value: 'isbn', label: 'ISBN' },
   { value: 'amazon', label: 'Amazon' },
@@ -21,11 +66,10 @@ const knownValues = KNOWN_TYPES.map((t) => t.value);
 
 // The first known type not already used, so a new row defaults to something
 // useful (identifiers are one-per-type) and falls back to ISBN when all are taken.
-const nextDefaultType = computed(() => {
+function nextDefaultType(): string {
   const used = new Set(props.modelValue.map((r) => r.type));
-
   return knownValues.find((t) => !used.has(t)) ?? 'isbn';
-});
+}
 
 // Options for a row: the known set, plus the row's own type when it is something
 // uncommon (e.g. doi) so editing it does not force a switch to a known type.
@@ -37,29 +81,30 @@ function typeOptions(rowType: string): { value: string; label: string }[] {
   return KNOWN_TYPES;
 }
 
-// All mutations emit a fresh array (props-down / events-up; never mutate the prop).
+// --- Mutations (props-down / events-up; never mutate the prop) -------------
+
+function strip(rs: Row[]): IdentifierInput[] {
+  return rs.map(({ _uid: _uid, ...item }) => item);
+}
+
 function patch(index: number, change: Partial<IdentifierInput>): void {
-  emit(
-    'update:modelValue',
-    props.modelValue.map((row, i) => (i === index ? { ...row, ...change } : row)),
-  );
+  const updated = rows.value.map((row, i) => (i === index ? { ...row, ...change } : row));
+  emit('update:modelValue', strip(updated));
 }
 
 function remove(index: number): void {
-  emit(
-    'update:modelValue',
-    props.modelValue.filter((_, i) => i !== index),
-  );
+  const updated = rows.value.filter((_, i) => i !== index);
+  emit('update:modelValue', strip(updated));
 }
 
 function add(): void {
-  emit('update:modelValue', [...props.modelValue, { type: nextDefaultType.value, value: '' }]);
+  emit('update:modelValue', [...strip(rows.value), { type: nextDefaultType(), value: '' }]);
 }
 </script>
 
 <template>
   <div class="flex flex-col gap-2">
-    <div v-for="(row, i) in modelValue" :key="i" class="flex items-center gap-2">
+    <div v-for="(row, i) in rows" :key="row._uid" class="flex items-center gap-2">
       <select
         :value="row.type"
         class="select w-36 shrink-0"
