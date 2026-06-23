@@ -29,16 +29,18 @@ func convertToJPEG(inputData []byte) ([]byte, error) {
 
 	// Check the image format and dimensions using only the header metadata.
 	cfg, formatName, err := image.DecodeConfig(bytes.NewReader(inputData))
-	// If it is already a JPEG, bypass decoding/encoding completely (no allocation).
-	if err == nil && formatName == "jpeg" {
-		return inputData, nil
-	}
-	// Reject decompression bombs from the header alone, before image.Decode
-	// allocates the full pixel buffer. A header we cannot read falls through to
-	// image.Decode below, which returns the real decode error.
+	// Reject decompression bombs from the header alone, before either the
+	// JPEG fast-path return or image.Decode allocates the full pixel buffer.
+	// A header we cannot read falls through to image.Decode below, which
+	// returns the real decode error.
 	if err == nil && int64(cfg.Width)*int64(cfg.Height) > maxCoverPixels {
 		return nil, fmt.Errorf("image dimensions %dx%d exceed %d pixel limit",
 			cfg.Width, cfg.Height, maxCoverPixels)
+	}
+	// If it is already a JPEG and within the pixel cap, bypass
+	// decoding/encoding completely (no allocation).
+	if err == nil && formatName == "jpeg" {
+		return inputData, nil
 	}
 
 	// Otherwise do decode

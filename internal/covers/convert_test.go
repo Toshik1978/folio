@@ -4,6 +4,10 @@ import (
 	"bytes"
 	"encoding/binary"
 	"hash/crc32"
+	"image"
+	"image/color"
+	"image/jpeg"
+	"testing"
 )
 
 // convertToJPEG tests live on coversTestSuite (one runner per the package's
@@ -71,5 +75,56 @@ func (s *coversTestSuite) TestConvertToJPEGRejectsEmpty() {
 
 func (s *coversTestSuite) TestConvertToJPEGRejectsNonImage() {
 	_, err := convertToJPEG([]byte("not an image at all"))
+	s.Error(err)
+}
+
+// jpegWithDeclaredDimensions encodes a minimal real JPEG (4x4 pixels) and then
+// patches the SOF0 (Start of Frame) segment to declare the given dimensions.
+// image.DecodeConfig reads only the header markers and therefore reports the
+// patched dimensions without decoding any pixels — exactly the
+// decompression-bomb attack surface that the pixel cap must catch.
+func jpegWithDeclaredDimensions(t *testing.T, width, height uint16) []byte {
+	t.Helper()
+
+	// Encode a tiny real JPEG; this gives us all the required header segments
+	// (DQT, SOF0, DHT, …) that Go's JPEG decoder demands before it will parse
+	// SOF0 dimensions from image.DecodeConfig.
+	img := image.NewRGBA(image.Rect(0, 0, 4, 4))
+	img.Set(0, 0, color.RGBA{R: 200, G: 100, B: 50, A: 255})
+	var buf bytes.Buffer
+	if err := jpeg.Encode(&buf, img, nil); err != nil {
+		t.Fatalf("jpegWithDeclaredDimensions: encode: %v", err)
+	}
+	data := buf.Bytes()
+
+	// Walk the JPEG segments to locate SOF0 (marker 0xC0) and patch its
+	// height/width fields in-place. Layout inside the segment (after the 2-byte
+	// marker):  length(2) | precision(1) | height(2) | width(2) | …
+	out := make([]byte, len(data))
+	copy(out, data)
+	for i := 2; i+3 < len(out); { // skip SOI (2 bytes)
+		if out[i] != 0xFF {
+			t.Fatalf("jpegWithDeclaredDimensions: expected 0xFF at offset %d", i)
+		}
+		marker := out[i+1]
+		if marker == 0xD9 || marker == 0xDA { // EOI / SOS — no length word
+			break
+		}
+		segLen := int(binary.BigEndian.Uint16(out[i+2 : i+4]))
+		if marker == 0xC0 { // SOF0 — patch height at i+5, width at i+7
+			binary.BigEndian.PutUint16(out[i+5:i+7], height)
+			binary.BigEndian.PutUint16(out[i+7:i+9], width)
+			break
+		}
+		i += 2 + segLen
+	}
+
+	return out
+}
+
+func (s *coversTestSuite) TestConvertRejectsOversizeJPEG() {
+	// 60000x60000 = 3.6 GP, far above maxCoverPixels (40 MP).
+	data := jpegWithDeclaredDimensions(s.T(), 60000, 60000)
+	_, err := convertToJPEG(data)
 	s.Error(err)
 }
