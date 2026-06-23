@@ -49,4 +49,20 @@ describe('LibraryForm', () => {
       .trigger('click');
     expect(wrapper.emitted('cancel')).toHaveLength(1);
   });
+
+  it('defaults sync_interval_seconds to 3600 when the interval field is cleared', async () => {
+    const wrapper = mount(LibraryForm, { props: { editing: null } });
+    const text = wrapper.findAll('input[type="text"]');
+    await text[0].setValue('New'); // name
+    await text[1].setValue('/p'); // path
+    // Clear the interval field — Vue's .number modifier yields '' for an empty input
+    const intervalInput = wrapper.find('input[type="number"]');
+    await intervalInput.setValue('');
+    await wrapper.find('[data-testid="library-save"]').trigger('click');
+    const emitted = wrapper.emitted('submit') as [unknown[]][];
+    expect(emitted).toHaveLength(1);
+    const payload = emitted[0][0] as { sync_interval_seconds: unknown };
+    expect(typeof payload.sync_interval_seconds).toBe('number');
+    expect(payload.sync_interval_seconds).toBe(3600);
+  });
 });
