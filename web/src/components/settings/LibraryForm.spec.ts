@@ -59,7 +59,7 @@ describe('LibraryForm', () => {
     const intervalInput = wrapper.find('input[type="number"]');
     await intervalInput.setValue('');
     await wrapper.find('[data-testid="library-save"]').trigger('click');
-    const emitted = wrapper.emitted('submit') as [unknown[]][];
+    const emitted = wrapper.emitted('submit') as unknown[][];
     expect(emitted).toHaveLength(1);
     const payload = emitted[0][0] as { sync_interval_seconds: unknown };
     expect(typeof payload.sync_interval_seconds).toBe('number');
