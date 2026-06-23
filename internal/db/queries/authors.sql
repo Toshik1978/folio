@@ -57,6 +57,8 @@ SELECT a.id,
           AND (CAST(@library_id AS INTEGER) = 0
             OR EXISTS (SELECT 1 FROM books b WHERE b.id = ba.book_id AND b.library_id = @library_id))) AS book_count
 FROM authors a
+-- char() bounds mirror cyrLo/cyrHi/latLo/latHi in internal/api/letters.go;
+-- drift guard: internal/api/letters_bounds_test.go TestSQLBucketBoundsMatchGoConstants
 WHERE NOT ((a.name_fold >= char(1040) AND a.name_fold < char(1072)) OR
            (a.name_fold >= char(65) AND a.name_fold < char(91)))
   AND EXISTS (SELECT 1

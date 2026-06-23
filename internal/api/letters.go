@@ -10,7 +10,8 @@ import "unicode/utf8"
 //
 // The SQL counterparts in *.sql encode the same Cyrillic (U+0410..U+042F) and
 // Latin (A..Z) ranges via char() literals; keep bucketOf and those queries in
-// sync.
+// sync.  The drift guard is TestSQLBucketBoundsMatchGoConstants in
+// letters_bounds_test.go.
 
 const hashBucket = "#"
 
