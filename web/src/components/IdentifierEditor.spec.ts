@@ -56,6 +56,42 @@ describe('IdentifierEditor', () => {
     expect(emitted).toEqual([{ type: 'google', value: 'b' }]);
   });
 
+  it('keeps the same input element across an edit (focus/IME survives)', async () => {
+    // Mount one row, then round-trip every emit back through setProps exactly as
+    // the parent (plain v-model) does. If the row's :key changes on a value edit
+    // Vue tears down and recreates the <input>, dropping focus/caret/IME.
+    const wrapper = mountEditor([{ type: 'isbn', value: '' }]);
+
+    const inputBefore = wrapper.find('input').element;
+
+    await wrapper.find('input').setValue('9');
+    const afterFirst = wrapper.emitted('update:modelValue')?.[0][0] as IdentifierInput[];
+    await wrapper.setProps({ modelValue: afterFirst });
+
+    // The edited row's input element must be the very same node — not a fresh one.
+    expect(wrapper.find('input').element).toBe(inputBefore);
+
+    // A second keystroke must also keep the same element.
+    await wrapper.find('input').setValue('97');
+    const afterSecond = wrapper.emitted('update:modelValue')?.[1][0] as IdentifierInput[];
+    await wrapper.setProps({ modelValue: afterSecond });
+    expect(wrapper.find('input').element).toBe(inputBefore);
+  });
+
+  it('gives duplicate-content rows distinct keys (two empty rows stay separate)', async () => {
+    const wrapper = mountEditor([{ type: '', value: '' }]);
+
+    // Add a second row, then feed the emitted value back (controlled pattern).
+    await wrapper.find('button.btn-sm').trigger('click');
+    const emitted = wrapper.emitted('update:modelValue')?.[0][0] as IdentifierInput[];
+    await wrapper.setProps({ modelValue: emitted });
+
+    const inputs = wrapper.findAll('input');
+    expect(inputs).toHaveLength(2);
+    // Two distinct DOM nodes even though both rows have identical (type, value).
+    expect(inputs[0].element).not.toBe(inputs[1].element);
+  });
+
   it('keeps correct DOM nodes when a middle row is removed', async () => {
     // Render three rows.
     const wrapper = mountEditor([
