@@ -173,11 +173,11 @@ func extractEPUBIdentifiers(ids []opfIdentifier) []Identifier {
 			lower := strings.ToLower(value)
 			switch {
 			case strings.HasPrefix(lower, "urn:isbn:"):
-				typ = identifierISBN
+				typ = IdentifierISBN
 			case strings.HasPrefix(lower, "isbn:"):
-				typ = identifierISBN
+				typ = IdentifierISBN
 			case LooksLikeISBN(value):
-				typ = identifierISBN
+				typ = IdentifierISBN
 			default:
 				continue // unknown, untyped identifier — skip
 			}

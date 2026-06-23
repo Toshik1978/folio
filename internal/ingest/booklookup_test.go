@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/Toshik1978/folio/internal/db/dbq"
+	"github.com/Toshik1978/folio/internal/ebook"
 )
 
 func (s *enrichSuite) TestBookLookupBuildsQuery() {
@@ -39,7 +40,7 @@ func (s *enrichSuite) TestBookLookupPicksISBNByType() {
 	}))
 	// Insert the isbn identifier second.
 	s.Require().NoError(q.InsertBookIdentifier(ctx, dbq.InsertBookIdentifierParams{
-		BookID: id, Type: isbnType, Value: "9780441013593",
+		BookID: id, Type: ebook.IdentifierISBN, Value: "9780441013593",
 	}))
 
 	lookup, ok, err := NewBookLookup(s.db).Lookup(ctx, id)

@@ -286,6 +286,6 @@ func (s *mobiSuite) TestApplyEXTHPublishing() {
 	s.Equal("Super Publisher", m.Publisher)
 	s.Equal(2026, m.Year)
 	s.Len(m.Identifiers, 1)
-	s.Equal(Identifier{Type: identifierISBN, Value: "978-3-16-148410-0"}, m.Identifiers[0])
+	s.Equal(Identifier{Type: IdentifierISBN, Value: "978-3-16-148410-0"}, m.Identifiers[0])
 	s.Equal("en", m.Language)
 }

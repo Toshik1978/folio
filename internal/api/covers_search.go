@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/Toshik1978/folio/internal/db/dbq"
+	"github.com/Toshik1978/folio/internal/ebook"
 	"github.com/Toshik1978/folio/internal/metasearch"
 )
 
@@ -18,9 +19,6 @@ import (
 type CoverSearcher interface {
 	SearchCovers(ctx context.Context, q metasearch.Query) []metasearch.CoverCandidate
 }
-
-// isbnIdentifierType is the identifier row Type that carries an ISBN.
-const isbnIdentifierType = "isbn"
 
 // searchCovers handles GET /api/books/{id}/cover/search?q= — aggregated cover
 // candidates the user can apply via POST /books/{id}/cover. The query is seeded
@@ -71,7 +69,7 @@ func (h *BooksHandler) seedQuery(ctx context.Context, book dbq.Book) metasearch.
 		h.log.Warn("seed query identifiers", slog.Int64("book", book.ID), slog.Any("error", err))
 	} else {
 		for _, idr := range ids {
-			if idr.Type == isbnIdentifierType {
+			if idr.Type == ebook.IdentifierISBN {
 				q.ISBN = idr.Value
 				break
 			}

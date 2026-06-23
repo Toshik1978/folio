@@ -148,7 +148,7 @@ func parseFB2Reader(r io.Reader) (Metadata, error) {
 		m.Publisher = strings.TrimSpace(pi.Publisher)
 		m.Year = ParseYear(pi.Year)
 		if isbn := strings.TrimSpace(pi.ISBN); isbn != "" {
-			m.Identifiers = append(m.Identifiers, Identifier{Type: identifierISBN, Value: isbn})
+			m.Identifiers = append(m.Identifiers, Identifier{Type: IdentifierISBN, Value: isbn})
 		}
 	}
 
