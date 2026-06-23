@@ -7,6 +7,7 @@ import (
 	"fmt"
 
 	"github.com/Toshik1978/folio/internal/db/dbq"
+	"github.com/Toshik1978/folio/internal/ebook"
 	"github.com/Toshik1978/folio/internal/metasearch"
 )
 
@@ -38,7 +39,7 @@ func (l *BookLookup) Lookup(ctx context.Context, bookID int64) (metasearch.Query
 		return metasearch.Query{}, false, fmt.Errorf("list identifiers: %w", err)
 	}
 	for _, id := range ids {
-		if id.Type == isbnType {
+		if id.Type == ebook.IdentifierISBN {
 			out.ISBN = id.Value
 			break
 		}

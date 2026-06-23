@@ -10,7 +10,6 @@ import (
 )
 
 const (
-	isbnType      = "isbn"
 	amazonType    = "amazon"
 	googleType    = "google"
 	goodreadsType = "goodreads"
@@ -20,10 +19,10 @@ const (
 // edition or per work) to force two records onto the same book. Other types are
 // still stored, but never trigger a merge.
 var strongIdentifierTypes = map[string]struct{}{ //nolint:gochecknoglobals // read-only set
-	isbnType:      {},
-	amazonType:    {},
-	googleType:    {},
-	goodreadsType: {},
+	ebook.IdentifierISBN: {},
+	amazonType:           {},
+	googleType:           {},
+	goodreadsType:        {},
 }
 
 // validStrongIdentifier reports whether a cleaned strong identifier is trustworthy
@@ -38,7 +37,7 @@ func validStrongIdentifier(typ, val string) bool {
 	if isPlaceholderIdentifier(val) {
 		return false
 	}
-	if typ == isbnType {
+	if typ == ebook.IdentifierISBN {
 		return ebook.LooksLikeISBN(val)
 	}
 
@@ -108,7 +107,7 @@ func mapType(typ string) string {
 		return amazonType
 	case "isbn-10", "isbn-13", "isbn10", "isbn13", "isbn_10", "isbn_13":
 		// isbn_10/isbn_13 are Google Books' IndustryIdentifiers type strings.
-		return isbnType
+		return ebook.IdentifierISBN
 	default:
 		return typ
 	}
@@ -116,7 +115,7 @@ func mapType(typ string) string {
 
 func normalizeValue(typ, val string) string {
 	switch typ {
-	case isbnType:
+	case ebook.IdentifierISBN:
 		valLower := strings.ToLower(val)
 		if strings.HasPrefix(valLower, "urn:isbn:") {
 			val = val[len("urn:isbn:"):]
@@ -152,7 +151,7 @@ func cleanIdentifiers(ids []identifier) map[string]string {
 		}
 
 		// Conflict resolution rules
-		if t == isbnType {
+		if t == ebook.IdentifierISBN {
 			bestIDs[t] = lookupISBN(v, existing)
 		} else if len(v) >= len(existing) {
 			// For other types, longer/non-empty string usually contains more data, or last one wins

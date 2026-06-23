@@ -291,7 +291,7 @@ func applyEXTHPublishing(recType int, val string, m *Metadata) {
 		m.Year = lo.CoalesceOrEmpty(m.Year, ParseYear(val))
 	case exthISBN:
 		if isbn := strings.TrimSpace(val); isbn != "" {
-			m.Identifiers = append(m.Identifiers, Identifier{Type: identifierISBN, Value: isbn})
+			m.Identifiers = append(m.Identifiers, Identifier{Type: IdentifierISBN, Value: isbn})
 		}
 	}
 }

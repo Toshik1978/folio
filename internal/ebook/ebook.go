@@ -39,8 +39,8 @@ type Identifier struct {
 	Value string
 }
 
-// identifierISBN is the canonical type label for ISBN identifiers.
-const identifierISBN = "isbn"
+// IdentifierISBN is the canonical type label for ISBN identifiers.
+const IdentifierISBN = "isbn"
 
 var yearPattern = regexp.MustCompile(`\d{4}`)
 
