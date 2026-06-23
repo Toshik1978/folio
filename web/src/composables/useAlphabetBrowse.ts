@@ -89,7 +89,7 @@ export function useAlphabetBrowse<T>(
     if (first) await selectLetter(first);
   }
 
-  const { loading } = useInfiniteScroll(scrollTrigger, loadMore);
+  const { loading } = useInfiniteScroll(scrollTrigger, loadMore, () => hasMore);
 
   onMounted(reload);
   watch(libraryId, () => void reload());

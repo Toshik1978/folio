@@ -125,7 +125,7 @@ async function loadMore(): Promise<void> {
   await loadBooks();
 }
 
-const { loading } = useInfiniteScroll(scrollTrigger, loadMore);
+const { loading } = useInfiniteScroll(scrollTrigger, loadMore, () => hasMore.value);
 
 // Watch the serialized filters, not the computed object: `filters` returns a fresh
 // object every tick, so an identity watch would fire on every unrelated reactive

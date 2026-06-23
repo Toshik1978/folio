@@ -24,12 +24,16 @@ class ControllableIO {
   }
 }
 
-function mountScroll(triggerEl: Ref<HTMLElement | null>, onLoadMore: () => Promise<void>) {
+function mountScroll(
+  triggerEl: Ref<HTMLElement | null>,
+  onLoadMore: () => Promise<void>,
+  hasMore?: () => boolean,
+) {
   let result!: ReturnType<typeof useInfiniteScroll>;
   const wrapper = mount(
     defineComponent({
       setup() {
-        result = useInfiniteScroll(triggerEl, onLoadMore);
+        result = useInfiniteScroll(triggerEl, onLoadMore, hasMore);
         return () => h('div');
       },
     }),
@@ -106,6 +110,58 @@ describe('useInfiniteScroll', () => {
     await Promise.resolve(observers[0].fire(true)).catch(() => {});
     expect(onLoadMore).toHaveBeenCalledOnce();
     expect(result.loading.value).toBe(false);
+  });
+
+  // After a page loads, the sentinel can still be intersecting (the new content
+  // didn't fill the viewport). The observer won't fire again on its own because
+  // there was no intersection *transition*, so we re-arm it (unobserve + observe)
+  // to force a fresh reading. This is what unstalls a short list.
+  it('re-arms the observer after a load when hasMore() is true', async () => {
+    const el = document.createElement('div');
+    const onLoadMore = vi.fn().mockResolvedValue(undefined);
+    mountScroll(ref(el), onLoadMore, () => true);
+
+    await observers[0].fire(true);
+
+    // Re-armed: unobserved then observed the same element again.
+    expect(observers[0].unobserve).toHaveBeenCalledWith(el);
+    expect(observers[0].observe).toHaveBeenCalledTimes(2);
+    expect(observers[0].observed).toEqual([el, el]);
+  });
+
+  // The list is exhausted: re-arming here would spin forever, since the sentinel
+  // stays intersecting but onLoadMore can add nothing. hasMore() guards that.
+  it('does not re-arm the observer when hasMore() is false', async () => {
+    const el = document.createElement('div');
+    const onLoadMore = vi.fn().mockResolvedValue(undefined);
+    mountScroll(ref(el), onLoadMore, () => false);
+
+    await observers[0].fire(true);
+
+    expect(observers[0].unobserve).not.toHaveBeenCalled();
+    expect(observers[0].observe).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not re-arm when no hasMore predicate is supplied', async () => {
+    const el = document.createElement('div');
+    const onLoadMore = vi.fn().mockResolvedValue(undefined);
+    mountScroll(ref(el), onLoadMore);
+
+    await observers[0].fire(true);
+
+    expect(observers[0].unobserve).not.toHaveBeenCalled();
+    expect(observers[0].observe).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not re-arm after a failed load (no auto-retry spam)', async () => {
+    const el = document.createElement('div');
+    const onLoadMore = vi.fn().mockRejectedValue(new Error('boom'));
+    mountScroll(ref(el), onLoadMore, () => true);
+
+    await Promise.resolve(observers[0].fire(true)).catch(() => {});
+
+    expect(observers[0].unobserve).not.toHaveBeenCalled();
+    expect(observers[0].observe).toHaveBeenCalledTimes(1);
   });
 
   it('disconnects the observer on unmount', () => {
