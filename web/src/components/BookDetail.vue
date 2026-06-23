@@ -101,44 +101,48 @@
           </a>
         </div>
 
-        <div class="flex flex-wrap items-center gap-2">
-          <a
-            v-for="fmt in book.formats"
-            :key="fmt.download_url"
-            :href="fmt.download_url"
-            data-testid="download-link"
-            class="btn btn-primary btn-sm gap-2"
-          >
-            <i class="pi pi-download" />
-            {{ fmt.type.toUpperCase() }} ({{ formatSize(fmt.size_bytes) }})
-          </a>
-          <button
-            type="button"
-            data-testid="fixmatch-open"
-            class="btn btn-ghost btn-sm gap-2"
-            @click="fixMatchOpen = true"
-          >
-            <i class="pi pi-search" />
-            Fix match
-          </button>
-          <button
-            type="button"
-            data-testid="edit-open"
-            class="btn btn-ghost btn-sm gap-2"
-            @click="editOpen = true"
-          >
-            <i class="pi pi-pencil" />
-            Edit
-          </button>
-          <button
-            type="button"
-            data-testid="cover-open"
-            class="btn btn-ghost btn-sm gap-2"
-            @click="coverOpen = true"
-          >
-            <i class="pi pi-image" />
-            Cover
-          </button>
+        <div class="flex flex-col gap-3">
+          <div v-if="book.formats.length" class="flex flex-wrap items-center gap-2">
+            <a
+              v-for="fmt in book.formats"
+              :key="fmt.download_url"
+              :href="fmt.download_url"
+              data-testid="download-link"
+              class="btn btn-primary btn-sm gap-2"
+            >
+              <i class="pi pi-download" />
+              {{ fmt.type.toUpperCase() }} ({{ formatSize(fmt.size_bytes) }})
+            </a>
+          </div>
+          <div class="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              data-testid="fixmatch-open"
+              class="btn btn-ghost btn-sm gap-2"
+              @click="fixMatchOpen = true"
+            >
+              <i class="pi pi-search" />
+              Fix match
+            </button>
+            <button
+              type="button"
+              data-testid="edit-open"
+              class="btn btn-ghost btn-sm gap-2"
+              @click="editOpen = true"
+            >
+              <i class="pi pi-pencil" />
+              Edit
+            </button>
+            <button
+              type="button"
+              data-testid="cover-open"
+              class="btn btn-ghost btn-sm gap-2"
+              @click="coverOpen = true"
+            >
+              <i class="pi pi-image" />
+              Cover
+            </button>
+          </div>
         </div>
       </div>
     </div>
