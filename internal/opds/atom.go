@@ -9,6 +9,11 @@ import (
 	"strconv"
 )
 
+// maxPage caps the requested page number so (page-1)*defaultLimit cannot
+// overflow int64 into a negative SQL OFFSET. Must stay in sync with
+// internal/api/util.go's unexported maxPage constant.
+const maxPage = 1_000_000_000
+
 // OPDS / Atom media types and link relations.
 const (
 	typeNavigation  = "application/atom+xml;profile=opds-catalog;kind=navigation"
@@ -111,6 +116,10 @@ func pageParam(r *http.Request) int64 {
 	if err != nil || n < 1 {
 		return 1
 	}
+	if n > maxPage {
+		n = maxPage
+	}
+
 	return n
 }
 
