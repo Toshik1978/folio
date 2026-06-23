@@ -81,6 +81,28 @@ func (h *Handler) Register(r chi.Router) {
 
 No application-level auth middleware is applied to `/api/*` or SPA routes. Authentication is delegated entirely to Cloudflare Access, which injects authenticated user identity via headers (`CF-Access-JWT-Assertion`).
 
+### Cross-Site Request Protection (CSRF)
+
+The REST API issues no CSRF tokens — and it doesn't need to, but **not for the reason it's tempting to assume.** The folio backend sets no session cookie of its own, so the common shorthand "auth isn't cookie-based, therefore no CSRF" gets cited. That shorthand is wrong for the deployed configuration:
+
+- The *effective* auth layer is **Cloudflare Access, which is cookie-based** — after SSO it sets a `CF_Authorization` JWT cookie scoped to the app hostname. That cookie is exactly the ambient credential a CSRF attack relies on: the browser attaches it to cross-site requests automatically.
+- Nothing in folio enforces "same-origin." There is **no CORS configuration and no `Origin` check in the request path** by default; CORS would not prevent a cross-origin request from being *sent*, only from being *read*.
+
+So, absent any app-level control, the only thing standing between a logged-in user and a forged state-changing request would be the `CF_Authorization` cookie's `SameSite` attribute (Lax-by-default blocks cross-site `POST`) plus browsers preflighting `PUT`/`DELETE`. That is an **implicit dependency on Cloudflare's cookie policy and on browser defaults** — not something folio controls or that survives a direct deployment.
+
+folio therefore enforces its own **token-less, origin-based CSRF guard** on `/api`, independent of the cookie policy and of whether Cloudflare sits in front. Two middlewares are mounted on the `/api` group in `internal/server/` (`server.go` → `middleware.go`), so every current and future handler is covered:
+
+| Middleware | What it does |
+| :--- | :--- |
+| `sameSiteGuard(publicURL)` | On state-changing methods (`POST`/`PUT`/`PATCH`/`DELETE`), trusts `Sec-Fetch-Site` when present — allows `same-origin`/`same-site`/`none` (user-initiated: typed URL, bookmark), rejects `cross-site` **and any unrecognized value** with `403`. When `Sec-Fetch-Site` is absent, falls back to `Origin`: a present `Origin` must equal the configured `PUBLIC_URL` origin or the request's own scheme+host; an absent `Origin` is treated as a non-browser client and allowed. |
+| `formBodyGuard` | Defense-in-depth for the narrow gap where a request carries neither `Sec-Fetch-Site` nor `Origin`: rejects state-changing requests whose `Content-Type` is one of the three CORS "simple request" form types (`application/x-www-form-urlencoded`, `multipart/form-data`, `text/plain`) with `415`. This closes the trick of smuggling a JSON payload under a form content type. Bodyless writes (e.g. `POST .../sync`), `application/json`, and raw image uploads (`PUT .../cover`) are unaffected. |
+
+**Scope and limits — read before relying on this:**
+
+- **It is a CSRF guard, not authentication.** Non-browser clients (curl, scripts, other servers) send neither `Sec-Fetch-Site` nor `Origin` and pass straight through, by design — otherwise the OPDS/CLI/automation paths would break.
+- **It does not protect a direct deployment.** With no Cloudflare Access in front, `/api` has **no authentication at all** — `PUT /api/settings` (which sets the OPDS credentials), `POST /api/libraries/{id}/purge`, `POST /api/sync`, etc. are reachable by anyone who can reach the port, same-origin or not. An external authenticator on `/api` is **mandatory**; direct/LAN exposure means an unauthenticated admin API. CSRF is a footnote next to that.
+- Because the guards key off `PUBLIC_URL` for the `Origin` fallback, set `PUBLIC_URL` on any reverse-proxied/tunneled deployment (it is already recommended for the OpenSearch canonical host, above).
+
 ---
 
 ## Header Handling
@@ -156,3 +178,4 @@ the network layer.
 3. **Static binary** — `CGO_ENABLED=0` produces a statically linked binary with no glibc dependencies. Reduces attack surface in the Distroless runtime image.
 4. **Read-only source access** — The application never writes to mounted library volumes.
 5. **Minimal egress** — The only outbound dependency is the Google Books API (see [Outbound Connections](#outbound-connections)); it carries no catalog contents or credentials and is best-effort.
+6. **CSRF guard on `/api`** — State-changing API calls are protected by an origin-based, token-less CSRF guard (`sameSiteGuard` + `formBodyGuard`) that does not depend on Cloudflare's cookie `SameSite` policy. It is *not* a substitute for authentication — see [Cross-Site Request Protection](#cross-site-request-protection-csrf); `/api` still requires an external authenticator (Cloudflare Access), without which a direct deployment exposes an unauthenticated admin API.

@@ -25,11 +25,11 @@ type Handlers struct {
 	OPDS Registrar   // mounted at /opds
 }
 
-func New(log *slog.Logger, h Handlers, env string, noColor bool) *chi.Mux {
-	return newWithFS(log, h, env, noColor, web.GetFileSystem())
+func New(log *slog.Logger, h Handlers, env string, noColor bool, publicURL string) *chi.Mux {
+	return newWithFS(log, h, env, noColor, publicURL, web.GetFileSystem())
 }
 
-func newWithFS(log *slog.Logger, h Handlers, env string, noColor bool, fs http.FileSystem) *chi.Mux {
+func newWithFS(log *slog.Logger, h Handlers, env string, noColor bool, publicURL string, fs http.FileSystem) *chi.Mux {
 	r := chi.NewRouter()
 
 	r.Use(proxyHeaders)
@@ -43,6 +43,11 @@ func newWithFS(log *slog.Logger, h Handlers, env string, noColor bool, fs http.F
 	r.Use(middleware.Recoverer)
 
 	r.Route("/api", func(api chi.Router) {
+		// Token-less CSRF defense: reject cross-site state-changing calls, then
+		// reject forged form-encoded bodies as defense-in-depth. Mounted on the
+		// group so every current and future /api handler is covered.
+		api.Use(sameSiteGuard(publicURL))
+		api.Use(formBodyGuard)
 		api.Get("/health", apipkg.Health)
 		for _, reg := range h.API {
 			reg.Register(api)

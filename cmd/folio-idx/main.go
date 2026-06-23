@@ -133,7 +133,7 @@ func run() int { //revive:disable:function-length
 				settings.New(log, authn),
 			},
 			OPDS: opds.New(log, database, coverStore, authn, cfg.PublicURL),
-		}, cfg.Env, cfg.NoColorEnabled()),
+		}, cfg.Env, cfg.NoColorEnabled(), cfg.PublicURL),
 		ReadTimeout:  15 * time.Second,
 		WriteTimeout: 60 * time.Second,
 		IdleTimeout:  120 * time.Second,
