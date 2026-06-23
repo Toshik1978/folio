@@ -93,6 +93,7 @@ The OPDS sub-router adds HTTP Basic Auth on its protected group (see
 | `GET`/`POST` | `/api/books/{id}/match` | Fix Match: Google Books candidates · apply a chosen volume |
 | `PUT` | `/api/books/{id}` | Update book fields (title, authors, annotation, etc.) |
 | `PUT`/`POST` | `/api/books/{id}/cover` | Upload cover image (binary) · set cover from URL |
+| `GET` | `/api/genres` | Genre taxonomy list |
 | `GET` | `/api/authors` · `/api/authors/letters` | One alphabet bucket of authors · available letters |
 | `GET` | `/api/series` · `/api/series/letters` | One alphabet bucket of series · available letters |
 | `GET` | `/api/tags` · `/api/tags/letters` | One alphabet bucket of tags · available letters |
@@ -264,7 +265,7 @@ internal/
 ├── ebook/                 # Ebook file parsers (epub/fb2(.zip)/mobi+azw3/pdf)
 │   │                      #   assembled into a Dispatcher by main and injected
 ├── googlebooks/           # Minimal stdlib Google Books client              [leaf]
-├── metasearch/            # Federated metadata + cover providers            [leaf]
+├── metasearch/            # Federated metadata + cover providers
 │   │                      #   Registry fans queries to capability-matched sources;
 │   │                      #   Aggregator merges/deduplicates results; Coordinator
 │   │                      #   wires lookup → query → enrich; retry wraps transient
