@@ -141,6 +141,47 @@ describe('useSyncStatus', () => {
     s.disconnect();
   });
 
+  it('re-arms the watchdog after an event so a stall AFTER the first frame still triggers fallback', async () => {
+    vi.useFakeTimers();
+    vi.mocked(fetchSyncStatus).mockResolvedValue({ running: false, current: 0, queued: [] });
+    const s = useSyncStatus();
+    s.connect();
+    const es = MockEventSource.instances[MockEventSource.instances.length - 1]!;
+
+    // Deliver an event — this should re-arm (not permanently clear) the watchdog.
+    es.emit('status', { running: true, current: 1, queued: [] });
+
+    // Advance past WATCHDOG_MS with no further events.
+    await vi.advanceTimersByTimeAsync(6000);
+
+    // The stream has been silent since the event: fallback poll must have fired.
+    expect(fetchSyncStatus).toHaveBeenCalled();
+
+    s.disconnect();
+    vi.useRealTimers();
+  });
+
+  it('keeps re-arming as long as events keep arriving so there is no premature fallback', async () => {
+    vi.useFakeTimers();
+    vi.mocked(fetchSyncStatus).mockResolvedValue({ running: false, current: 0, queued: [] });
+    const s = useSyncStatus();
+    s.connect();
+    const es = MockEventSource.instances[MockEventSource.instances.length - 1]!;
+
+    // Emit events every 2 s (well within WATCHDOG_MS=6000).
+    await vi.advanceTimersByTimeAsync(2000);
+    es.emit('status', { running: true, current: 1, queued: [] });
+    await vi.advanceTimersByTimeAsync(2000);
+    es.emit('status', { running: true, current: 1, queued: [] });
+    await vi.advanceTimersByTimeAsync(2000);
+    es.emit('status', { running: true, current: 1, queued: [] });
+    // Total elapsed: 6000ms, but each event reset the 6000ms watchdog, so no fallback yet.
+    expect(fetchSyncStatus).not.toHaveBeenCalled();
+
+    s.disconnect();
+    vi.useRealTimers();
+  });
+
   it('clears progress when the current library advances and ignores other libraries', () => {
     const s = useSyncStatus();
     s.connect();

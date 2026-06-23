@@ -61,10 +61,11 @@ function armWatchdog(): void {
   watchdog = setTimeout(startFallback, WATCHDOG_MS);
 }
 
-// onEvent marks the stream live: cancel the watchdog and any active fallback.
+// onEvent marks the stream live: stop any active fallback and re-arm the silence
+// watchdog so a stream that stalls AFTER delivering frames is still detected.
 function onEvent(): void {
-  clearWatchdog();
   stopFallback();
+  armWatchdog();
 }
 
 // --- Fallback polling (engaged only when SSE is non-functional) ---
