@@ -26,12 +26,8 @@
       <p class="text-base-content/60 truncate text-xs">
         {{ book.authors.map((a) => a.name).join(', ') }}
       </p>
-      <div
-        v-if="book.rating"
-        class="text-warning mt-1 flex gap-0.5 text-xs"
-        :aria-label="`Rating: ${book.rating} of 5`"
-      >
-        <i v-for="i in 5" :key="i" :class="i <= book.rating ? 'pi pi-star-fill' : 'pi pi-star'" />
+      <div v-if="book.rating" class="text-warning mt-1 text-xs">
+        <StarRating :rating="book.rating" />
       </div>
     </div>
   </router-link>
@@ -40,6 +36,7 @@
 <script setup lang="ts">
 import { useRoute } from 'vue-router';
 
+import StarRating from '@/components/StarRating.vue';
 import type { Book } from '@/types';
 
 defineProps<{ book: Book }>();
