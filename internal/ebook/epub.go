@@ -77,7 +77,7 @@ func parseEPUB(_ context.Context, filePath string) (Metadata, error) {
 		return Metadata{}, err
 	}
 
-	opfData, err := readZipFile(&zr.Reader, opfPath)
+	opfData, err := readZipFile(&zr.Reader, opfPath, maxArchiveTextBytes)
 	if err != nil {
 		return Metadata{}, fmt.Errorf("read OPF: %w", err)
 	}
@@ -127,7 +127,7 @@ func applySeriesMeta(metas []opfMeta, m *Metadata) {
 }
 
 func findOPFPath(zr *zip.Reader) (string, error) {
-	containerData, err := readZipFile(zr, "META-INF/container.xml")
+	containerData, err := readZipFile(zr, "META-INF/container.xml", maxArchiveTextBytes)
 	if err != nil {
 		return "", fmt.Errorf("read container.xml: %w", err)
 	}
@@ -196,7 +196,7 @@ func extractEPUBCover(zr *zip.Reader, pkg opfPackage, opfPath string) []byte {
 
 	for _, item := range pkg.Manifest.Items {
 		if item.ID == coverID && strings.HasPrefix(item.MediaType, "image/") {
-			data, _ := readZipFile(zr, resolveOPFRelative(opfPath, item.Href))
+			data, _ := readZipFile(zr, resolveOPFRelative(opfPath, item.Href), maxCoverBytes)
 			return data
 		}
 	}
@@ -231,26 +231,33 @@ func resolveOPFRelative(opfPath, href string) string {
 	return dir + "/" + href
 }
 
-func readZipFile(zr *zip.Reader, name string) ([]byte, error) {
+func readZipFile(zr *zip.Reader, name string, limit int64) ([]byte, error) {
 	for _, f := range zr.File {
 		if f.Name == name {
-			return readZipEntry(f)
+			return readZipEntry(f, limit)
 		}
 	}
 
 	return nil, fmt.Errorf("file not found in archive: %s", name)
 }
 
-func readZipEntry(f *zip.File) ([]byte, error) {
+// readZipEntry reads a zip entry's decompressed bytes, capped at limit. The cap
+// is the truth (a malicious archive can understate UncompressedSize64), so we
+// read limit+1 through a LimitReader and reject anything that reaches it — this
+// is what bounds zip-bomb expansion.
+func readZipEntry(f *zip.File, limit int64) ([]byte, error) {
 	rc, err := f.Open()
 	if err != nil {
 		return nil, fmt.Errorf("open zip entry %s: %w", f.Name, err)
 	}
 	defer rc.Close()
 
-	data, err := io.ReadAll(rc)
+	data, err := io.ReadAll(io.LimitReader(rc, limit+1))
 	if err != nil {
 		return nil, fmt.Errorf("read zip entry %s: %w", f.Name, err)
+	}
+	if int64(len(data)) > limit {
+		return nil, fmt.Errorf("zip entry %s exceeds %d byte limit", f.Name, limit)
 	}
 
 	return data, nil

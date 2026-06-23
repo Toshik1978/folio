@@ -42,6 +42,19 @@ type Identifier struct {
 // IdentifierISBN is the canonical type label for ISBN identifiers.
 const IdentifierISBN = "isbn"
 
+// maxCoverBytes caps a cover image extracted from a source file, mirroring the
+// API's upload/fetch cap (internal/api.maxCoverBytes). A tiny compressed archive
+// entry can inflate to gigabytes (a zip bomb); without a read cap that would
+// spike memory on the low-spec target hosts (Pi/NAS) before the covers package
+// ever sees the bytes. A real book cover is comfortably under this.
+const maxCoverBytes int64 = 10 << 20 // 10 MiB
+
+// maxArchiveTextBytes caps the decompressed read of an archive's structural
+// text — EPUB container.xml/OPF and an FB2 document inside an .fbz — for the same
+// anti-bomb reason. Generous enough for real files (FB2 embeds base64 images
+// inline, inflating the document) while still bounding pathological expansion.
+const maxArchiveTextBytes int64 = 64 << 20 // 64 MiB
+
 var yearPattern = regexp.MustCompile(`\d{4}`)
 
 // minPlausibleYear is the floor below which a parsed "year" is treated as

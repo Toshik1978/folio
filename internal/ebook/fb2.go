@@ -103,7 +103,7 @@ func parseFB2Zip(_ context.Context, path string) (Metadata, error) {
 			continue
 		}
 
-		data, err := readZipEntry(f)
+		data, err := readZipEntry(f, maxArchiveTextBytes)
 		if err != nil {
 			return Metadata{}, fmt.Errorf("read fb2 in zip: %w", err)
 		}

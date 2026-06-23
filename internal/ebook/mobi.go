@@ -340,24 +340,12 @@ func (mf *mobiFile) findFirstImageRecord() int {
 }
 
 func (mf *mobiFile) readRecordImage(recIndex int) []byte {
-	if recIndex < 0 || recIndex >= mf.numRecords {
+	recStart, recLen, ok := mf.recordBounds(recIndex)
+	if !ok {
 		return nil
 	}
 
-	recStart := mf.recOffsets[recIndex]
-	recEnd := mf.size
-	if recIndex+1 < mf.numRecords {
-		recEnd = mf.recOffsets[recIndex+1]
-	}
-
-	if recStart < 0 || recStart >= recEnd || recStart >= mf.size {
-		return nil
-	}
-	if recEnd > mf.size {
-		recEnd = mf.size
-	}
-
-	coverData := make([]byte, recEnd-recStart)
+	coverData := make([]byte, recLen)
 	if _, err := mf.r.ReadAt(coverData, recStart); err != nil {
 		return nil
 	}
@@ -366,6 +354,32 @@ func (mf *mobiFile) readRecordImage(recIndex int) []byte {
 	}
 
 	return coverData
+}
+
+// recordBounds resolves the [start, start+len) byte range of PDB record
+// recIndex, returning ok=false when the record is out of range, the offsets are
+// inconsistent, or the span exceeds maxCoverBytes. The size cap bounds the
+// allocation against a corrupt/pathological record table rather than trusting
+// the offsets (mirrors the archive read caps).
+func (mf *mobiFile) recordBounds(recIndex int) (start, length int64, ok bool) {
+	if recIndex < 0 || recIndex >= mf.numRecords {
+		return 0, 0, false
+	}
+
+	recStart := mf.recOffsets[recIndex]
+	recEnd := mf.size
+	if recIndex+1 < mf.numRecords {
+		recEnd = mf.recOffsets[recIndex+1]
+	}
+	if recEnd > mf.size {
+		recEnd = mf.size
+	}
+
+	if recStart < 0 || recStart >= recEnd || recEnd-recStart > maxCoverBytes {
+		return 0, 0, false
+	}
+
+	return recStart, recEnd - recStart, true
 }
 
 var imageSignatures = [][]byte{ //nolint:gochecknoglobals // read-only lookup table
