@@ -252,6 +252,9 @@ func (s *mobiSuite) TestParseCP1252() {
 // the bounds guard and panics on the slice expression. The fix uses uint64 math
 // so the comparison is always unsigned regardless of int width.
 func (s *mobiSuite) TestReadTitleRejectsOutOfRangeOffset() {
+	// On 64-bit hosts int(uint32(0x80000000)) is positive (2147483648), so the
+	// bounds guard alone would pass vacuously; it is the uint64 arithmetic in
+	// readTitle that makes this test meaningful on 32-bit where that cast wraps negative.
 	rec0 := craftMOBIRecord0WithTitleOffset(0x80000000)
 	mf := &mobiFile{rec0: rec0}
 	s.NotPanics(func() { _ = mf.readTitle() })

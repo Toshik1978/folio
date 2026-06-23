@@ -83,7 +83,7 @@ func (s *genresSuite) TestCanonicalizeGenresNormalizesAndDedupes() {
 	// collapse to a single canonical entry.
 	got := CanonicalizeGenres([]string{"sf", "sf"})
 	s.Len(got, 1)
-	s.Equal(normalizeGenres([]string{"sf"})[0], got[0])
+	s.Equal("Science Fiction", got[0])
 }
 
 func (s *genresSuite) TestDeduplicate() {

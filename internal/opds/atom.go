@@ -11,7 +11,9 @@ import (
 
 // maxPage caps the requested page number so (page-1)*defaultLimit cannot
 // overflow int64 into a negative SQL OFFSET. Must stay in sync with
-// internal/api/util.go's unexported maxPage constant.
+// internal/api/util.go's unexported maxPage constant. Note that opds uses
+// defaultLimit = 50 while internal/api uses 24, so the offset multiplier
+// differs between the two packages, but both stay well within int64 at this cap.
 const maxPage = 1_000_000_000
 
 // OPDS / Atom media types and link relations.

@@ -56,6 +56,37 @@ describe('useFacetValues', () => {
     expect(formats.value).toEqual([]);
   });
 
+  it('does not toast when a stale load rejects after a newer load resolved', async () => {
+    // A newer (lib B) load resolves first; then the stale (lib A) load rejects.
+    // The catch guard must detect seq !== loadSeq and skip the toast.
+    const facetsB = { formats: ['epub'], languages: ['en'] };
+
+    let rejectA!: (err: Error) => void;
+    const promiseA = new Promise<typeof facetsB>((_, rej) => {
+      rejectA = rej;
+    });
+
+    vi.mocked(fetchFacets)
+      .mockImplementationOnce(() => promiseA)
+      .mockResolvedValueOnce(facetsB);
+
+    libraryId.value = 1; // lib A
+    const { load } = useFacetValues();
+
+    // Start load for lib A — suspended.
+    const loadAPromise = load();
+
+    // Switch to lib B and complete its load so loadSeq advances.
+    libraryId.value = 2;
+    await load(); // lib B resolves; seq is now 2.
+
+    // Stale lib A load rejects — must NOT toast.
+    rejectA(new Error('stale error'));
+    await loadAPromise;
+
+    expect(toastError).not.toHaveBeenCalled();
+  });
+
   it('ignores out-of-order load: later fetch for lib A resolves after lib B load', async () => {
     // Library A facets that will arrive LATE.
     const facetsA = { formats: ['mobi'], languages: ['de'] };

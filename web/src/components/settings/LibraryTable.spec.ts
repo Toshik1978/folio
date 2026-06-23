@@ -58,6 +58,6 @@ describe('LibraryTable', () => {
     const bar = wrapper.find('progress');
     expect(bar.exists()).toBe(true);
     // A determinate bar must have a value attribute (indeterminate bars have none)
-    expect(bar.attributes('value')).toBeDefined();
+    expect(bar.attributes('value')).toBe('0');
   });
 });

@@ -126,5 +126,6 @@ func (s *coversTestSuite) TestConvertRejectsOversizeJPEG() {
 	// 60000x60000 = 3.6 GP, far above maxCoverPixels (40 MP).
 	data := jpegWithDeclaredDimensions(s.T(), 60000, 60000)
 	_, err := convertToJPEG(data)
-	s.Error(err)
+	s.Require().Error(err)
+	s.Contains(err.Error(), "pixel", "must be rejected by the dimension guard, not an incidental decode error")
 }

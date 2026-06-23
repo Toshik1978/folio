@@ -36,6 +36,7 @@ export function useFacetValues() {
       languages.value = facets.languages;
       loadedFor = lib;
     } catch (err) {
+      if (seq !== loadSeq) return;
       toast.error(`Failed to load filters: ${(err as Error).message}`);
     }
   }
