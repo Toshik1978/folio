@@ -55,4 +55,38 @@ describe('IdentifierEditor', () => {
     const emitted = wrapper.emitted('update:modelValue')?.[0][0] as IdentifierInput[];
     expect(emitted).toEqual([{ type: 'google', value: 'b' }]);
   });
+
+  it('keeps correct DOM nodes when a middle row is removed', async () => {
+    // Render three rows.
+    const wrapper = mountEditor([
+      { type: 'isbn', value: 'first' },
+      { type: 'amazon', value: 'middle' },
+      { type: 'google', value: 'last' },
+    ]);
+
+    // Capture the DOM element for the third row's input before the removal.
+    const inputsBefore = wrapper.findAll('input');
+    expect(inputsBefore).toHaveLength(3);
+    const thirdInputElementBefore = inputsBefore[2].element;
+
+    // Remove the middle row (index 1).
+    const removeButtons = wrapper.findAll('button[aria-label^="Remove"]');
+    await removeButtons[1].trigger('click');
+
+    // The emitted payload must be the first and last rows only.
+    const emitted = wrapper.emitted('update:modelValue')?.[0][0] as IdentifierInput[];
+    expect(emitted).toEqual([
+      { type: 'isbn', value: 'first' },
+      { type: 'google', value: 'last' },
+    ]);
+
+    // Simulate the parent feeding the new modelValue back (controlled-input pattern).
+    await wrapper.setProps({ modelValue: emitted });
+
+    // With stable keys the third row's DOM element must be reused — not torn down
+    // and recreated — so focus and composition state survive.
+    const inputsAfter = wrapper.findAll('input');
+    expect(inputsAfter).toHaveLength(2);
+    expect(inputsAfter[1].element).toBe(thirdInputElementBefore);
+  });
 });
