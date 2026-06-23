@@ -40,7 +40,7 @@
                 <div class="flex items-center gap-2 mt-1">
                   <progress
                     class="progress progress-primary w-32"
-                    :value="currentProgress.total ? currentProgress.processed : undefined"
+                    :value="currentProgress.total != null ? currentProgress.processed : undefined"
                     :max="currentProgress.total ?? undefined"
                   />
                   <span class="text-xs opacity-70 whitespace-nowrap">{{

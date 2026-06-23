@@ -46,4 +46,18 @@ describe('LibraryTable', () => {
     });
     expect(wrapper.find('[data-testid="library-card"]').text()).toContain('Queued');
   });
+
+  it('renders a determinate progress bar when total is 0', async () => {
+    const sync = useSyncStatus();
+    sync.running.value = true;
+    sync.current.value = 7;
+    sync.currentProgress.value = { processed: 0, total: 0 };
+    const wrapper = mount(LibraryTable, {
+      props: { libraries: [makeLibrary({ id: 7, status: 'syncing' })] },
+    });
+    const bar = wrapper.find('progress');
+    expect(bar.exists()).toBe(true);
+    // A determinate bar must have a value attribute (indeterminate bars have none)
+    expect(bar.attributes('value')).toBeDefined();
+  });
 });
