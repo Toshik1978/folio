@@ -78,12 +78,8 @@
           </template>
           <template v-if="book.rating">
             <dt class="text-base-content/60 font-medium">Rating</dt>
-            <dd class="text-warning m-0 flex gap-0.5" :aria-label="`${book.rating} of 5`">
-              <i
-                v-for="i in 5"
-                :key="i"
-                :class="i <= book.rating ? 'pi pi-star-fill' : 'pi pi-star'"
-              />
+            <dd class="text-warning m-0">
+              <StarRating :rating="book.rating" />
             </dd>
           </template>
           <template v-if="book.language">
@@ -187,6 +183,7 @@ import { computed, ref } from 'vue';
 import CoverPickerModal from '@/components/CoverPickerModal.vue';
 import EditBookModal from '@/components/EditBookModal.vue';
 import FixMatchModal from '@/components/FixMatchModal.vue';
+import StarRating from '@/components/StarRating.vue';
 import type { Book } from '@/types';
 import { formatSize } from '@/utils/format';
 import { languageLabel } from '@/utils/language';
