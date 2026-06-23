@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 )
@@ -224,6 +225,39 @@ func (s *editSuite) TestUpdateBookClearsIdentifiersWhenEmpty() {
 	var got bookView
 	s.decode(w, &got)
 	s.Empty(got.Identifiers, "an explicit empty set clears all identifiers")
+}
+
+// TestUpdateBookEditIsAtomic verifies a manual edit's scalar fields and its
+// identifier replacement commit or roll back together: when the edit transaction
+// fails, neither the book's fields nor its identifiers are changed.
+func (s *editSuite) TestUpdateBookEditIsAtomic() {
+	src := s.seedLibrary("folder", "/lib")
+	id := s.seedBook(src, bookSeed{
+		Title:       "Original",
+		Lang:        "en",
+		Identifiers: map[string]string{"isbn": "9780441172719"},
+	})
+
+	s.books.editTxHook = func() error { return errors.New("boom") }
+	defer func() { s.books.editTxHook = nil }()
+
+	body := map[string]any{
+		"title":       "Changed",
+		"identifiers": []map[string]string{{"type": "goodreads", "value": "234225"}},
+	}
+	w := s.do(http.MethodPut, "/books/"+itoa(id), body)
+	s.Require().Equal(http.StatusInternalServerError, w.Code)
+
+	book, err := s.q.GetBook(s.T().Context(), id)
+	s.Require().NoError(err)
+	s.Equal("Original", book.Title, "a failed edit must not persist the scalar change")
+	s.EqualValues(0, book.ManuallyMatched, "a failed edit must not lock the book")
+
+	idents, err := s.q.ListIdentifiersForBook(s.T().Context(), id)
+	s.Require().NoError(err)
+	s.Require().Len(idents, 1, "a failed edit must not replace the identifier set")
+	s.Equal("isbn", idents[0].Type)
+	s.Equal("9780441172719", idents[0].Value)
 }
 
 // TestIsBlockedHost unit-tests the real SSRF guard directly (no server needed).

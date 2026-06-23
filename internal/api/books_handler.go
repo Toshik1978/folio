@@ -101,6 +101,12 @@ type BooksHandler struct {
 
 	lazyMu       stdsync.Mutex
 	lazyInflight map[int64]bool // book ids whose lazy write-on-read tiers are running
+
+	// editTxHook, when non-nil, runs inside updateBook's single edit transaction
+	// after the scalar and identifier writes. Tests use it to force a
+	// mid-transaction failure and assert the whole edit rolls back atomically. It
+	// is nil in production.
+	editTxHook func() error
 }
 
 // NewBooks builds the books handler. extractor, enricher, coverSaver, and coverSearch may be nil.

@@ -105,35 +105,11 @@ func (h *BooksHandler) applyEnrichment(
 	// download never serializes behind it).
 	persisted := false
 	err := h.writeGuard.WithTx(ctx, h.db, func(tx *sql.Tx) error {
-		q := dbq.New(tx)
-
-		changed, mErr := h.mergeEnrichmentChanges(ctx, q, &b, meta, overwrite)
-		if mErr != nil {
-			return mErr
+		changed, aErr := h.applyEnrichmentTx(ctx, dbq.New(tx), &b, meta, overwrite, coverSaved)
+		if aErr != nil {
+			return aErr
 		}
-		if coverSaved {
-			changed = true
-		}
-
-		if !changed {
-			// Nothing displayable changed; identifiers may still have been written.
-			// A Fix Match still locks the book: the manual marker (not the field
-			// diff) is what keeps future syncs gap-fill-only, so it persists even
-			// here. The caller marks the book enrichment-checked separately.
-			if overwrite {
-				if mmErr := q.MarkManuallyMatched(ctx, b.ID); mmErr != nil {
-					return fmt.Errorf("mark manually matched: %w", mmErr)
-				}
-			}
-
-			return nil
-		}
-
-		b.ContentHash = newEnrichmentHash(b.ContentHash)
-		if pErr := h.persistEnrichedScalars(ctx, q, &b, meta, overwrite); pErr != nil {
-			return pErr
-		}
-		persisted = true
+		persisted = changed
 
 		return nil
 	})
@@ -145,6 +121,49 @@ func (h *BooksHandler) applyEnrichment(
 	}
 
 	return persisted, nil
+}
+
+// applyEnrichmentTx merges meta into b within the caller's transaction q,
+// returning whether a displayable field changed. It opens no transaction and
+// does not publish b — applyEnrichment is the standalone wrapper, while
+// updateBook composes this with the identifier reconcile in a single edit
+// transaction so a manual edit commits or rolls back atomically.
+func (h *BooksHandler) applyEnrichmentTx(
+	ctx context.Context,
+	q *dbq.Queries,
+	b *dbq.Book,
+	meta ebook.Metadata,
+	overwrite bool,
+	coverSaved bool,
+) (bool, error) {
+	changed, mErr := h.mergeEnrichmentChanges(ctx, q, b, meta, overwrite)
+	if mErr != nil {
+		return false, mErr
+	}
+	if coverSaved {
+		changed = true
+	}
+
+	if !changed {
+		// Nothing displayable changed; identifiers may still have been written.
+		// A Fix Match still locks the book: the manual marker (not the field
+		// diff) is what keeps future syncs gap-fill-only, so it persists even
+		// here. The caller marks the book enrichment-checked separately.
+		if overwrite {
+			if mmErr := q.MarkManuallyMatched(ctx, b.ID); mmErr != nil {
+				return false, fmt.Errorf("mark manually matched: %w", mmErr)
+			}
+		}
+
+		return false, nil
+	}
+
+	b.ContentHash = newEnrichmentHash(b.ContentHash)
+	if pErr := h.persistEnrichedScalars(ctx, q, b, meta, overwrite); pErr != nil {
+		return false, pErr
+	}
+
+	return true, nil
 }
 
 // mergeEnrichmentChanges applies every in-place change for one enrichment to book
