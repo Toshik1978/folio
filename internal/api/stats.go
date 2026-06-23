@@ -20,29 +20,25 @@ type statsView struct {
 // stats handles GET /api/stats — cached global library totals.
 func (h *CatalogHandler) stats(w http.ResponseWriter, r *http.Request) {
 	h.cacheMutex.Lock()
-	if h.cacheValid {
-		stats := h.cachedStats
-		h.cacheMutex.Unlock()
-		h.writeJSON(w, http.StatusOK, stats)
-		return
+	if !h.cacheValid {
+		stats, err := h.computeStats(r.Context())
+		if err != nil {
+			h.cacheMutex.Unlock()
+			h.statsError(w, err)
+			return
+		}
+		h.cachedStats = stats
+		h.cacheValid = true
 	}
+	stats := h.cachedStats
 	h.cacheMutex.Unlock()
-
-	stats, err := h.computeStats(r.Context())
-	if err != nil {
-		h.statsError(w, err)
-		return
-	}
-
-	h.cacheMutex.Lock()
-	h.cachedStats = stats
-	h.cacheValid = true
-	h.cacheMutex.Unlock()
-
 	h.writeJSON(w, http.StatusOK, stats)
 }
 
 func (h *CatalogHandler) computeStats(ctx context.Context) (statsView, error) {
+	if h.computeHook != nil {
+		h.computeHook()
+	}
 	global, err := h.q.GlobalStats(ctx)
 	if err != nil {
 		return statsView{}, fmt.Errorf("get global stats: %w", err)

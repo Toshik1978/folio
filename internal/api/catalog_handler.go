@@ -26,6 +26,10 @@ type CatalogHandler struct {
 	// pick the first available letter as the default.
 	alphabet []string
 	genres   []string
+
+	// computeHook, when non-nil, is called each time computeStats executes.
+	// It is nil in production and set only by tests to count invocations.
+	computeHook func()
 }
 
 // NewCatalog builds the catalog handler over the folio database.
