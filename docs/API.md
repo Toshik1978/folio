@@ -17,8 +17,13 @@ All `/api/*` routes are protected externally by Cloudflare Access (browser SSO/M
 | `GET` | `/api/books/{id}` | Single book detail; triggers lazy metadata backfill + online enrichment on first view (a per-book in-flight claim makes concurrent first views run them once — the losing view serves the current row) | JSON book object |
 | `GET` | `/api/books/{id}/files/{fileID}` | Download one format of a book (a book may have several; see `formats[]`) | Binary stream with correct `Content-Type` |
 | `GET` | `/api/books/{id}/cover` | Fetch cached cover image | Image binary (`image/jpeg`; covers are normalized to JPEG on import) |
+| `GET` | `/api/books/{id}/cover/search` | Cover search: multi-source cover candidates for `?q=<query>` | JSON array of `CoverCandidate` objects |
 | `GET` | `/api/books/{id}/match` | Fix Match: Google Books candidates for `?q=<query>` | JSON array of candidates |
 | `POST` | `/api/books/{id}/match` | Apply a chosen volume (`{"volume_id":"…"}`), overwriting the book's metadata | JSON updated book object |
+| `PUT` | `/api/books/{id}` | Update book fields (title, authors, annotation, etc.) | JSON updated book object |
+| `PUT` | `/api/books/{id}/cover` | Upload a new cover image (binary body) | JSON updated book object |
+| `POST` | `/api/books/{id}/cover` | Set cover from URL (`{"url":"…"}`) — server downloads the image | JSON updated book object |
+| `GET` | `/api/genres` | Canonical genre taxonomy list (for the edit autocomplete) | JSON array of genre name strings |
 | `GET` | `/api/authors` | One alphabet bucket of authors (`?letter=&page=&limit=`) | JSON array `[{id,name,book_count}]` |
 | `GET` | `/api/authors/letters` | Alphabet buckets that have authors (drives the selector) | JSON array of letters |
 | `GET` | `/api/series` | One alphabet bucket of series (`?letter=&page=&limit=`) | JSON array `[{id,name,book_count}]` |

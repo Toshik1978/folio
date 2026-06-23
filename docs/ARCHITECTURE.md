@@ -99,6 +99,8 @@ folio/
 │   ├── ingest/             # Source parsers (calibre/inpx/folder) + reconciliation/merge
 │   ├── ebook/              # Per-format file parsers (epub/fb2(.zip)/mobi+azw3/pdf)
 │   ├── googlebooks/        # Minimal stdlib Google Books client (enrichment / Fix Match)
+│   ├── metasearch/         # Federated metadata + cover providers (registry, aggregator, retry); adapters under providers/
+│   ├── libtype/            # Library-type constants (calibre/inpx/folder); dependency-free leaf shared across layers
 │   ├── htmltext/           # HTML annotation → plain text / entity tables
 │   ├── covers/             # Cover store + HTTP serving + embedded placeholder
 │   ├── sync/               # Background sync engine (scheduler, fsnotify watcher, cover warming, purge teardown)

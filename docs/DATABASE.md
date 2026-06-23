@@ -39,8 +39,9 @@ Goose expects numbered SQL files in a migrations directory:
 
 ```
 internal/db/migrations/
-├── 001_create_schema.sql   # libraries, books, book_files, authors, series, genres, … + indexes
-└── 002_create_fts5.sql     # books_fts virtual table + delete trigger
+├── 001_create_schema.sql              # libraries, books, book_files, authors, series, genres, … + indexes
+├── 002_create_fts5.sql                # books_fts virtual table + delete trigger
+└── 003_book_identifiers_lookup.sql    # idx_book_identifiers_lookup on book_identifiers(type, value) — accelerates identifier-based lookups (ISBN / Amazon / Goodreads) used by metasearch enrichment
 ```
 
 The migration files are embedded into the binary (`go:embed`) and run
