@@ -83,11 +83,13 @@ const emit = defineEmits<{ submit: [payload: NewLibrary]; cancel: [] }>();
 
 const toast = useToast();
 
+const DEFAULT_INTERVAL = 3600;
+
 const form = reactive({
   name: '',
   type: 'calibre' as Library['type'],
   path: '',
-  interval: 3600,
+  interval: DEFAULT_INTERVAL,
 });
 
 // reset returns the form to add-mode defaults. Exposed so the page can clear it
@@ -96,7 +98,7 @@ function reset(): void {
   form.name = '';
   form.type = 'calibre';
   form.path = '';
-  form.interval = 3600;
+  form.interval = DEFAULT_INTERVAL;
 }
 
 // Seed (or clear) the fields whenever the edit target changes, and scroll the form
@@ -127,11 +129,15 @@ function onSave(): void {
     toast.error('Path is required');
     return;
   }
+  const interval =
+    typeof form.interval === 'number' && Number.isFinite(form.interval)
+      ? form.interval
+      : DEFAULT_INTERVAL;
   emit('submit', {
     name: form.name,
     type: form.type,
     path: form.path,
-    sync_interval_seconds: form.interval,
+    sync_interval_seconds: interval,
   });
 }
 
