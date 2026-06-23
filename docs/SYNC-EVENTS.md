@@ -264,12 +264,17 @@ so no gzip buffering to defeat.
 6. Initial snapshot: a single `status` event from `h.sync.Status()` (no initial
    `progress` frame; the first one arrives within ~250 ms during an active run).
 7. Loop: `select` on `ctx.Done()` (client gone) / `sub.Done()` (broker recycle or
-   shutdown) / ~20s heartbeat (`: ping\n\n`, under `IdleTimeout: 120s`) / `sub.C()`
-   → `Drain` → `writeEvent` + `Flush`. A failed write breaks the loop → `defer`
-   unsubscribes.
+   shutdown) / ~20s heartbeat (a named `ping` event — `event: ping\ndata: {}\n\n`,
+   under `IdleTimeout: 120s` — which doubles as the client's liveness signal) /
+   `sub.C()` → `Drain` → `writeEvent` + `Flush`. A failed write breaks the loop →
+   `defer` unsubscribes.
 
 `writeEvent`: `event: <type>\n` + `data: <json>\n\n` (`json.Marshal` is
-single-line, so one `data:` line suffices).
+single-line, so one `data:` line suffices). The heartbeat uses `writePing`, which
+emits the same framing with a fixed `event: ping\ndata: {}`. The `data:` line is
+non-empty on purpose: `EventSource` discards a frame whose data buffer is empty
+without dispatching it, so a bare `: ping` comment would be invisible to the
+client (see the watchdog rationale under *Frontend*).
 
 ---
 
@@ -285,22 +290,28 @@ thrown out of the listener).
 **Three-state connection machine** (the cost of the fallback):
 
 ```
-connect():  open EventSource('/api/sync/events'); state = connecting; watchdog ~6s
-  on 'status'   → applyStatus(data); state = live; clear watchdog; stop fallback
+connect():  open EventSource('/api/sync/events'); state = connecting; watchdog ~30s
+  on 'status'   → applyStatus(data)
   on 'library'  → refreshLibraries()            // replaces the 5s SettingsPage poll
   on 'progress' → set currentProgress (if library === current)
-  on any event  → reset watchdog; state = live
-  watchdog fires (opened but silent ~6s)  → FALLBACK   // catches a buffering proxy
+  on 'ping'     → (no state change) server heartbeat, ~every 20s
+  on any event  → stop fallback; re-arm watchdog; state = live   // incl. ping
+  watchdog fires (silent > ~30s — not even a heartbeat) → FALLBACK
   onerror w/ readyState === 2 (CLOSED)    → FALLBACK
 FALLBACK: run legacy 3s poll; retry SSE ~30s; on a delivered event → live, stop poll
 ```
 
-The watchdog is the detector for a **buffering proxy** — the one failure mode
-`EventSource`'s own auto-reconnect cannot catch. The server sends the initial
-`status` immediately, so a healthy stream delivers an event within milliseconds;
-"opened but silent for ~6s" reliably means buffered. The fallback poll keeps the
-legacy behavior (status fetch + `refreshLibraries` on a running/just-finished
-transition), since no `library` events flow while polling.
+The watchdog detects a stream that is **open but not delivering** — a buffering
+proxy, or a connection that wedged after its first frames — the failure modes
+`EventSource`'s own auto-reconnect cannot catch. Because the ~20s heartbeat is a
+real `ping` event (not an invisible SSE comment), an idle-but-healthy stream
+re-arms the watchdog on every heartbeat, so it fires only when even the heartbeat
+stops. That is why `WATCHDOG_MS` (~30s) must sit **above** the heartbeat interval:
+a shorter window would expire between pings and tear a healthy stream down and
+reopen it on a loop — which is exactly what surfaced as a logged
+`GET /api/sync/events` every ~30s. The fallback poll keeps the legacy behavior
+(status fetch + `refreshLibraries` on a running/just-finished transition), since
+no `library` events flow while polling.
 
 `SettingsPage.vue` has no libraries poll; background updates arrive via `library`
 events, and entering the libraries tab does a one-shot refresh. `fetchSyncStatus`

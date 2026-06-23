@@ -2,6 +2,7 @@ package api
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"errors"
 	"net/http"
@@ -159,6 +160,17 @@ func (s *metaSuite) TestSyncEventsInitialSnapshotAndPush() {
 	s.Contains(data, `"id":7`)
 }
 
+// TestWritePingEmitsNamedEvent pins the heartbeat frame format. The keepalive
+// must be a real (named) SSE event, not a bare comment (": ping"): the browser's
+// EventSource silently ignores comments, so a comment cannot serve as the
+// client's liveness signal. The data: line must also be present and non-empty,
+// or EventSource discards the frame without dispatching it.
+func (s *metaSuite) TestWritePingEmitsNamedEvent() {
+	var buf bytes.Buffer
+	s.Require().NoError(writePing(&buf))
+	s.Equal("event: ping\ndata: {}\n\n", buf.String())
+}
+
 func (s *metaSuite) TestFacets() {
 	src1 := s.seedLibrary("folder", "/lib1")
 	src2 := s.seedLibrary("folder", "/lib2")
@@ -217,8 +229,9 @@ func (s *metaSuite) TestStatsCacheInvalidation() {
 	s.Equal(int64(2), st.TotalBooks)
 }
 
-// readSSEEvent reads one event:/data: frame from a shared lines channel,
-// skipping comment (":") and "retry:" lines.
+// readSSEEvent reads one domain event:/data: frame from a shared lines channel,
+// skipping comment (":") and "retry:" lines as well as heartbeat "ping" events,
+// which are transport keepalives rather than domain events.
 func (s *metaSuite) readSSEEvent(lines <-chan string) (event, data string) {
 	s.T().Helper()
 	deadline := time.After(2 * time.Second)
@@ -230,14 +243,29 @@ func (s *metaSuite) readSSEEvent(lines <-chan string) (event, data string) {
 			if !ok {
 				s.FailNow("stream closed before a full event")
 			}
-			switch {
-			case strings.HasPrefix(line, "event:"):
-				event = strings.TrimSpace(strings.TrimPrefix(line, "event:"))
-			case strings.HasPrefix(line, "data:"):
-				data = strings.TrimSpace(strings.TrimPrefix(line, "data:"))
-			case line == "" && event != "":
+			var complete bool
+			if event, data, complete = foldSSELine(line, event, data); complete {
 				return event, data
 			}
 		}
+	}
+}
+
+// foldSSELine folds one raw stream line into the in-progress (event, data) pair.
+// complete is true once a blank line closes a dispatchable domain frame; a blank
+// line closing a heartbeat "ping" frame resets the pair and reports incomplete,
+// so the caller skips it and keeps reading.
+func foldSSELine(line, event, data string) (string, string, bool) {
+	switch {
+	case strings.HasPrefix(line, "event:"):
+		return strings.TrimSpace(strings.TrimPrefix(line, "event:")), data, false
+	case strings.HasPrefix(line, "data:"):
+		return event, strings.TrimSpace(strings.TrimPrefix(line, "data:")), false
+	case line == "" && event == "ping":
+		return "", "", false // heartbeat keepalive: reset and keep reading
+	case line == "" && event != "":
+		return event, data, true
+	default:
+		return event, data, false
 	}
 }

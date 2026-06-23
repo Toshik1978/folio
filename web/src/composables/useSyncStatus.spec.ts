@@ -89,7 +89,7 @@ describe('useSyncStatus', () => {
     const s = useSyncStatus();
     s.connect();
 
-    await vi.advanceTimersByTimeAsync(6000);
+    await vi.advanceTimersByTimeAsync(30000); // past WATCHDOG_MS with no frames
     expect(fetchSyncStatus).toHaveBeenCalled();
 
     s.disconnect();
@@ -104,7 +104,7 @@ describe('useSyncStatus', () => {
 
     // Watchdog fires -> fallback poll runs while the engine is idle. A row change
     // (e.g. a completed purge) must still reach the UI via a list refresh.
-    await vi.advanceTimersByTimeAsync(6000);
+    await vi.advanceTimersByTimeAsync(30000);
     expect(fetchLibraries).toHaveBeenCalled();
 
     s.disconnect();
@@ -152,7 +152,7 @@ describe('useSyncStatus', () => {
     es.emit('status', { running: true, current: 1, queued: [] });
 
     // Advance past WATCHDOG_MS with no further events.
-    await vi.advanceTimersByTimeAsync(6000);
+    await vi.advanceTimersByTimeAsync(30000);
 
     // The stream has been silent since the event: fallback poll must have fired.
     expect(fetchSyncStatus).toHaveBeenCalled();
@@ -168,15 +168,40 @@ describe('useSyncStatus', () => {
     s.connect();
     const es = MockEventSource.instances[MockEventSource.instances.length - 1]!;
 
-    // Emit events every 2 s (well within WATCHDOG_MS=6000).
-    await vi.advanceTimersByTimeAsync(2000);
+    // Emit events every 20 s — each gap is under WATCHDOG_MS (30000) but the
+    // total exceeds it, so only the per-event re-arm can be holding fallback off.
+    await vi.advanceTimersByTimeAsync(20000);
     es.emit('status', { running: true, current: 1, queued: [] });
-    await vi.advanceTimersByTimeAsync(2000);
+    await vi.advanceTimersByTimeAsync(20000);
     es.emit('status', { running: true, current: 1, queued: [] });
-    await vi.advanceTimersByTimeAsync(2000);
+    await vi.advanceTimersByTimeAsync(20000);
     es.emit('status', { running: true, current: 1, queued: [] });
-    // Total elapsed: 6000ms, but each event reset the 6000ms watchdog, so no fallback yet.
+    // Total elapsed: 60000ms, but each event reset the 30000ms watchdog, so no fallback yet.
     expect(fetchSyncStatus).not.toHaveBeenCalled();
+
+    s.disconnect();
+    vi.useRealTimers();
+  });
+
+  it('treats heartbeat pings as liveness: no fallback or reconnect on an idle stream', async () => {
+    vi.useFakeTimers();
+    vi.mocked(fetchSyncStatus).mockResolvedValue({ running: false, current: 0, queued: [] });
+    const s = useSyncStatus();
+    s.connect();
+    const es = MockEventSource.instances[MockEventSource.instances.length - 1]!;
+
+    // A healthy but idle stream emits only the server's keepalive ping (~20s).
+    // Each ping must re-arm the watchdog so the stream is never declared dead.
+    await vi.advanceTimersByTimeAsync(20000);
+    es.emit('ping', {});
+    await vi.advanceTimersByTimeAsync(20000);
+    es.emit('ping', {});
+    await vi.advanceTimersByTimeAsync(5000); // 45s elapsed — well past the old 6s watchdog
+
+    // No false-positive death: no polling fallback, and no teardown/reopen of the
+    // stream (which is what produced a logged GET /api/sync/events every ~30s).
+    expect(fetchSyncStatus).not.toHaveBeenCalled();
+    expect(MockEventSource.instances).toHaveLength(1);
 
     s.disconnect();
     vi.useRealTimers();

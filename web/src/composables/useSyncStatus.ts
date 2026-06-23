@@ -9,7 +9,11 @@ import type { LibraryEvent, SyncProgress, SyncStatus } from '@/types';
 // stream opens but never delivers (a buffering proxy) — the one failure mode
 // EventSource cannot detect on its own.
 const EVENTS_URL = '/api/sync/events';
-const WATCHDOG_MS = 6000; // opened-but-silent grace before declaring SSE dead
+// Silence grace before declaring SSE dead. An idle-but-healthy stream emits only
+// the server's keepalive ping (every 20s; see sseHeartbeat in events.go), so this
+// MUST exceed that interval — otherwise the watchdog fires between pings and the
+// stream is torn down and reopened on a loop even when nothing is wrong.
+const WATCHDOG_MS = 30000;
 const FALLBACK_POLL_MS = 3000; // legacy cadence while polling
 const SSE_RETRY_MS = 30000; // re-attempt SSE from fallback
 
@@ -140,6 +144,11 @@ function openStream(): void {
       currentProgress.value = { processed: p.processed, total: p.total };
     }
   });
+  // Heartbeat pings are liveness, not data: the server sends them between sync
+  // events so an otherwise-silent stream still proves it is alive. Route them
+  // through onEvent() to re-arm the watchdog (and cancel any fallback) without
+  // touching any state.
+  es.addEventListener('ping', () => onEvent());
   es.onerror = () => {
     // EventSource retries on its own unless it gave up (CLOSED); only then fall back.
     // Compare against 2 directly (not EventSource.CLOSED) so this works in test

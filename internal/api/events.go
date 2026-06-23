@@ -10,9 +10,12 @@ import (
 	"github.com/Toshik1978/folio/internal/events"
 )
 
-// sseHeartbeat is the comment-ping interval. It keeps intermediaries from
-// idle-timing-out the stream (comfortably under the server IdleTimeout of 120s)
-// and surfaces a dead connection via a failed write.
+// sseHeartbeat is the keepalive-ping interval. It keeps intermediaries from
+// idle-timing-out the stream (comfortably under the server IdleTimeout of 120s),
+// surfaces a dead connection via a failed write, and — because the ping is a
+// real named event (see writePing) — lets the client's silence watchdog tell an
+// idle-but-healthy stream apart from a wedged one. The client's watchdog must be
+// set above this interval (see WATCHDOG_MS in useSyncStatus.ts).
 const sseHeartbeat = 20 * time.Second
 
 // syncEvents handles GET /api/sync/events — a Server-Sent Events stream of sync
@@ -73,7 +76,7 @@ func (h *SyncHandler) sseHandler(w http.ResponseWriter, r *http.Request, sub *ev
 		case <-sub.Done():
 			return
 		case <-ticker.C:
-			if _, err := io.WriteString(w, ": ping\n\n"); err != nil {
+			if err := writePing(w); err != nil {
 				return
 			}
 			flusher.Flush()
@@ -86,6 +89,21 @@ func (h *SyncHandler) sseHandler(w http.ResponseWriter, r *http.Request, sub *ev
 			flusher.Flush()
 		}
 	}
+}
+
+// writePing emits the heartbeat as a real, named SSE event rather than a bare
+// comment (": ping"). A comment keeps proxies from idle-timing out the stream
+// but is invisible to the browser's EventSource, so the client cannot use it as
+// a liveness signal — it would mistake an idle-but-healthy stream for a dead one
+// and reconnect on a loop. A named "ping" event is delivered to a client
+// listener instead. The data: line is required and must be non-empty: EventSource
+// discards a frame whose data buffer is empty without dispatching it.
+func writePing(w io.Writer) error {
+	if _, err := io.WriteString(w, "event: ping\ndata: {}\n\n"); err != nil {
+		return fmt.Errorf("failed to write ping: %w", err)
+	}
+
+	return nil
 }
 
 // writeEvent serializes one event as an SSE frame: `event: <type>\n` +
