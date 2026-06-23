@@ -71,6 +71,18 @@ func (s *parseSuite) TestParseCoversFromFixture() {
 	s.Equal("https://m.media-amazon.com/images/I/bbb.jpg", got[1].FullURL)
 }
 
+func (s *parseSuite) TestPickSrcsetSkipsMalformedAndPicksHighest() {
+	// Malformed descriptor before any valid entry must be skipped; highest valid wins.
+	srcset := "https://img/bad.jpg garbage, https://img/lo.jpg 1x, https://img/hi.jpg 3x"
+	s.Equal("https://img/hi.jpg", highestDensity(srcset))
+
+	// A srcset that contains only a malformed entry should return "".
+	s.Empty(highestDensity("https://img/bad.jpg garbage"))
+
+	// Equal densities: first entry wins (strict > keeps the earlier one).
+	s.Equal("https://img/first.jpg", highestDensity("https://img/first.jpg 2x, https://img/second.jpg 2x"))
+}
+
 func (s *parseSuite) TestCapabilities() {
 	src := New(time.Second)
 	s.Equal(metasearch.SourceAmazon, src.Name())

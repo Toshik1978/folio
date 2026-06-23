@@ -136,7 +136,8 @@ func bestImage(n *html.Node) string {
 }
 
 // highestDensity parses a srcset and returns the URL with the largest density
-// descriptor (e.g. "4x").
+// descriptor (e.g. "4x"). Entries whose descriptor cannot be parsed as a float
+// are skipped. When two valid entries share the same density, the first one wins.
 func highestDensity(srcset string) string {
 	var bestURL string
 	var bestD float64
@@ -147,9 +148,13 @@ func highestDensity(srcset string) string {
 		}
 		d := 1.0
 		if len(fields) > 1 {
-			d, _ = strconv.ParseFloat(strings.TrimSuffix(fields[1], "x"), 64)
+			var err error
+			d, err = strconv.ParseFloat(strings.TrimSuffix(fields[1], "x"), 64)
+			if err != nil {
+				continue // skip malformed density descriptors
+			}
 		}
-		if d >= bestD {
+		if d > bestD {
 			bestD, bestURL = d, fields[0]
 		}
 	}
