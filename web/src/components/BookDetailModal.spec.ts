@@ -60,6 +60,38 @@ describe('BookDetailModal', () => {
     expect(wrapper.emitted('close')).toHaveLength(1);
   });
 
+  it('shows the last-requested book when two rapid id changes race (stale fetch ignored)', async () => {
+    // Arrange: two deferred resolvers so we can control resolution order
+    let resolveFirst!: (book: ReturnType<typeof makeBook>) => void;
+    let resolveSecond!: (book: ReturnType<typeof makeBook>) => void;
+    const firstFetch = new Promise<ReturnType<typeof makeBook>>((res) => {
+      resolveFirst = res;
+    });
+    const secondFetch = new Promise<ReturnType<typeof makeBook>>((res) => {
+      resolveSecond = res;
+    });
+
+    const book1 = makeBook({ id: 1, title: 'Book One' });
+    const book2 = makeBook({ id: 2, title: 'Book Two' });
+
+    vi.mocked(fetchBook).mockReturnValueOnce(firstFetch).mockReturnValueOnce(secondFetch);
+
+    // Mount with id=1 (first fetch in flight)
+    const wrapper = mount(BookDetailModal, { props: { id: 1 }, ...opts });
+
+    // Quickly switch to id=2 (second fetch in flight)
+    await wrapper.setProps({ id: 2 });
+
+    // Resolve the OLDER fetch last (stale result arriving after the newer one)
+    resolveSecond(book2);
+    await flushPromises();
+    resolveFirst(book1); // stale — should be ignored
+    await flushPromises();
+
+    // Only book2 should be displayed; book1's stale resolution must not overwrite it
+    expect(wrapper.find('[data-testid="detail-title"]').text()).toBe('Book Two');
+  });
+
   it('re-emits updated and refreshes its detail when the book is enriched/matched', async () => {
     vi.mocked(fetchBook).mockResolvedValue(makeBook({ id: 7, title: 'Old Title' }));
     const wrapper = mount(BookDetailModal, { props: { id: 7 }, ...opts });

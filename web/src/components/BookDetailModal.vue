@@ -53,18 +53,23 @@ function onUpdated(updated: Book): void {
   emit('updated', updated);
 }
 
+let reqSeq = 0;
 watch(
   () => props.id,
   async (id) => {
     if (id === null) return;
+    const seq = ++reqSeq;
     book.value = null;
     try {
-      book.value = await fetchBook(id);
+      const loaded = await fetchBook(id);
+      if (seq === reqSeq) book.value = loaded; // ignore stale resolutions
     } catch (err) {
-      // Don't leave the modal spinning forever on a failed fetch; surface the
-      // error and close it.
-      toast.error(`Failed to load book: ${(err as Error).message}`);
-      emit('close');
+      if (seq === reqSeq) {
+        // Don't leave the modal spinning forever on a failed fetch; surface the
+        // error and close it.
+        toast.error(`Failed to load book: ${(err as Error).message}`);
+        emit('close');
+      }
     }
   },
   { immediate: true },
