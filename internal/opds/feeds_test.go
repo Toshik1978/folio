@@ -299,6 +299,13 @@ func (s *feedsSuite) TestPluralUsesExplicitForms() {
 	s.Equal("0 books", plural(0, "book", "books"))
 }
 
+func (s *feedsSuite) TestPageParamClampsHugeValues() {
+	r := httptest.NewRequestWithContext(
+		context.Background(), http.MethodGet, "/opds/search?page=9223372036854775807", http.NoBody,
+	)
+	s.LessOrEqual(pageParam(r), int64(maxPage)) // shares the REST cap
+}
+
 func linkType(links []link, rel string) string {
 	for _, l := range links {
 		if l.Rel == rel {
