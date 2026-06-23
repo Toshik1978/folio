@@ -78,6 +78,14 @@ func (s *genresSuite) TestCanonicalGenres() {
 	s.NotContains(got, "", "taxonomy must not contain an empty label")
 }
 
+func (s *genresSuite) TestCanonicalizeGenresNormalizesAndDedupes() {
+	// "sf" is a raw FB2 code mapped to a canonical tag; passing it twice must
+	// collapse to a single canonical entry.
+	got := CanonicalizeGenres([]string{"sf", "sf"})
+	s.Len(got, 1)
+	s.Equal(normalizeGenres([]string{"sf"})[0], got[0])
+}
+
 func (s *genresSuite) TestDeduplicate() {
 	// Test case-insensitive, Cyrillic case-folded, space-trimmed deduplication
 	input := []string{

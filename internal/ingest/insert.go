@@ -119,7 +119,7 @@ func linkAuthors(ctx context.Context, q *dbq.Queries, bookID int64, names []stri
 }
 
 func linkGenres(ctx context.Context, q *dbq.Queries, bookID int64, names []string) error {
-	for _, name := range deduplicate(normalizeGenres(names)) {
+	for _, name := range CanonicalizeGenres(names) {
 		genreID, err := q.InsertGenre(ctx, dbq.InsertGenreParams{Name: name, NameFold: dbf.Fold(name)})
 		if err != nil {
 			return fmt.Errorf("upsert genre: %w", err)

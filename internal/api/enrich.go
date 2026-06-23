@@ -13,6 +13,7 @@ import (
 	"github.com/Toshik1978/folio/internal/db/dbq"
 	"github.com/Toshik1978/folio/internal/ebook"
 	"github.com/Toshik1978/folio/internal/htmltext"
+	"github.com/Toshik1978/folio/internal/ingest"
 )
 
 // needsEnrichment reports whether a book still lacks key displayable metadata
@@ -281,6 +282,10 @@ func (h *BooksHandler) applyGenres(
 	if len(genres) == 0 {
 		return false, nil
 	}
+	canonical := ingest.CanonicalizeGenres(genres)
+	if len(canonical) == 0 {
+		return false, nil
+	}
 	if !overwrite {
 		n, err := q.CountBookGenres(ctx, bookID)
 		if err != nil {
@@ -290,7 +295,7 @@ func (h *BooksHandler) applyGenres(
 			return false, nil // gap-fill never clobbers existing genres
 		}
 	}
-	if err := relinkGenres(ctx, q, bookID, genres, overwrite); err != nil {
+	if err := relinkGenres(ctx, q, bookID, canonical, overwrite); err != nil {
 		return false, err
 	}
 

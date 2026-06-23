@@ -286,6 +286,14 @@ func normalizeGenre(tag string) (string, bool) {
 	return "", false
 }
 
+// CanonicalizeGenres maps raw genre tags through the FB2 taxonomy and removes
+// duplicates. It is the single normalization both the importer (insert.go) and
+// the API edit/enrich paths (api/enrich.go) use, so a genre stored via Fix Match
+// matches one stored during a sync.
+func CanonicalizeGenres(tags []string) []string {
+	return deduplicate(normalizeGenres(tags))
+}
+
 func normalizeGenres(tags []string) []string {
 	cleanedGenres := make([]string, 0, len(tags))
 	for _, g := range tags {
