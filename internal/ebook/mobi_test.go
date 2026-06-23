@@ -246,6 +246,31 @@ func (s *mobiSuite) TestParseCP1252() {
 	s.Equal("Découverte café.", m.Annotation)
 }
 
+// TestReadTitleRejectsOutOfRangeOffset guards against a panic when the title
+// offset stored in rec0[84:88] has its high bit set (0x80000000). On a 32-bit
+// int build, casting that uint32 to int yields a negative value that defeats
+// the bounds guard and panics on the slice expression. The fix uses uint64 math
+// so the comparison is always unsigned regardless of int width.
+func (s *mobiSuite) TestReadTitleRejectsOutOfRangeOffset() {
+	rec0 := craftMOBIRecord0WithTitleOffset(0x80000000)
+	mf := &mobiFile{rec0: rec0}
+	s.NotPanics(func() { _ = mf.readTitle() })
+}
+
+// craftMOBIRecord0WithTitleOffset returns the smallest valid rec0 whose
+// titleOffset field (bytes 84:88) is set to the given value. The MOBI magic
+// and a minimum-size buffer are included so openMOBI preconditions are met if
+// readTitle is ever called through the full parse path.
+func craftMOBIRecord0WithTitleOffset(offset uint32) []byte {
+	// rec0 must be at least mobiRec0MinSize (132) bytes for readEXTH's field
+	// accesses not to panic; use exactly that minimum.
+	rec0 := make([]byte, mobiRec0MinSize)
+	copy(rec0[16:20], mobiMagic)
+	binary.BigEndian.PutUint32(rec0[84:88], offset)
+	binary.BigEndian.PutUint32(rec0[88:92], 10) // non-zero titleLength
+	return rec0
+}
+
 func (s *mobiSuite) TestApplyEXTHPublishing() {
 	rec0 := buildRec0("EXTH Publishing Book", []exthRecord{
 		{typ: exthAuthor, data: []byte("Kay Eff")},

@@ -188,11 +188,15 @@ func (mf *mobiFile) decodeText(b []byte) string {
 }
 
 func (mf *mobiFile) readTitle() Metadata {
-	titleOffset := int(binary.BigEndian.Uint32(mf.rec0[84:88]))
-	titleLength := int(binary.BigEndian.Uint32(mf.rec0[88:92]))
+	// Use uint64 arithmetic so a uint32 value with the high bit set (e.g.
+	// 0x80000000) never becomes a negative int on 32-bit builds and silently
+	// defeats the bounds guard. All comparisons stay unsigned regardless of
+	// the platform's int width.
+	titleOffset := uint64(binary.BigEndian.Uint32(mf.rec0[84:88]))
+	titleLength := uint64(binary.BigEndian.Uint32(mf.rec0[88:92]))
 
 	var m Metadata
-	if titleOffset+titleLength <= len(mf.rec0) && titleLength > 0 {
+	if titleLength > 0 && titleOffset+titleLength <= uint64(len(mf.rec0)) {
 		m.Title = strings.TrimSpace(mf.decodeText(mf.rec0[titleOffset : titleOffset+titleLength]))
 	}
 
