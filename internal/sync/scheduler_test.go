@@ -111,7 +111,8 @@ func (s *schedulerSuite) TestPurgeWaitsForWriteLock() {
 	src := s.insertLibrary("stub", "/lib/locked")
 	_ = s.insertBook(src.ID, "doomed")
 
-	s.engine.writeGuard.Lock() // stand in for an in-flight sync holding the guard
+	// stand in for an in-flight sync holding the guard
+	s.Require().NoError(s.engine.writeGuard.Lock(context.Background()))
 
 	done := make(chan error, 1)
 	go func() { done <- s.engine.PurgeLibrary(context.Background(), src.ID) }()
@@ -154,7 +155,7 @@ func (s *schedulerSuite) TestStopIsPromptWhilePurgeBlocked() {
 	// does: its sync's context is cancelled by e.stop, so it unwinds and releases
 	// the guard. The reorder is what makes close(e.stop) happen before the
 	// scheduler teardown that waits on the wedged sweep.
-	s.engine.writeGuard.Lock()
+	s.Require().NoError(s.engine.writeGuard.Lock(context.Background()))
 	go func() {
 		<-s.engine.stop
 		s.engine.writeGuard.Unlock()

@@ -204,9 +204,14 @@ func (h *BooksHandler) backfillMetadata(ctx context.Context, book *dbq.Book) {
 	}
 
 	// The extractor parse above is file I/O and runs outside the guard; take the
-	// single-writer guard only around the DB persists below.
-	h.writeGuard.Lock()
-	defer h.writeGuard.Unlock()
+	// single-writer guard only around the DB persists below. Best-effort: if an
+	// indexing run holds the guard, skip rather than stall this read — the book
+	// stays unchecked and a later view retries.
+	release, acquired := h.tryAcquireWrite(ctx, h.writeGuard)
+	if !acquired {
+		return
+	}
+	defer release()
 
 	if ok {
 		if !book.Annotation.Valid {

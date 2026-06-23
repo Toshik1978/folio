@@ -304,11 +304,19 @@ different book (see [Stable identity](#stable-identity-library_key)).
 
 ### Design Constraints
 
-1. **Single writer** — Channel capacity is `1`. Only one indexing routine runs at a
-   time. This prevents SQLite write-lock contention. Library **teardown** (the
-   deadline-driven purge sweep and the on-demand "Purge Now") shares the same
-   single-writer lock (`Engine.writeMu`), so a cascade delete never races an
+1. **Single writer** — The work-queue channel has capacity `1`, so only one indexing
+   routine runs at a time. Process-wide, *every* writer serializes on one shared
+   `db.WriteGuard`: a sync, a library **teardown** (the deadline-driven purge sweep and
+   the on-demand "Purge Now"), and the API write handlers (manual edit, Fix Match,
+   cover upload, library CRUD). So a cascade delete or an API edit never races an
    in-flight sync transaction even though it is invoked off the worker goroutine.
+   Readers do **not** take the guard — WAL lets them run concurrently with the one
+   writer. Acquisition is **context-aware** (`Lock(ctx) error`): the sync and purge
+   pass their lifecycle context and hold the guard for the whole run (releasing only on
+   completion or shutdown), while an API write waits at most a short budget (≈2s) and
+   then returns `503` ("indexing in progress; retry shortly") rather than blocking past
+   the server's 60s `WriteTimeout`. Best-effort write-on-read paths (lazy metadata
+   backfill, enrichment mark-checked) skip the write and retry on a later view.
 2. **Debouncing** — `fsnotify` file-write events start a 10-second cooldown timer. Subsequent mutations reset the timer. This avoids parsing partially transferred files.
 3. **Checkpoint gating** — Before reading a source the engine compares the parser's current artifact fingerprint (`Checkpointer.Checkpoint`) with the stored `libraries.checkpoint`; an unchanged Calibre/INPX source is skipped entirely. The fingerprint is computed once, *before* the read, and that pre-read value is what gets stored on success — so an artifact modified mid-sync mismatches on the next pass and is re-read instead of skipped. Folder is event-driven (fsnotify) and has no single artifact, so it always walks. A manual "Sync Now" bypasses the gate.
 4. **Reconciliation (no wipe-and-reinsert)** — Each run upserts books by `(library_id, library_key)` and diffs their files by `source_path`+size, writing only real changes, then prunes files that vanished and books left with no files. Because IDs are not regenerated, `/books/{id}` links and cached covers survive re-syncs. Metadata a grouped book lacks (annotation, series, publisher, year, rating) is gap-filled from whichever edition carries it.

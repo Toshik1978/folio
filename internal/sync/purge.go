@@ -99,8 +99,11 @@ func (e *Engine) purgeLibrary(ctx context.Context, id int64) error {
 	// PurgeLibrary) must run to completion even during shutdown, since Stop waits
 	// for in-flight purges via e.bg. Only the deadline sweep (checkPurge) bails out
 	// at teardown; once that bail check passes and we block on the guard here, the
-	// sweep finishes after the in-flight sync releases the guard.
-	e.writeGuard.Lock()
+	// sweep finishes after the in-flight sync releases the guard. The acquire honors
+	// ctx; RequestPurge passes context.Background(), so it blocks until acquired.
+	if err := e.writeGuard.Lock(ctx); err != nil {
+		return fmt.Errorf("acquire write guard: %w", err)
+	}
 	defer e.writeGuard.Unlock()
 
 	q := dbq.New(e.db)

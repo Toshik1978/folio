@@ -68,9 +68,14 @@ func (h *BooksHandler) enrichOnline(ctx context.Context, book *dbq.Book) {
 			return // applyEnrichment persisted and marked the book enriched
 		}
 	}
-	h.writeGuard.Lock()
+	// Best-effort: if an indexing run holds the guard, skip marking checked rather
+	// than stall — the book stays unchecked and a later view retries.
+	release, acquired := h.tryAcquireWrite(pctx, h.writeGuard)
+	if !acquired {
+		return
+	}
 	err = h.q.MarkEnrichmentChecked(pctx, book.ID)
-	h.writeGuard.Unlock()
+	release()
 	if err != nil {
 		h.log.Warn("mark enrichment checked", slog.Int64("book", book.ID), slog.Any("error", err))
 	}

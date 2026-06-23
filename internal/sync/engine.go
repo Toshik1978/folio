@@ -409,8 +409,12 @@ func (e *Engine) syncLibrary(req syncReq) {
 
 	// Hold the single-writer guard for the whole run so a concurrent library
 	// purge (HTTP "Purge Now" or the deadline sweep) — and any API write — waits
-	// rather than racing the sync at the SQLite layer.
-	e.writeGuard.Lock()
+	// rather than racing the sync at the SQLite layer. The acquire honors ctx, so a
+	// shutdown signalled while we are still queued behind another writer cancels the
+	// run cleanly instead of blocking teardown.
+	if err := e.writeGuard.Lock(ctx); err != nil {
+		return
+	}
 	defer e.writeGuard.Unlock()
 
 	q := dbq.New(e.db)

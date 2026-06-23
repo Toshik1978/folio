@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -8,6 +9,8 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/Toshik1978/folio/internal/db/dbq"
+	"github.com/Toshik1978/folio/internal/ebook"
 	"github.com/Toshik1978/folio/internal/metasearch"
 )
 
@@ -115,12 +118,7 @@ func (h *BooksHandler) applyMatch(w http.ResponseWriter, r *http.Request) {
 		h.writeError(w, http.StatusBadGateway, "apply failed")
 		return
 	}
-	// Save the online cover first (only fills a gap; never downgrades a real
-	// local cover), then persist the overwrite. Manual choice overwrites.
-	coverSaved := h.saveEnrichedCover(r.Context(), id, meta.Cover)
-	if _, err = h.applyEnrichment(r.Context(), &book, meta, true, coverSaved); err != nil {
-		h.log.Error("apply match", slog.Int64("book", id), slog.Any("error", err))
-		h.writeError(w, http.StatusInternalServerError, "failed to save match")
+	if !h.persistMatch(w, r, &book, meta) {
 		return
 	}
 
@@ -131,6 +129,30 @@ func (h *BooksHandler) applyMatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.writeJSON(w, http.StatusOK, view)
+}
+
+// persistMatch saves the matched online cover (gap-fill only; never downgrades a
+// real local cover) then overwrites book's metadata under the single-writer guard
+// with a bounded wait, so it returns 503 promptly during a long indexing run
+// rather than blocking past the WriteTimeout. It writes the error response and
+// returns false on failure; book is mutated only on a committed change.
+func (h *BooksHandler) persistMatch(
+	w http.ResponseWriter, r *http.Request, book *dbq.Book, meta ebook.Metadata,
+) bool {
+	coverSaved := h.saveEnrichedCover(r.Context(), book.ID, meta.Cover)
+	wctx, cancel := context.WithTimeout(r.Context(), writeAcquireBudget)
+	defer cancel()
+	if _, err := h.applyEnrichment(wctx, book, meta, true, coverSaved); err != nil {
+		if h.handleGuardErr(w, err) {
+			return false
+		}
+		h.log.Error("apply match", slog.Int64("book", book.ID), slog.Any("error", err))
+		h.writeError(w, http.StatusInternalServerError, "failed to save match")
+
+		return false
+	}
+
+	return true
 }
 
 // decodeMatch reads the {"source":"…","volume_id":"…"} body of an applyMatch
