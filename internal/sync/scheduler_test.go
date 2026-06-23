@@ -185,7 +185,8 @@ func (s *schedulerSuite) TestStopIsPromptWhilePurgeBlocked() {
 	select {
 	case <-done:
 	case <-time.After(2 * time.Second):
-		s.Fail("Stop did not return promptly while a purge was blocked")
+		s.engine.writeGuard.Unlock()
+		s.FailNow("Stop did not return promptly while a purge was blocked")
 	}
 	<-swept // the wedged sweep ran to completion
 }
@@ -282,5 +283,6 @@ func (s *schedulerSuite) TestPurgeCheckerReentrancy() {
 	peak := maxInFlight
 	mu.Unlock()
 
-	s.Equal(1, peak, "purge checker must never run concurrently with itself")
+	s.GreaterOrEqual(peak, 1, "purge checker must run at least once")
+	s.LessOrEqual(peak, 1, "purge checker must never run concurrently with itself")
 }
