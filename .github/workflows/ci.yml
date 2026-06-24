@@ -31,6 +31,9 @@ jobs:
       - name: Setup project
         run: task setup:ci
 
+      - name: Run Node.js linter & Prettier check
+        run: task lint:frontend
+
       - name: Check SQL is ASCII-only
         run: task lint:sql
 
@@ -38,12 +41,6 @@ jobs:
         uses: golangci/golangci-lint-action@v9
         with:
           version: v2.12.2
-
-      - name: Run Node.js linter
-        run: task lint:frontend
-
-      - name: Run Prettier check
-        run: task check:frontend
 
   test:
     runs-on: ubuntu-latest
