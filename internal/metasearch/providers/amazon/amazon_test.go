@@ -107,13 +107,26 @@ func (s *searchSuite) TestSearchCovers() {
 	}
 }
 
-func (s *searchSuite) TestSearchCoversNon200() {
+func (s *searchSuite) TestSearchCoversNon200IsBlocked() {
 	src := s.sourceForHandler(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusInternalServerError)
+		w.WriteHeader(http.StatusServiceUnavailable)
 	})
 
 	_, err := src.SearchCovers(context.Background(), metasearch.Query{Title: "Dune"})
 	s.Require().Error(err)
+	s.Require().ErrorIs(err, metasearch.ErrBlocked)
+}
+
+func (s *searchSuite) TestSearchCoversCaptchaIsBlocked() {
+	captcha, err := os.ReadFile("testdata/captcha.html")
+	s.Require().NoError(err)
+	src := s.sourceForHandler(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write(captcha) // HTTP 200 with a CAPTCHA body
+	})
+
+	_, err = src.SearchCovers(context.Background(), metasearch.Query{Title: "Dune"})
+	s.Require().Error(err)
+	s.Require().ErrorIs(err, metasearch.ErrBlocked)
 }
 
 func (s *searchSuite) TestSearchCoversRetriesOnTransientBlock() {
