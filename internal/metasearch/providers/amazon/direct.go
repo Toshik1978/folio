@@ -3,6 +3,7 @@ package amazon
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -24,6 +25,8 @@ var interstitialMarkers = []string{ //nolint:gochecknoglobals // immutable looku
 	"enter the characters",
 	"api-services-support",
 	"something went wrong on our end",
+	"bm-verify",
+	"triggerinterstitialchallenge",
 }
 
 // searchDirect fetches Amazon's books search page and parses cover thumbnails,
@@ -70,7 +73,10 @@ func (s *Source) fetchDirectOnce(ctx context.Context, q metasearch.Query) ([]met
 		return nil, fmt.Errorf("read body: %w", err)
 	}
 	if isInterstitial(body) {
-		return nil, fmt.Errorf("amazon interstitial: %w", metasearch.ErrBlocked)
+		// A bot interstitial is a deterministic block; retrying it immediately
+		// cannot succeed and only burns IP reputation, so mark it terminal.
+		return nil, fmt.Errorf("amazon interstitial: %w",
+			errors.Join(metasearch.ErrBlocked, metasearch.ErrNoRetry))
 	}
 
 	cands, err := parseCandidates(bytes.NewReader(body))

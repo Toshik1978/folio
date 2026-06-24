@@ -157,6 +157,22 @@ func (s *searchSuite) TestSearchCoversCaptchaIsBlocked() {
 	s.Require().ErrorIs(err, metasearch.ErrBlocked)
 }
 
+func (s *searchSuite) TestSearchCoversInterstitialNotRetried() {
+	var reqCount atomic.Int32
+	src := s.sourceForHandler(func(w http.ResponseWriter, _ *http.Request) {
+		reqCount.Add(1)
+		// Minimal Akamai bot-manager interstitial stub (HTTP 200).
+		_, _ = w.Write([]byte(`<!doctype html><html><head><title>&nbsp;</title>` +
+			`<meta http-equiv="refresh" content="5; URL='/s?bm-verify=abc'"></head>` +
+			`<body><script>function triggerInterstitialChallenge(){}</script></body></html>`))
+	})
+
+	_, err := src.SearchCovers(context.Background(), metasearch.Query{Title: "Dune"})
+	s.Require().Error(err)
+	s.Require().ErrorIs(err, metasearch.ErrBlocked)
+	s.Equal(int32(1), reqCount.Load(), "a hard interstitial block must not be retried")
+}
+
 func (s *searchSuite) TestSearchCoversRetriesOnTransientBlock() {
 	var reqCount atomic.Int32
 	src := s.sourceForHandler(func(w http.ResponseWriter, _ *http.Request) {
