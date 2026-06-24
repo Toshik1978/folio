@@ -27,7 +27,7 @@ var titleStopwords = map[string]bool{ //nolint:gochecknoglobals // immutable loo
 // junkTitleMarkers flag non-print or non-primary editions whose covers pollute
 // the grid (square audiobook art, samplers, bundles, companions).
 var junkTitleMarkers = []string{ //nolint:gochecknoglobals // immutable lookup table
-	"[audiobook]", "[audio cd]", "(audio cd)", "audible audiobook",
+	"audiobook", "audio cd", "audible audiobook",
 	"bulk pack", "free sampler", "(a book companion)",
 }
 

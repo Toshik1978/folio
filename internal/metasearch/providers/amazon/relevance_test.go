@@ -39,7 +39,8 @@ func TestFilterByTitleDropsJunkEditions(t *testing.T) {
 	in := []rawCandidate{
 		rc("Dune", "a.jpg"),
 		rc("Dune [Audiobook]", "b.jpg"),
-		rc("Dune (Audio CD)", "c.jpg"),
+		rc("Dune Audiobook", "c.jpg"),
+		rc("Dune (Audio CD)", "d.jpg"),
 	}
 	got := filterByTitle(in, "Dune", maxCandidates)
 	require.Equal(t, []string{"a.jpg"}, fullURLs(got))
