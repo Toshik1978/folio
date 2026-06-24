@@ -46,7 +46,9 @@ func (h *BooksHandler) searchCovers(w http.ResponseWriter, r *http.Request) {
 
 	q := h.seedQuery(r.Context(), book)
 	if explicit := strings.TrimSpace(r.URL.Query().Get("q")); explicit != "" {
-		q.Title = explicit
+		// An explicit query is verbatim: don't let stale stored author/ISBN
+		// narrow it (a publisher-as-author can zero out provider results).
+		q = metasearch.Query{Title: explicit}
 	}
 
 	candidates := h.coverSearch.SearchCovers(r.Context(), q)

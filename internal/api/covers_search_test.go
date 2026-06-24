@@ -49,13 +49,15 @@ func (s *coverSearchSuite) TestSearchCoversSeedsQueryFromBook() {
 
 func (s *coverSearchSuite) TestSearchCoversExplicitQueryOverridesSeed() {
 	src := s.seedLibrary("folder", "/lib")
-	id := s.seedBook(src, bookSeed{Title: "Dune"})
+	id := s.seedBook(src, bookSeed{Title: "Dune", Authors: []string{"Frank Herbert"}})
 	srch := &stubSearcher{}
 	s.newWithSearcher(srch)
 
 	w := s.do(http.MethodGet, "/books/"+itoa(id)+"/cover/search?q=Foundation", nil)
 	s.Require().Equal(http.StatusOK, w.Code)
 	s.Equal("Foundation", srch.got.Title)
+	s.Empty(srch.got.Author, "explicit q is verbatim; stale author must not narrow it")
+	s.Empty(srch.got.ISBN)
 }
 
 func (s *coverSearchSuite) TestSearchCoversDisabled() {
