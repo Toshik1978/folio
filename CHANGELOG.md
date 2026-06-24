@@ -1,3 +1,95 @@
+## v1.1.0 (2026-06-24)
+
+### Feat
+
+- **api**: confine library paths to optional LIBRARY_ROOT
+- **metasearch**: log per-source cover-search outcomes
+- **metasearch**: add DuckDuckGo fallback for blocked Amazon covers
+- **metasearch**: use Goodreads autocomplete JSON API for covers
+- **metasearch**: add ErrBlocked sentinel and RandomUserAgent helper
+- **server**: add token-less CSRF guard on /api
+- **metasearch**: full-resolution covers from amazon-cdn providers
+- **web**: source-qualified fix match apply
+- **ingest**: book lookup seam for the metasearch coordinator
+- **metasearch**: coordinator reimplementing the enricher facade
+- **metasearch**: promote google books to dual-capability source
+- **web**: cover search grid and provider deep-links
+- **web**: api client for cover search
+- **cmd**: wire cover-search providers into the books handler
+- **api**: cover-search endpoint seeded from book metadata
+- **metasearch**: goodreads cover scraper with golden-html parser test
+- **metasearch**: amazon cover scraper with golden-html parser test
+- **metasearch**: google books cover adapter (cover-only)
+- **metasearch**: open library cover source
+- **metasearch**: concurrent cover aggregator with dedupe and ranking
+- **metasearch**: registry with capability fan-out
+- **metasearch**: core capability/source/candidate types
+- **web**: rework book edit modal with tag, language and identifier editing
+- **web**: cover picker modal (upload, paste, drag, url)
+- **web**: manual metadata edit modal
+- **web**: api client for manual edit and cover endpoints
+- **api**: expose canonical genre taxonomy via GET /genres
+- **api**: manual metadata edit via overwrite engine
+- **api**: set book cover from an image URL
+- **api**: manual cover upload with sticky cover_prio
+
+### Fix
+
+- **metasearch**: harden cover-fetch fallback and tidy duplication
+- **api**: treat explicit cover-search ?q= as verbatim
+- **web**: re-arm infinite scroll so short pages don't stall
+- **ebook**: bound cover and metadata extraction from source files
+- **api**: pin cover-fetch dials to close the SSRF rebinding gap
+- **web**: split book download and curation actions into separate rows
+- **web**: treat the SSE heartbeat as liveness so idle streams stop reconnecting
+- **db**: bound API write waits on the single-writer guard
+- **api**: make manual book edit atomic
+- address deferred review minors (stale facet toast, test hardening)
+- **api**: compute cold-cache stats once under the cache lock
+- **web**: degrade gracefully when matchMedia/localStorage are unavailable
+- **web**: treat total=0 as determinate in the sync progress bar
+- **web**: correct emitted() indexing in LibraryForm spec type cast
+- **web**: preserve identifier row identity on edit via in-place rows
+- **web**: key identifier rows by stable id, not index
+- **web**: re-arm the SSE silence watchdog on every event
+- **web**: default the sync interval when the field is cleared
+- **web**: drop stale facet loads on rapid library switch
+- **web**: ignore stale book fetches in BookDetailModal
+- **ebook**: bounds-check MOBI title offset with unsigned math
+- **covers**: apply the decompression-bomb pixel cap to JPEG too
+- **opds**: cap feed pagination to avoid int64 offset overflow
+- **metasearch**: skip malformed srcset densities and pick the highest valid cover
+- **api**: canonicalize genres on edit/enrich to match the import path
+- **ingest**: defer cover writes/deletes until the import batch commits
+- **sync**: persist last-sync checkpoint on a detached context
+- **sync**: run the purge checker in singleton mode
+- **sync**: cancel in-flight work before stopping the scheduler
+- **db**: serialize writers through a shared write guard
+- **metasearch**: retry amazon/goodreads scrapers through transient anti-bot blocks
+- **web**: Esc closes tag/language dropdown instead of the edit modal
+- **metasearch**: wrap empty-source fallback error and test Enrich error path
+- **api**: block SSRF to internal addresses in cover URL fetch
+
+### Refactor
+
+- **metasearch**: split Amazon scraper and detect interstitials
+- **web**: drop redundant save click handler in EditBookModal
+- share a single ISBN identifier constant
+- **web**: extract a shared StarRating component
+- **htmltext**: unexport entity table behind NewDisplayDecoder
+- **ebook**: replace mutable series-prefix cache with one precompiled regexp
+- **metasearch**: removed a few global variables
+- **amazon**: rename http field to client; add HTTP fetch-path tests
+- route enrichment through the metasearch coordinator
+- **api**: neutral metadata candidates and source-qualified apply
+- **ingest**: export VolumeToMetadata for metasearch reuse
+- merged tests in the same package, added stricter linter rules and refactored multiple global objects
+- **ingest**: moved logger and batchSize initialization to newImporter
+
+### Perf
+
+- rolled back previous commit partially due to performance concerns
+
 ## v1.0.0 (2026-06-21)
 
 ### Feat
