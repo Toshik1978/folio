@@ -50,7 +50,7 @@ func (h *CatalogHandler) StatsChanged() {
 	h.cacheMutex.Unlock()
 }
 
-func (h *CatalogHandler) Register(r chi.Router) {
+func (h *CatalogHandler) Register(r chi.Router) { //nolint:dupl // structurally similar but distinct routes
 	r.Get("/authors", h.listAuthors)
 	r.Get("/authors/letters", h.authorLetters)
 	r.Get("/series", h.listSeries)

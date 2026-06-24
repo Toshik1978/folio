@@ -304,3 +304,15 @@ func (h *BooksHandler) serveCover(w http.ResponseWriter, r *http.Request) {
 	}
 	h.covers.ServeHTTP(w, r, id)
 }
+
+// serveThumbnail handles GET /api/books/{id}/cover/thumbnail, delegating to the
+// cover server's downscaled-thumbnail path (stored thumb → cover fallback →
+// placeholder). The {id} is validated to a positive integer.
+func (h *BooksHandler) serveThumbnail(w http.ResponseWriter, r *http.Request) {
+	id, ok := intParam(r, "id")
+	if !ok {
+		h.writeError(w, http.StatusBadRequest, "invalid book id")
+		return
+	}
+	h.covers.ServeThumbnail(w, r, id)
+}

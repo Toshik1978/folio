@@ -407,6 +407,17 @@ func (s *booksSuite) TestCoverServesCached() {
 	s.Equal(cover, w.Body.Bytes()) // JPEG stored as-is, served verbatim
 }
 
+func (s *booksSuite) TestServeThumbnailRoute() {
+	src := s.seedLibrary("folder", "/lib")
+	id := s.seedBook(src, bookSeed{Title: "Thumb Book"})
+	cover := s.jpegFixture()
+	s.Require().NoError(s.covers.Save(id, cover))
+
+	w := s.do(http.MethodGet, "/books/"+itoa(id)+"/cover/thumbnail", nil)
+	s.Require().Equal(http.StatusOK, w.Code)
+	s.Equal("image/jpeg", w.Header().Get("Content-Type"))
+}
+
 func (s *booksSuite) TestBooksNegativeAndEdgeCases() {
 	// 1. Invalid ID formats (Bad Request)
 	s.Equal(http.StatusBadRequest, s.do(http.MethodGet, "/books/abc", nil).Code)

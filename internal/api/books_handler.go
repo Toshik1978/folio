@@ -29,6 +29,7 @@ const coverFetchTimeout = 15 * time.Second
 // buster. *covers.Store satisfies it.
 type CoverServer interface {
 	ServeHTTP(w http.ResponseWriter, r *http.Request, bookID int64)
+	ServeThumbnail(w http.ResponseWriter, r *http.Request, bookID int64)
 	Version(bookID int64) string
 }
 
@@ -186,11 +187,12 @@ func NewBooks(
 }
 
 func (h *BooksHandler) Register(r chi.Router) {
-	r.Route("/books", func(r chi.Router) {
+	r.Route("/books", func(r chi.Router) { //nolint:dupl // structurally similar but distinct routes
 		r.Get("/", h.listBooks)
 		r.Get("/{id}", h.getBook)
 		r.Get("/{id}/files/{fileID}", h.downloadBook)
 		r.Get("/{id}/cover", h.serveCover)
+		r.Get("/{id}/cover/thumbnail", h.serveThumbnail)
 		r.Get("/{id}/cover/search", h.searchCovers)
 		r.Get("/{id}/match", h.searchMatch)
 		r.Post("/{id}/match", h.applyMatch)
