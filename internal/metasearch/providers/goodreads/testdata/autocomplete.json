@@ -1,0 +1,5 @@
+[
+  {"imageUrl": "https://images-na.ssl-images-amazon.com/images/S/aaa._SX50_.jpg", "bookId": "1", "title": "First"},
+  {"imageUrl": "https://images-na.ssl-images-amazon.com/images/S/bbb._SX50_SY75_.jpg", "bookId": "2", "title": "Second"},
+  {"imageUrl": "", "bookId": "3", "title": "No image, skipped"}
+]

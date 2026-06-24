@@ -14,28 +14,25 @@ import (
 	"github.com/Toshik1978/folio/internal/metasearch"
 )
 
-// TestGoodreads is the package's single entry point; every suite is registered here.
 func TestGoodreads(t *testing.T) {
 	suite.Run(t, new(parseSuite))
 	suite.Run(t, new(searchSuite))
 }
 
-// baseSuite holds helpers shared by the parser and HTTP suites.
 type baseSuite struct {
 	suite.Suite
 }
 
-// fixture returns the golden Goodreads search-result HTML.
+// fixture returns the golden Goodreads autocomplete JSON.
 func (s *baseSuite) fixture() []byte {
-	data, err := os.ReadFile("testdata/search.html")
+	data, err := os.ReadFile("testdata/autocomplete.json")
 	s.Require().NoError(err)
 
 	return data
 }
 
-// sourceForHandler starts an httptest server with h (cleaned up automatically)
-// and returns a Source wired to it with a near-zero retry backoff so retry tests
-// don't wait the full 400 ms.
+// sourceForHandler starts an httptest server with h and returns a Source wired
+// to it with a near-zero retry backoff.
 func (s *baseSuite) sourceForHandler(h http.HandlerFunc) *Source {
 	srv := httptest.NewServer(h)
 	s.T().Cleanup(srv.Close)
@@ -47,25 +44,25 @@ func (s *baseSuite) sourceForHandler(h http.HandlerFunc) *Source {
 	return src
 }
 
-// parseSuite covers the offline HTML parser and capability reporting.
 type parseSuite struct {
 	baseSuite
 }
 
 func (s *parseSuite) TestParseCoversFromFixture() {
-	f, err := os.Open("testdata/search.html")
+	f, err := os.Open("testdata/autocomplete.json")
 	s.Require().NoError(err)
 	defer func() { _ = f.Close() }()
 
 	got, err := parseCovers(f)
 	s.Require().NoError(err)
-	s.Require().Len(got, 2, "two bookCover images; the site logo is ignored")
+	s.Require().Len(got, 2, "two items with imageUrl; the empty one is skipped")
 	for _, c := range got {
 		s.Equal(metasearch.SourceGoodreads, c.Source)
 		s.NotEmpty(c.FullURL)
 	}
-	// Goodreads serves small Amazon-CDN thumbnails (_SX50_); strip the modifier entirely for the original.
+	// The _SX50_ Amazon-CDN size modifier is stripped for the full-res URL.
 	s.Equal("https://images-na.ssl-images-amazon.com/images/S/aaa.jpg", got[0].FullURL)
+	s.Equal("https://images-na.ssl-images-amazon.com/images/S/bbb.jpg", got[1].FullURL)
 }
 
 func (s *parseSuite) TestCapabilities() {
@@ -74,7 +71,6 @@ func (s *parseSuite) TestCapabilities() {
 	s.True(metasearch.HasCapability(src.Capabilities(), metasearch.CapCover))
 }
 
-// searchSuite drives SearchCovers end-to-end over HTTP.
 type searchSuite struct {
 	baseSuite
 }
@@ -86,26 +82,26 @@ func (s *searchSuite) TestSearchCovers() {
 
 	got, err := src.SearchCovers(context.Background(), metasearch.Query{Title: "Dune"})
 	s.Require().NoError(err)
-	s.Require().NotEmpty(got)
+	s.Require().Len(got, 2)
 	for _, c := range got {
 		s.Equal(metasearch.SourceGoodreads, c.Source)
 	}
 }
 
-func (s *searchSuite) TestSearchCoversNon200() {
+func (s *searchSuite) TestSearchCovers202IsBlocked() {
 	src := s.sourceForHandler(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusInternalServerError)
+		w.WriteHeader(http.StatusAccepted) // 202 = Cloudflare challenge
 	})
 
 	_, err := src.SearchCovers(context.Background(), metasearch.Query{Title: "Dune"})
 	s.Require().Error(err)
+	s.Require().ErrorIs(err, metasearch.ErrBlocked)
 }
 
 func (s *searchSuite) TestSearchCoversRetriesOnTransientBlock() {
 	var reqCount atomic.Int32
 	src := s.sourceForHandler(func(w http.ResponseWriter, _ *http.Request) {
-		n := reqCount.Add(1)
-		if n == 1 {
+		if reqCount.Add(1) == 1 {
 			w.WriteHeader(http.StatusServiceUnavailable)
 
 			return
@@ -116,5 +112,5 @@ func (s *searchSuite) TestSearchCoversRetriesOnTransientBlock() {
 	got, err := src.SearchCovers(context.Background(), metasearch.Query{Title: "Dune"})
 	s.Require().NoError(err)
 	s.Require().NotEmpty(got)
-	s.GreaterOrEqual(int(reqCount.Load()), 2, "server should have been hit at least twice")
+	s.GreaterOrEqual(int(reqCount.Load()), 2)
 }

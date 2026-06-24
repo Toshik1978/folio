@@ -1,35 +1,30 @@
-// Package goodreads is a metasearch CoverSource that scrapes Goodreads
-// search-result book covers. Goodreads has had no public API since 2020, so a
-// defensive scrape with a golden-HTML parser test is the maintainable option.
+// Package goodreads is a metasearch CoverSource backed by the Goodreads
+// autocomplete JSON endpoint (book/auto_complete). The public /search HTML page
+// is fronted by Cloudflare and answers bots with HTTP 202, so the JSON API —
+// which returns cover thumbnails directly — is the reliable path.
 package goodreads
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
-	"slices"
 	"strings"
 	"time"
-
-	"golang.org/x/net/html"
 
 	"github.com/Toshik1978/folio/internal/metasearch"
 )
 
 const (
 	defaultBaseURL = "https://www.goodreads.com"
-	// userAgent mimics a real browser so Goodreads serves the standard result markup.
-	userAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36" +
-		" (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
-	maxHTMLBytes = 4 << 20
-	imageClass   = "bookCover"
-	maxAttempts  = 3
-	retryBackoff = 400 * time.Millisecond
+	maxJSONBytes   = 1 << 20
+	maxAttempts    = 3
+	retryBackoff   = 400 * time.Millisecond
 )
 
-// Source scrapes Goodreads for cover candidates.
+// Source queries Goodreads for cover candidates.
 type Source struct {
 	baseURL string
 	client  *http.Client
@@ -53,9 +48,8 @@ func (s *Source) Capabilities() []metasearch.Capability {
 	return []metasearch.Capability{metasearch.CapCover}
 }
 
-// SearchCovers fetches the Goodreads search page and parses book-cover thumbnails.
-// It retries up to maxAttempts times to recover from transient anti-bot responses
-// (503s or empty interstitials).
+// SearchCovers queries the autocomplete API and maps results to candidates,
+// retrying transient anti-bot responses.
 func (s *Source) SearchCovers(ctx context.Context, q metasearch.Query) ([]metasearch.CoverCandidate, error) {
 	out, err := metasearch.RetryCovers(
 		ctx, maxAttempts, s.backoff,
@@ -70,17 +64,23 @@ func (s *Source) SearchCovers(ctx context.Context, q metasearch.Query) ([]metase
 	return out, nil
 }
 
-// fetchOnce performs a single HTTP request to Goodreads and parses the cover results.
+// autocompleteItem is one element of the Goodreads auto_complete JSON array.
+type autocompleteItem struct {
+	ImageURL string `json:"imageUrl"`
+}
+
+// fetchOnce performs a single request to the autocomplete API.
 func (s *Source) fetchOnce(ctx context.Context, q metasearch.Query) ([]metasearch.CoverCandidate, error) {
 	params := url.Values{}
+	params.Set("format", "json")
 	params.Set("q", strings.TrimSpace(q.Title+" "+q.Author))
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.baseURL+"/search?"+params.Encode(), http.NoBody)
+	req, err := http.NewRequestWithContext(
+		ctx, http.MethodGet, s.baseURL+"/book/auto_complete?"+params.Encode(), http.NoBody)
 	if err != nil {
 		return nil, fmt.Errorf("build request: %w", err)
 	}
-	req.Header.Set("User-Agent", userAgent)
-	req.Header.Set("Accept-Language", "en-US,en;q=0.9")
-	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+	req.Header.Set("User-Agent", metasearch.RandomUserAgent())
+	req.Header.Set("Accept", "application/json,text/plain,*/*")
 
 	resp, err := s.client.Do(req)
 	if err != nil {
@@ -88,53 +88,31 @@ func (s *Source) fetchOnce(ctx context.Context, q metasearch.Query) ([]metasearc
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("goodreads status %d", resp.StatusCode)
+		// 202 (Cloudflare challenge) and any other non-200 are anti-bot blocks.
+		return nil, fmt.Errorf("goodreads status %d: %w", resp.StatusCode, metasearch.ErrBlocked)
 	}
 
-	return parseCovers(io.LimitReader(resp.Body, maxHTMLBytes))
+	return parseCovers(io.LimitReader(resp.Body, maxJSONBytes))
 }
 
-// parseCovers extracts cover candidates from a Goodreads search document,
-// upgrading the small search thumbnail to a larger render for the full URL.
+// parseCovers decodes the autocomplete JSON array into cover candidates,
+// upgrading each small thumbnail to its full-resolution URL.
 func parseCovers(r io.Reader) ([]metasearch.CoverCandidate, error) {
-	doc, err := html.Parse(r)
-	if err != nil {
-		return nil, fmt.Errorf("parse html: %w", err)
+	var items []autocompleteItem
+	if err := json.NewDecoder(r).Decode(&items); err != nil {
+		return nil, fmt.Errorf("decode json: %w", err)
 	}
 	var out []metasearch.CoverCandidate
-	var walk func(*html.Node)
-	walk = func(n *html.Node) {
-		if n.Type == html.ElementNode && n.Data == "img" && hasClass(n, imageClass) {
-			thumb := attr(n, "src")
-			if thumb != "" {
-				out = append(out, metasearch.CoverCandidate{
-					Source:   metasearch.SourceGoodreads,
-					ThumbURL: thumb,
-					FullURL:  metasearch.OriginalAmazonImage(thumb),
-				})
-			}
+	for _, it := range items {
+		if it.ImageURL == "" {
+			continue
 		}
-		for c := n.FirstChild; c != nil; c = c.NextSibling {
-			walk(c)
-		}
+		out = append(out, metasearch.CoverCandidate{
+			Source:   metasearch.SourceGoodreads,
+			ThumbURL: it.ImageURL,
+			FullURL:  metasearch.OriginalAmazonImage(it.ImageURL),
+		})
 	}
-	walk(doc)
 
 	return out, nil
-}
-
-// hasClass reports whether n's class attribute contains the given class token.
-func hasClass(n *html.Node, class string) bool {
-	return slices.Contains(strings.Fields(attr(n, "class")), class)
-}
-
-// attr returns n's value for the named attribute, or "".
-func attr(n *html.Node, name string) string {
-	for _, a := range n.Attr {
-		if a.Key == name {
-			return a.Val
-		}
-	}
-
-	return ""
 }
