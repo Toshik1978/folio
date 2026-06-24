@@ -338,7 +338,7 @@ with format `fb2` (the dispatcher normalizes the wrapper — see
 To optimize performance and security when loading cover images for the Web UI or OPDS feeds, the following design rules apply:
 
 1. **JPEG Normalization**: Covers are transcoded to JPEG on save (`covers/store.go:Save` → `convertToJPEG`; already-JPEG bytes pass through untouched). Every cached cover is therefore a JPEG, so serving and the OPDS feed can declare `image/jpeg` without sniffing each file's bytes. Serving raw bytes as a fixed image type also keeps a mislabeled "cover" from ever being rendered as HTML.
-2. **Cached Reads**: Requests for `/api/books/{id}/cover`, `/opds/books/{id}/cover`, and their `/cover/thumbnail` variants serve cached files directly from the sharded structure inside the `/data/covers/` directory (`/data/covers/0/42.jpeg`, `/data/covers/0/42_thumb.jpeg`).
+2. **Cached Reads**: Requests for `/api/books/{id}/cover`, `/opds/books/{id}/cover`, and their `/cover/thumbnail` variants serve cached files directly from the sharded structure inside the `/data/covers/` directory (`/data/covers/0/42.jpeg`, `/data/covers/0/42.thumb.jpeg`).
 3. **Directory Traversal Prevention**: The `{id}` parameter is strictly validated before any filesystem interaction:
    - The string `{id}` is converted to a positive integer in Go. If conversion fails, the backend immediately returns a `400 Bad Request` or `404 Not Found`.
    - File lookups are sharded and constrained within `/data/covers/` using the integer `{id}` (e.g. `/data/covers/0/42.jpeg`), entirely eliminating path traversal vectors (e.g., `../../etc/passwd`).
