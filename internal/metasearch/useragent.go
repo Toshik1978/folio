@@ -1,5 +1,8 @@
 package metasearch
 
+// math/rand/v2 provides a goroutine-safe PRNG without requiring external locking.
+// Weak (non-cryptographic) randomness is intentional: UA rotation only needs
+// unpredictability across requests, not security-grade entropy.
 import "math/rand/v2"
 
 // desktopUserAgents is a small pool of realistic current desktop browser UAs.

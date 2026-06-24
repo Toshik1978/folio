@@ -45,6 +45,10 @@ func (s *Source) ddgSearch(ctx context.Context, q metasearch.Query) ([]string, e
 		return nil, err
 	}
 	params := url.Values{}
+	// "site:amazon.com" intentionally targets only the .com domain: it is the
+	// engine-tested form that DDG reliably indexes. The isAmazonHost gate in
+	// checkRedirect accepts any Amazon TLD as defense-in-depth, not because the
+	// query is expected to return non-.com results.
 	params.Set("q", "site:amazon.com "+q.SearchTerm())
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.ddgURL+"/html/?"+params.Encode(), http.NoBody)
 	if err != nil {

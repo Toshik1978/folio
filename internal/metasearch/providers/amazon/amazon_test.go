@@ -197,6 +197,26 @@ func (s *ddgSuite) TestRateLimiterEnforcesInterval() {
 	s.GreaterOrEqual(time.Since(start), 40*time.Millisecond)
 }
 
+// TestCheckRedirectE2E proves the redirect guard fires through the real
+// net/http client machinery: a server that redirects to a disallowed host
+// must cause client.Get to return an error containing "blocked redirect".
+func (s *ddgSuite) TestCheckRedirectE2E() {
+	// Stand up a test server that immediately redirects to a disallowed host.
+	disallowed := "http://disallowed.example/evil"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		http.Redirect(w, req, disallowed, http.StatusFound)
+	}))
+	s.T().Cleanup(srv.Close)
+
+	src := New(5 * time.Second)
+	resp, err := src.client.Get(srv.URL) //nolint:noctx // test: context not needed here
+	if resp != nil {
+		_ = resp.Body.Close()
+	}
+	s.Require().Error(err, "redirect to disallowed host must return an error")
+	s.Contains(err.Error(), "blocked redirect")
+}
+
 // TestCheckRedirectGuards verifies the redirect guard allows Amazon and
 // DuckDuckGo hosts, blocks arbitrary hosts, and bounds redirect depth.
 func (s *ddgSuite) TestCheckRedirectGuards() {

@@ -88,3 +88,28 @@ func (s *coreSuite) TestAggregatorLogsPerSourceOutcome() {
 	s.Contains(logs, `"source":"amazon"`)
 	s.Contains(logs, `"duration_ms":`)
 }
+
+// TestAggregatorLogsErrorStatus verifies that a plain (non-ErrBlocked) source
+// error is logged with status "error" and the correct source name, and that
+// sources surfacing other status values also log their names.
+func (s *coreSuite) TestAggregatorLogsErrorStatus() {
+	var buf bytes.Buffer
+	log := slog.New(slog.NewJSONHandler(&buf, nil))
+	reg := NewRegistry(
+		fakeCover{name: SourceGoodreads, out: []CoverCandidate{
+			{Source: SourceGoodreads, FullURL: "https://gr/x.jpg"},
+		}},
+		fakeCover{name: SourceOpenLibrary, err: errors.New("boom")}, // plain error → "error" status
+		fakeCover{name: SourceGoogleBooks, err: ErrBlocked},
+	)
+	agg := NewAggregator(log, reg)
+
+	agg.SearchCovers(context.Background(), Query{Title: "Dune"})
+
+	logs := buf.String()
+	s.Contains(logs, `"status":"error"`)
+	s.Contains(logs, `"source":"openlibrary"`)
+	s.Contains(logs, `"source":"goodreads"`)
+	s.Contains(logs, `"source":"googlebooks"`)
+	s.Contains(logs, `"duration_ms":`)
+}
