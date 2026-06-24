@@ -50,6 +50,10 @@ func filterByTitle(cands []rawCandidate, queryTitle string, maxCount int) []meta
 	}
 	filter := len(qt) > 0 && anyTitle
 
+	// Once filtering is active, a candidate with an empty title is dropped: an
+	// empty alt has no tokens, so titleMatches never holds. On a partial-markup
+	// drift (some alts present, some missing) the alt-less results fall out
+	// rather than slipping through unfiltered.
 	out := make([]metasearch.CoverCandidate, 0, maxCount)
 	for _, c := range cands {
 		if filter && (isJunkTitle(c.title) || !titleMatches(qt, c.title)) {

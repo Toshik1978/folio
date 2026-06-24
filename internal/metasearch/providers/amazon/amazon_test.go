@@ -204,7 +204,9 @@ func (s *searchSuite) TestDirectSearchIsThrottled() {
 	s.Require().NoError(err)
 	_, err = src.SearchCovers(context.Background(), metasearch.Query{Title: "Dune"})
 	s.Require().NoError(err)
-	s.GreaterOrEqual(time.Since(start), 60*time.Millisecond)
+	elapsed := time.Since(start)
+	s.GreaterOrEqual(elapsed, 60*time.Millisecond, "two searches must be spaced by one interval")
+	s.Less(elapsed, 5*time.Second, "throttle must not hang or stack extra intervals")
 }
 
 func (s *searchSuite) TestRateLimiterEnforcesInterval() {
