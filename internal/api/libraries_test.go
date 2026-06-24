@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"time"
 
+	"github.com/Toshik1978/folio/internal/libtype"
 	"github.com/Toshik1978/folio/internal/sync"
 )
 
@@ -304,6 +306,59 @@ func (s *librariesSuite) TestSyncNowLoadFailureIs500() {
 
 	w := s.do(http.MethodPost, fmt.Sprintf("/libraries/%d/sync", id), nil)
 	s.Equal(http.StatusInternalServerError, w.Code)
+}
+
+// useLibraryRoot rebuilds the libraries handler confined to root and re-registers
+// it, so a test can exercise the LIBRARY_ROOT constraint (off by default).
+func (s *librariesSuite) useLibraryRoot(root string) {
+	s.libraries = NewLibraries(slog.New(slog.DiscardHandler), s.db, s.guard, s.sync, root)
+	s.rebuildRouter()
+}
+
+func (s *librariesSuite) TestCreateRejectsPathOutsideLibraryRoot() {
+	s.useLibraryRoot("/library")
+
+	out := s.do(http.MethodPost, "/libraries", map[string]any{"name": "X", "type": "folder", "path": "/etc"})
+	s.Equal(http.StatusBadRequest, out.Code, "a path outside LIBRARY_ROOT must be refused")
+
+	in := s.do(http.MethodPost, "/libraries", map[string]any{"name": "X", "type": "folder", "path": "/library/books"})
+	s.Equal(http.StatusCreated, in.Code, "a path inside LIBRARY_ROOT is accepted")
+}
+
+func (s *librariesSuite) TestUpdateRejectsPathOutsideLibraryRoot() {
+	id := s.seedLibrary("folder", "/library/books")
+	s.useLibraryRoot("/library")
+
+	bad := s.do(http.MethodPut, "/libraries/"+itoa(id), map[string]any{
+		"name": "X", "path": "/etc/passwd", "sync_interval_seconds": 3600,
+	})
+	s.Equal(http.StatusBadRequest, bad.Code, "editing a path outside LIBRARY_ROOT must be refused")
+
+	ok := s.do(http.MethodPut, "/libraries/"+itoa(id), map[string]any{
+		"name": "X", "path": "/library/other", "sync_interval_seconds": 3600,
+	})
+	s.Equal(http.StatusOK, ok.Code, "editing to a path inside LIBRARY_ROOT is accepted")
+}
+
+// The constraint applies to every library type, not just folder libraries.
+func (s *librariesSuite) TestLibraryRootConstrainsAllTypes() {
+	s.useLibraryRoot("/library")
+	for _, typ := range []string{libtype.Folder, libtype.Calibre, libtype.INPX} {
+		w := s.do(http.MethodPost, "/libraries", map[string]any{"name": typ, "type": typ, "path": "/etc/" + typ})
+		s.Equal(http.StatusBadRequest, w.Code, typ)
+	}
+}
+
+func (s *librariesSuite) TestWithinLibraryRoot() {
+	// An empty root means the constraint is disabled: any path is accepted.
+	s.True(withinLibraryRoot("", "/anything"))
+	// The root itself and any descendant are inside.
+	s.True(withinLibraryRoot("/library", "/library"))
+	s.True(withinLibraryRoot("/library", "/library/books"))
+	// A sibling, an unrelated path, and a traversal out are all rejected.
+	s.False(withinLibraryRoot("/library", "/etc"))
+	s.False(withinLibraryRoot("/library", "/librarian")) // prefix-only, not a child
+	s.False(withinLibraryRoot("/library", "/library/../etc"))
 }
 
 func (s *librariesSuite) TestUpdateLibrarySucceedsWhenRescheduleFails() {

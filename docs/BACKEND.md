@@ -31,9 +31,13 @@ for local dev; the Docker image sets `DATA_DIR=/data` to match the mounted
 volume — the binary runs as nonroot and cannot write the default `./data`
 under the root-owned `/app` workdir), `PUBLIC_URL`
 (optional canonical external base URL, e.g. `https://folio.example.com`, used to
-build the absolute OPDS OpenSearch URL — see `NETWORKING.md`), and `GOOGLE_KEY`
+build the absolute OPDS OpenSearch URL — see `NETWORKING.md`), `GOOGLE_KEY`
 (optional Google Books API key for online enrichment; empty uses the anonymous
-quota). OPDS Basic Auth credentials are **not** environment variables — they are
+quota), and `LIBRARY_ROOT` (optional defense-in-depth: when set, the libraries
+API refuses to create or edit a library whose path resolves outside this base
+directory, so an admin — or a stolen admin session — cannot point a library at
+an arbitrary host path like `/etc` and serve files back out; empty leaves
+library paths unconstrained, matching historical behavior). OPDS Basic Auth credentials are **not** environment variables — they are
 configured at runtime via `PUT /api/settings` and stored hashed in the `settings`
 table (the `auth` package owns them). Structured logging uses the standard library `log/slog`. `run`
 returns a non-zero exit code on a failed dependency (DB open, cover store, sync

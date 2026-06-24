@@ -149,7 +149,7 @@ func (s *baseSuite) SetupTest() {
 	log := slog.New(slog.DiscardHandler)
 	s.books = NewBooks(log, database, s.guard, store, nil, nil, store, nil)
 	s.catalog = NewCatalog(log, database, ingest.CanonicalGenres())
-	s.libraries = NewLibraries(log, database, s.guard, s.sync)
+	s.libraries = NewLibraries(log, database, s.guard, s.sync, "")
 	s.syncH = NewSync(log, s.sync, s.broker)
 
 	r := chi.NewRouter()

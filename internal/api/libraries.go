@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"path/filepath"
 	"slices"
 	"strings"
 	"time"
@@ -108,25 +109,9 @@ func (h *LibrariesHandler) getLibrary(w http.ResponseWriter, r *http.Request) {
 
 // createLibrary handles POST /api/libraries.
 func (h *LibrariesHandler) createLibrary(w http.ResponseWriter, r *http.Request) {
-	var req createLibraryRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		h.writeError(w, http.StatusBadRequest, "invalid JSON body")
+	req, ok := h.decodeCreateLibraryRequest(w, r)
+	if !ok {
 		return
-	}
-	if strings.TrimSpace(req.Name) == "" {
-		h.writeError(w, http.StatusBadRequest, "name is required")
-		return
-	}
-	if !validLibraryTypes[req.Type] {
-		h.writeError(w, http.StatusBadRequest, "invalid library type")
-		return
-	}
-	if req.Path == "" {
-		h.writeError(w, http.StatusBadRequest, "path is required")
-		return
-	}
-	if req.SyncIntervalSeconds <= 0 {
-		req.SyncIntervalSeconds = 3600
 	}
 
 	release, ok := h.acquireWrite(r.Context(), w, h.writeGuard)
@@ -162,6 +147,40 @@ func (h *LibrariesHandler) createLibrary(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	h.writeJSON(w, http.StatusCreated, h.libraryView(h.sync.Status(), src, 0))
+}
+
+// decodeCreateLibraryRequest decodes and validates the body of a createLibrary
+// request. It writes an error response and returns ok=false on failure.
+func (h *LibrariesHandler) decodeCreateLibraryRequest(
+	w http.ResponseWriter,
+	r *http.Request,
+) (createLibraryRequest, bool) {
+	var req createLibraryRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		h.writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return req, false
+	}
+	if strings.TrimSpace(req.Name) == "" {
+		h.writeError(w, http.StatusBadRequest, "name is required")
+		return req, false
+	}
+	if !validLibraryTypes[req.Type] {
+		h.writeError(w, http.StatusBadRequest, "invalid library type")
+		return req, false
+	}
+	if req.Path == "" {
+		h.writeError(w, http.StatusBadRequest, "path is required")
+		return req, false
+	}
+	if !withinLibraryRoot(h.libraryRoot, req.Path) {
+		h.writeError(w, http.StatusBadRequest, "path is outside the allowed library root")
+		return req, false
+	}
+	if req.SyncIntervalSeconds <= 0 {
+		req.SyncIntervalSeconds = 3600
+	}
+
+	return req, true
 }
 
 // updateLibrary handles PUT /api/libraries/{id}.
@@ -261,6 +280,10 @@ func (h *LibrariesHandler) decodeUpdateLibraryRequest(
 	}
 	if req.Path == "" {
 		h.writeError(w, http.StatusBadRequest, "path is required")
+		return req, false
+	}
+	if !withinLibraryRoot(h.libraryRoot, req.Path) {
+		h.writeError(w, http.StatusBadRequest, "path is outside the allowed library root")
 		return req, false
 	}
 	if req.SyncIntervalSeconds <= 0 {
@@ -469,6 +492,36 @@ func effectiveStatus(st sync.Status, dbStatus string, id int64) string {
 	}
 
 	return dbStatus
+}
+
+// withinLibraryRoot reports whether p resolves inside root, the optional
+// LIBRARY_ROOT confinement for library paths. An empty root disables the
+// constraint (the default), preserving the historical "any host path" behavior.
+//
+// The check is lexical on cleaned absolute paths. The API only lets an admin set
+// the path *string*, so confining that string to the root subtree fully contains
+// what the API can reach — a stolen admin session cannot point a library at /etc.
+// (A symlink under root pointing elsewhere would require host filesystem access,
+// which is outside this trust boundary.) This mirrors bookfile.withinRoot, which
+// guards the orthogonal axis of "../" inside a stored source path.
+func withinLibraryRoot(root, p string) bool {
+	if root == "" {
+		return true
+	}
+	absRoot, err := filepath.Abs(root)
+	if err != nil {
+		return false
+	}
+	absPath, err := filepath.Abs(p)
+	if err != nil {
+		return false
+	}
+	rel, err := filepath.Rel(absRoot, absPath)
+	if err != nil {
+		return false
+	}
+
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
 func nullInt(n sql.NullInt64) *int64 {

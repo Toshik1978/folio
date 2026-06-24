@@ -128,7 +128,7 @@ func run() int { //revive:disable:function-length
 			API: []server.Registrar{
 				api.NewBooks(log, database, writeGuard, coverStore, extractor, enricher, coverStore, coverSearch),
 				catalogHandler,
-				api.NewLibraries(log, database, writeGuard, syncEngine),
+				api.NewLibraries(log, database, writeGuard, syncEngine, cfg.LibraryRoot),
 				api.NewSync(log, syncEngine, broker),
 				settings.New(log, authn),
 			},

@@ -40,4 +40,8 @@ ENV PORT=8080
 # DATA_DIR must point at the mounted volume, not the default ./data (which would
 # resolve to /app/data — a root-owned, read-only dir the nonroot user can't write).
 ENV DATA_DIR=/data
+# Optional defense-in-depth: set LIBRARY_ROOT to your books mount (e.g. /library)
+# to confine every library path to that subtree, so a compromised admin session
+# cannot point a library at an arbitrary host path. Left unset here to preserve
+# the default "any path" behavior; opt in at deploy time.
 CMD ["/app/folio-idx"]

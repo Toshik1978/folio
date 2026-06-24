@@ -18,6 +18,12 @@ type Config struct {
 	// GoogleKey enables Google Books enrichment. Empty falls back to the
 	// anonymous quota; enrichment is still attempted.
 	GoogleKey string `env:"GOOGLE_KEY"`
+	// LibraryRoot optionally confines every library path to this base directory
+	// as defense-in-depth: with it set, an admin (or a stolen admin session)
+	// cannot point a library at an arbitrary host path like /etc and serve files
+	// back out. Empty (the default) leaves library paths unconstrained, matching
+	// historical behavior. In container deployments set it to the mounted volume.
+	LibraryRoot string `env:"LIBRARY_ROOT"`
 }
 
 func MustParse() Config {
