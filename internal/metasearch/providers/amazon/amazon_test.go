@@ -54,21 +54,32 @@ type parseSuite struct {
 	baseSuite
 }
 
-func (s *parseSuite) TestParseCoversFromFixture() {
+func (s *parseSuite) TestParseCandidatesFromFixture() {
 	f, err := os.Open("testdata/search.html")
 	s.Require().NoError(err)
 	defer func() { _ = f.Close() }()
 
-	got, err := parseCovers(f)
+	got, err := parseCandidates(f)
 	s.Require().NoError(err)
 
-	// Two s-image results; the sprite (other-image) is ignored.
+	// Three s-image results; the sprite (other-image) is ignored.
+	s.Require().Len(got, 3)
+	s.Equal("Dune", got[0].title)
+	s.Equal("https://m.media-amazon.com/images/I/aaa.jpg", got[0].cover.FullURL)
+	s.Equal("https://m.media-amazon.com/images/I/bbb.jpg", got[1].cover.FullURL)
+}
+
+func (s *parseSuite) TestParseThenFilterDropsUnrelated() {
+	f, err := os.Open("testdata/search.html")
+	s.Require().NoError(err)
+	defer func() { _ = f.Close() }()
+
+	cands, err := parseCandidates(f)
+	s.Require().NoError(err)
+
+	got := filterByTitle(cands, "Dune", maxCandidates)
+	// "The Notebook" is dropped; the two Dune editions remain.
 	s.Require().Len(got, 2)
-	for _, c := range got {
-		s.Equal(metasearch.SourceAmazon, c.Source)
-		s.Contains(c.FullURL, "https://m.media-amazon.com/images/I/")
-	}
-	// The highest-density srcset entry is chosen and the size modifier is stripped to get the original.
 	s.Equal("https://m.media-amazon.com/images/I/aaa.jpg", got[0].FullURL)
 	s.Equal("https://m.media-amazon.com/images/I/bbb.jpg", got[1].FullURL)
 }
@@ -95,7 +106,7 @@ func (s *parseSuite) TestBenignPhraseNotBlocked() {
 </body></html>`)
 	s.False(isInterstitial(body), "generic phrase in body text must not be a block")
 
-	out, err := parseCovers(bytes.NewReader(body))
+	out, err := parseCandidates(bytes.NewReader(body))
 	s.Require().NoError(err)
 	s.Require().NotEmpty(out)
 }

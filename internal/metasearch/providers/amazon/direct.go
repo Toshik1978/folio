@@ -73,16 +73,16 @@ func (s *Source) fetchDirectOnce(ctx context.Context, q metasearch.Query) ([]met
 		return nil, fmt.Errorf("amazon interstitial: %w", metasearch.ErrBlocked)
 	}
 
-	out, err := parseCovers(bytes.NewReader(body))
+	cands, err := parseCandidates(bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
-	if len(out) == 0 {
+	if len(cands) == 0 {
 		// No s-image nodes on a 200 page is, in practice, a soft block.
 		return nil, fmt.Errorf("amazon empty results: %w", metasearch.ErrBlocked)
 	}
 
-	return out, nil
+	return filterByTitle(cands, q.Title, maxCandidates), nil
 }
 
 // isInterstitial reports whether body looks like an Amazon anti-bot page.
@@ -97,21 +97,25 @@ func isInterstitial(body []byte) bool {
 	return false
 }
 
-// parseCovers extracts cover candidates from an Amazon search-results document.
-func parseCovers(r io.Reader) ([]metasearch.CoverCandidate, error) {
+// parseCandidates extracts cover candidates and their result titles (the
+// s-image alt) from an Amazon search-results document, in page order.
+func parseCandidates(r io.Reader) ([]rawCandidate, error) {
 	doc, err := html.Parse(r)
 	if err != nil {
 		return nil, fmt.Errorf("parse html: %w", err)
 	}
-	var out []metasearch.CoverCandidate
+	var out []rawCandidate
 	var walk func(*html.Node)
 	walk = func(n *html.Node) {
 		if n.Type == html.ElementNode && n.Data == "img" && hasClass(n, imageClass) {
 			if full := bestImage(n); full != "" {
-				out = append(out, metasearch.CoverCandidate{
-					Source:   metasearch.SourceAmazon,
-					ThumbURL: attr(n, "src"),
-					FullURL:  metasearch.OriginalAmazonImage(full),
+				out = append(out, rawCandidate{
+					cover: metasearch.CoverCandidate{
+						Source:   metasearch.SourceAmazon,
+						ThumbURL: attr(n, "src"),
+						FullURL:  metasearch.OriginalAmazonImage(full),
+					},
+					title: attr(n, "alt"),
 				})
 			}
 		}
