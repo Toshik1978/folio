@@ -7,8 +7,8 @@
       class="rounded-box bg-base-200 aspect-[2/3] overflow-hidden shadow-md transition-all duration-300 ease-out group-hover:-translate-y-1.5 group-hover:shadow-xl"
     >
       <img
-        v-if="book.cover_url"
-        :src="book.cover_url"
+        v-if="thumbnailUrl"
+        :src="thumbnailUrl"
         :alt="book.title"
         class="h-full w-full object-cover"
         loading="lazy"
@@ -34,12 +34,19 @@
 </template>
 
 <script setup lang="ts">
+import { computed } from 'vue';
 import { useRoute } from 'vue-router';
 
 import StarRating from '@/components/StarRating.vue';
 import type { Book } from '@/types';
 
-defineProps<{ book: Book }>();
+const props = defineProps<{ book: Book }>();
+
+// The card shows a small image; use the thumbnail variant of the cover URL.
+// cover_url is `/api/books/<id>/cover?v=…`; insert `/thumbnail` before the query.
+const thumbnailUrl = computed(() =>
+  props.book.cover_url ? props.book.cover_url.replace('/cover?', '/cover/thumbnail?') : null,
+);
 
 const route = useRoute();
 </script>

@@ -29,12 +29,19 @@ describe('BookCard', () => {
 
   it('shows the cover image when cover_url is set', () => {
     const wrapper = mount(BookCard, {
-      props: { book: makeBook({ cover_url: '/api/books/7/cover' }) },
+      props: { book: makeBook({ cover_url: '/api/books/7/cover?v=abc-123' }) },
       ...opts,
     });
     const img = wrapper.find('img');
     expect(img.exists()).toBe(true);
-    expect(img.attributes('src')).toBe('/api/books/7/cover');
+    expect(img.attributes('src')).toBe('/api/books/7/cover/thumbnail?v=abc-123');
+  });
+
+  it('renders the thumbnail URL in the grid image, not the full cover', () => {
+    const book = makeBook({ cover_url: '/api/books/42/cover?v=abc-123' });
+    const wrapper = mount(BookCard, { props: { book }, ...opts });
+    const img = wrapper.get('img');
+    expect(img.attributes('src')).toBe('/api/books/42/cover/thumbnail?v=abc-123');
   });
 
   it('falls back to a placeholder when cover_url is null', () => {
