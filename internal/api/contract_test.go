@@ -33,23 +33,25 @@ func fullBookView() bookView {
 	ann := "<p>Classic.</p>"
 	isbnURL := "https://isbnsearch.org/isbn/9780553293357"
 	cover := "/api/books/7/cover?v=abc-0"
+	thumb := "/api/books/7/cover/thumbnail?v=abc-0-t400q85"
 
 	return bookView{
-		ID:          7,
-		Title:       "Foundation",
-		Authors:     []bookAuthorView{{ID: 1, Name: "Isaac Asimov"}},
-		Series:      &series,
-		SeriesIndex: &idx,
-		Tags:        []string{"sf"},
-		Publisher:   &publisher,
-		Year:        &year,
-		Pages:       &pages,
-		Rating:      &rating,
-		Language:    &lang,
-		Annotation:  &ann,
-		Formats:     []formatView{{Type: "epub", SizeBytes: 1024, DownloadURL: "/api/books/7/files/11"}},
-		Identifiers: []identifierView{{Type: "isbn", Value: "9780553293357", URL: &isbnURL}},
-		CoverURL:    &cover,
+		ID:           7,
+		Title:        "Foundation",
+		Authors:      []bookAuthorView{{ID: 1, Name: "Isaac Asimov"}},
+		Series:       &series,
+		SeriesIndex:  &idx,
+		Tags:         []string{"sf"},
+		Publisher:    &publisher,
+		Year:         &year,
+		Pages:        &pages,
+		Rating:       &rating,
+		Language:     &lang,
+		Annotation:   &ann,
+		Formats:      []formatView{{Type: "epub", SizeBytes: 1024, DownloadURL: "/api/books/7/files/11"}},
+		Identifiers:  []identifierView{{Type: "isbn", Value: "9780553293357", URL: &isbnURL}},
+		CoverURL:     &cover,
+		ThumbnailURL: &thumb,
 	}
 }
 

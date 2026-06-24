@@ -61,6 +61,14 @@ func (s *Store) Delete(bookID int64) error {
 	return nil
 }
 
+// ThumbToken identifies the thumbnail rendering spec (max dimension + quality) for
+// the ?v= cache buster. It changes when those constants change, so a thumbnail URL
+// keyed on it invalidates every client's cached thumbnail when the rendering
+// parameters change — even though the cover bytes, and thus Version, are unchanged.
+func (s *Store) ThumbToken() string {
+	return fmt.Sprintf("t%dq%d", thumbMaxDim, thumbQuality)
+}
+
 // Version returns the cover-file component of the ?v= cache buster: the cached
 // file's mtime (unix), or "0" when no file exists yet. Combined with the
 // metadata content_hash it changes whenever the cover *bytes* change — covering

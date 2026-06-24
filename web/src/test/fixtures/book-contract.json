@@ -15,5 +15,6 @@
   "identifiers": [
     { "type": "isbn", "value": "9780553293357", "url": "https://isbnsearch.org/isbn/9780553293357" }
   ],
-  "cover_url": "/api/books/7/cover?v=abc-0"
+  "cover_url": "/api/books/7/cover?v=abc-0",
+  "thumbnail_url": "/api/books/7/cover/thumbnail?v=abc-0-t400q85"
 }

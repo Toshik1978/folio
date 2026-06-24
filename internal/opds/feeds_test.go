@@ -318,6 +318,8 @@ func (s *feedsSuite) TestBookEntryThumbnailUsesThumbnailRoute() {
 	s.Contains(body, `/cover/thumbnail?v=`, "thumbnail rel points at the thumbnail route")
 	s.Regexp(`rel="http://opds-spec.org/image/thumbnail"[^>]*href="[^"]*/cover/thumbnail\?v=`, body)
 	s.Regexp(`rel="http://opds-spec.org/image"[^>]*href="[^"]*/cover\?v=`, body)
+	s.Contains(body, `/cover/thumbnail?v=`)
+	s.Regexp(`/cover/thumbnail\?v=[^"]*-t400q85`, body, "thumbnail href carries the cache-spec token")
 }
 
 func linkType(links []link, rel string) string {

@@ -29,6 +29,7 @@ type CoverServer interface {
 	ServeCover(w http.ResponseWriter, r *http.Request, bookID int64)
 	ServeThumbnail(w http.ResponseWriter, r *http.Request, bookID int64)
 	Version(bookID int64) string
+	ThumbToken() string
 }
 
 // Authenticator is the OPDS Basic Auth guard. *auth.Authenticator satisfies it.

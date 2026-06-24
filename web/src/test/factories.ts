@@ -24,6 +24,7 @@ export function makeBook(overrides: Partial<Book> = {}): Book {
     formats: [],
     identifiers: [],
     cover_url: '/api/books/7/cover',
+    thumbnail_url: '/api/books/7/cover/thumbnail',
     ...overrides,
   };
 }

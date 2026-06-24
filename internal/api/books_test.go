@@ -2,6 +2,10 @@ package api
 
 import (
 	"archive/zip"
+	"bytes"
+	"encoding/json"
+	"image"
+	"image/jpeg"
 	"log/slog"
 	"net/http"
 	"os"
@@ -410,12 +414,33 @@ func (s *booksSuite) TestCoverServesCached() {
 func (s *booksSuite) TestServeThumbnailRoute() {
 	src := s.seedLibrary("folder", "/lib")
 	id := s.seedBook(src, bookSeed{Title: "Thumb Book"})
-	cover := s.jpegFixture()
-	s.Require().NoError(s.covers.Save(id, cover))
+	// A cover wider/taller than the 400px cap so the served thumbnail must downscale.
+	var buf bytes.Buffer
+	s.Require().NoError(jpeg.Encode(&buf, image.NewRGBA(image.Rect(0, 0, 600, 900)), &jpeg.Options{Quality: 90}))
+	s.Require().NoError(s.covers.Save(id, buf.Bytes()))
 
 	w := s.do(http.MethodGet, "/books/"+itoa(id)+"/cover/thumbnail", nil)
 	s.Require().Equal(http.StatusOK, w.Code)
 	s.Equal("image/jpeg", w.Header().Get("Content-Type"))
+	s.Contains(w.Header().Get("Cache-Control"), "immutable")
+	cfg, _, err := image.DecodeConfig(bytes.NewReader(w.Body.Bytes()))
+	s.Require().NoError(err)
+	s.Equal(400, cfg.Height, "longest side downscaled to 400")
+	s.Equal(267, cfg.Width, "aspect preserved (600x900 -> 267x400)")
+}
+
+func (s *booksSuite) TestBookViewHasThumbnailURL() {
+	src := s.seedLibrary("folder", "/lib")
+	id := s.seedBook(src, bookSeed{Title: "Thumb Book"})
+	s.Require().NoError(s.covers.Save(id, s.jpegFixture()))
+
+	w := s.do(http.MethodGet, "/books/"+itoa(id), nil)
+	s.Require().Equal(http.StatusOK, w.Code)
+	var got map[string]any
+	s.Require().NoError(json.Unmarshal(w.Body.Bytes(), &got))
+	thumb, _ := got["thumbnail_url"].(string)
+	s.Contains(thumb, "/cover/thumbnail?v=")
+	s.Contains(thumb, "-t400q85", "thumbnail_url carries the thumbnail cache-spec token")
 }
 
 func (s *booksSuite) TestBooksNegativeAndEdgeCases() {

@@ -10,21 +10,22 @@ import (
 
 // bookView is the JSON shape consumed by the frontend (web/src/types.ts Book).
 type bookView struct {
-	ID          int64            `json:"id"`
-	Title       string           `json:"title"`
-	Authors     []bookAuthorView `json:"authors"`
-	Series      *string          `json:"series"`
-	SeriesIndex *float64         `json:"series_index"`
-	Tags        []string         `json:"tags"`
-	Publisher   *string          `json:"publisher"`
-	Year        *int             `json:"year"`
-	Pages       *int             `json:"pages"`
-	Rating      *int             `json:"rating"`
-	Language    *string          `json:"language"`
-	Annotation  *string          `json:"annotation"`
-	Formats     []formatView     `json:"formats"`
-	Identifiers []identifierView `json:"identifiers"`
-	CoverURL    *string          `json:"cover_url"`
+	ID           int64            `json:"id"`
+	Title        string           `json:"title"`
+	Authors      []bookAuthorView `json:"authors"`
+	Series       *string          `json:"series"`
+	SeriesIndex  *float64         `json:"series_index"`
+	Tags         []string         `json:"tags"`
+	Publisher    *string          `json:"publisher"`
+	Year         *int             `json:"year"`
+	Pages        *int             `json:"pages"`
+	Rating       *int             `json:"rating"`
+	Language     *string          `json:"language"`
+	Annotation   *string          `json:"annotation"`
+	Formats      []formatView     `json:"formats"`
+	Identifiers  []identifierView `json:"identifiers"`
+	CoverURL     *string          `json:"cover_url"`
+	ThumbnailURL *string          `json:"thumbnail_url"`
 }
 
 type authorView struct {
@@ -168,19 +169,22 @@ func (h *BooksHandler) toBookView(
 	// ?v= combines the metadata hash (cover selection) with the cover file
 	// mtime (cover byte changes without a metadata change) — see covers.Store.Version.
 	cover := fmt.Sprintf("/api/books/%d/cover?v=%s-%s", b.ID, b.ContentHash, h.covers.Version(b.ID))
+	thumb := fmt.Sprintf("/api/books/%d/cover/thumbnail?v=%s-%s-%s",
+		b.ID, b.ContentHash, h.covers.Version(b.ID), h.covers.ThumbToken())
 	view := bookView{
-		ID:          b.ID,
-		Title:       b.Title,
-		Authors:     av,
-		Tags:        tags,
-		Language:    &lang,
-		Publisher:   nullStr(b.Publisher),
-		Year:        nullIntToPtr(b.Year),
-		Pages:       pages,
-		Rating:      nullIntToPtr(b.Rating),
-		Formats:     formats,
-		Identifiers: identifiers,
-		CoverURL:    &cover,
+		ID:           b.ID,
+		Title:        b.Title,
+		Authors:      av,
+		Tags:         tags,
+		Language:     &lang,
+		Publisher:    nullStr(b.Publisher),
+		Year:         nullIntToPtr(b.Year),
+		Pages:        pages,
+		Rating:       nullIntToPtr(b.Rating),
+		Formats:      formats,
+		Identifiers:  identifiers,
+		CoverURL:     &cover,
+		ThumbnailURL: &thumb,
 	}
 	if b.Annotation.Valid {
 		clean := h.annotationPolicy.Sanitize(b.Annotation.String)

@@ -31,6 +31,7 @@ type CoverServer interface {
 	ServeCover(w http.ResponseWriter, r *http.Request, bookID int64)
 	ServeThumbnail(w http.ResponseWriter, r *http.Request, bookID int64)
 	Version(bookID int64) string
+	ThumbToken() string
 }
 
 // MetadataExtractor lazily recovers metadata that wasn't captured at index time

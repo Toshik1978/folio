@@ -14,6 +14,7 @@ export interface Book {
   formats: BookFormat[];
   identifiers: BookIdentifier[];
   cover_url: string | null;
+  thumbnail_url: string | null;
 }
 
 export interface BookFormat {
