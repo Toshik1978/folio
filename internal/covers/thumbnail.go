@@ -23,6 +23,15 @@ const (
 // longest side is at most thumbMaxDim. A cover already within the bound is
 // returned unchanged (no re-encode, never upscaled).
 func makeThumbnail(jpegData []byte) ([]byte, error) {
+	// Reject a decompression bomb from the header alone, before image.Decode
+	// allocates width×height×4 bytes. convertToJPEG passes already-JPEG covers
+	// through without a full decode to avoid exactly this allocation on low-spec
+	// hosts (NAS, Raspberry Pi); the thumbnail decode must re-establish the cap.
+	if cfg, _, err := image.DecodeConfig(bytes.NewReader(jpegData)); err == nil &&
+		int64(cfg.Width)*int64(cfg.Height) > maxCoverPixels {
+		return nil, fmt.Errorf("cover dimensions %dx%d exceed %d pixel limit",
+			cfg.Width, cfg.Height, maxCoverPixels)
+	}
 	img, _, err := image.Decode(bytes.NewReader(jpegData))
 	if err != nil {
 		return nil, fmt.Errorf("decode cover for thumbnail: %w", err)

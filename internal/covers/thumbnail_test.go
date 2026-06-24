@@ -133,3 +133,11 @@ func (s *coversTestSuite) TestServeThumbnailPlaceholderWhenNothing() {
 	s.Equal("no-cache", rec.Header().Get("Cache-Control"))
 	s.Equal(placeholderJPEG, rec.Body.Bytes())
 }
+
+func (s *coversTestSuite) TestMakeThumbnailRejectsOversizedDimensions() {
+	// 30000x30000 = 900 MP, far above maxCoverPixels; decoding it would allocate
+	// ~3.6 GB. The guard must reject it from the header, before image.Decode.
+	_, err := makeThumbnail(bombHeaderPNG(30000, 30000))
+	s.Require().Error(err)
+	s.Contains(err.Error(), "pixel", "must be rejected by the dimension guard")
+}
