@@ -27,25 +27,22 @@ describe('BookCard', () => {
     });
   });
 
-  it('shows the cover image when cover_url is set', () => {
+  it('renders the server thumbnail_url in the grid image, not the full cover', () => {
+    const book = makeBook({
+      cover_url: '/api/books/42/cover?v=abc-123',
+      thumbnail_url: '/api/books/42/cover/thumbnail?v=abc-123-t400q85',
+    });
+    const wrapper = mount(BookCard, { props: { book }, ...opts });
+    const src = wrapper.get('img').attributes('src');
+    expect(src).toBe('/api/books/42/cover/thumbnail?v=abc-123-t400q85');
+    expect(src).not.toBe(book.cover_url);
+  });
+
+  it('falls back to a placeholder when thumbnail_url is null', () => {
     const wrapper = mount(BookCard, {
-      props: { book: makeBook({ cover_url: '/api/books/7/cover?v=abc-123' }) },
+      props: { book: makeBook({ thumbnail_url: null }) },
       ...opts,
     });
-    const img = wrapper.find('img');
-    expect(img.exists()).toBe(true);
-    expect(img.attributes('src')).toBe('/api/books/7/cover/thumbnail?v=abc-123');
-  });
-
-  it('renders the thumbnail URL in the grid image, not the full cover', () => {
-    const book = makeBook({ cover_url: '/api/books/42/cover?v=abc-123' });
-    const wrapper = mount(BookCard, { props: { book }, ...opts });
-    const img = wrapper.get('img');
-    expect(img.attributes('src')).toBe('/api/books/42/cover/thumbnail?v=abc-123');
-  });
-
-  it('falls back to a placeholder when cover_url is null', () => {
-    const wrapper = mount(BookCard, { props: { book: makeBook({ cover_url: null }) }, ...opts });
     expect(wrapper.find('img').exists()).toBe(false);
     expect(wrapper.find('[data-testid="cover-placeholder"]').exists()).toBe(true);
   });
