@@ -45,6 +45,7 @@ func (s *baseSuite) sourceForHandler(h http.HandlerFunc) *Source {
 	src := New(5 * time.Second)
 	src.baseURL = srv.URL
 	src.backoff = time.Millisecond
+	src.limiter = newRateLimiter(0)
 
 	return src
 }
@@ -189,6 +190,22 @@ func (s *searchSuite) TestSearchCoversRetriesOnTransientBlock() {
 	s.Require().NoError(err)
 	s.Require().NotEmpty(got)
 	s.GreaterOrEqual(int(reqCount.Load()), 2, "server should have been hit at least twice")
+}
+
+func (s *searchSuite) TestDirectSearchIsThrottled() {
+	src := s.sourceForHandler(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write(s.fixture())
+	})
+	// Give the limiter a real interval and confirm two back-to-back searches
+	// are spaced by it (the helper otherwise sets a zero interval for speed).
+	src.limiter = newRateLimiter(60 * time.Millisecond)
+
+	start := time.Now()
+	_, err := src.SearchCovers(context.Background(), metasearch.Query{Title: "Dune"})
+	s.Require().NoError(err)
+	_, err = src.SearchCovers(context.Background(), metasearch.Query{Title: "Dune"})
+	s.Require().NoError(err)
+	s.GreaterOrEqual(time.Since(start), 60*time.Millisecond)
 }
 
 // ddgSuite covers DuckDuckGo fallback logic.

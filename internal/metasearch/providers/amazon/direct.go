@@ -48,6 +48,10 @@ func (s *Source) searchDirect(ctx context.Context, q metasearch.Query) ([]metase
 
 // fetchDirectOnce performs one direct search request.
 func (s *Source) fetchDirectOnce(ctx context.Context, q metasearch.Query) ([]metasearch.CoverCandidate, error) {
+	if err := s.limiter.wait(ctx); err != nil {
+		return nil, err
+	}
+
 	params := url.Values{}
 	params.Set("k", q.SearchTerm())
 	params.Set("i", "stripbooks")
