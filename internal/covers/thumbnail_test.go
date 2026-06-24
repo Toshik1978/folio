@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"image"
 	"image/jpeg"
+	"os"
 )
 
 // decodeDims decodes JPEG bytes and returns their width and height.
@@ -36,4 +37,35 @@ func (s *coversTestSuite) TestMakeThumbnailLeavesSmallCoverUnchanged() {
 func (s *coversTestSuite) TestMakeThumbnailRejectsUndecodable() {
 	_, err := makeThumbnail([]byte("not an image"))
 	s.Require().Error(err)
+}
+
+func (s *coversTestSuite) TestSaveWritesThumbnail() {
+	st, err := NewStore(s.dataDir, nil)
+	s.Require().NoError(err)
+	s.Require().NoError(st.Save(1, s.bigJPEGBytes())) // 512x512 > 400
+
+	data, err := os.ReadFile(st.ThumbPath(1))
+	s.Require().NoError(err)
+	w, h := s.decodeDims(data)
+	s.Equal(400, w) // 512x512 square downscales to 400x400
+	s.Equal(400, h)
+}
+
+func (s *coversTestSuite) TestDeleteRemovesThumbnail() {
+	st, err := NewStore(s.dataDir, nil)
+	s.Require().NoError(err)
+	s.Require().NoError(st.Save(1, s.bigJPEGBytes()))
+	s.Require().NoError(st.Delete(1))
+
+	_, err = os.Stat(st.ThumbPath(1))
+	s.Require().True(os.IsNotExist(err), "thumbnail removed with the cover")
+}
+
+func (s *coversTestSuite) TestSavePlaceholderWritesNoThumbnail() {
+	st, err := NewStore(s.dataDir, nil)
+	s.Require().NoError(err)
+	s.Require().NoError(st.Save(1, placeholderJPEG))
+
+	_, err = os.Stat(st.ThumbPath(1))
+	s.Require().True(os.IsNotExist(err), "placeholder writes get no thumbnail")
 }

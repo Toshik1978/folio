@@ -54,6 +54,10 @@ func (s *Store) Delete(bookID int64) error {
 	if err := os.Remove(s.Path(bookID)); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("remove cover %d: %w", bookID, err)
 	}
+	if err := os.Remove(s.ThumbPath(bookID)); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("remove thumbnail %d: %w", bookID, err)
+	}
+
 	return nil
 }
 
@@ -97,6 +101,13 @@ func (s *Store) HasLocalCover(ctx context.Context, bookID int64) bool {
 func (s *Store) Path(bookID int64) string {
 	dir := strconv.FormatInt(bookID/1000, 10)
 	return filepath.Join(s.dir, dir, strconv.FormatInt(bookID, 10)+".jpeg")
+}
+
+// ThumbPath returns the on-disk path of bookID's cached thumbnail, sharded
+// identically to Path.
+func (s *Store) ThumbPath(bookID int64) string {
+	dir := strconv.FormatInt(bookID/1000, 10)
+	return filepath.Join(s.dir, dir, strconv.FormatInt(bookID, 10)+".thumb.jpeg")
 }
 
 func (s *Store) ServeHTTP(w http.ResponseWriter, r *http.Request, bookID int64) {
@@ -148,29 +159,52 @@ func (s *Store) serveBytes(w http.ResponseWriter, data []byte) {
 // The bytes are staged in a sibling temp file and atomically renamed into place,
 // so a concurrent ServeHTTP read never observes a torn (half-written) JPEG.
 func (s *Store) writeFile(bookID int64, jpegData []byte) error {
-	dir := filepath.Join(s.dir, strconv.FormatInt(bookID/1000, 10))
+	if err := s.atomicWrite(s.Path(bookID), jpegData); err != nil {
+		return err
+	}
+	s.writeThumbnail(bookID, jpegData)
+	return nil
+}
+
+// writeThumbnail derives and caches a downscaled thumbnail beside the cover.
+// Best-effort: any failure leaves cover serving intact (ServeThumbnail falls back
+// to the full cover). The placeholder negative-cache write gets no thumbnail.
+func (s *Store) writeThumbnail(bookID int64, jpegData []byte) {
+	if bytes.Equal(jpegData, placeholderJPEG) {
+		return
+	}
+	thumb, err := makeThumbnail(jpegData)
+	if err != nil {
+		return
+	}
+	_ = s.atomicWrite(s.ThumbPath(bookID), thumb)
+}
+
+// atomicWrite stages data in a sibling temp file and atomically renames it into
+// place at path (creating the shard dir), so a concurrent reader never observes a
+// torn file.
+func (s *Store) atomicWrite(path string, data []byte) error {
+	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("create covers subdirectory: %w", err)
 	}
-	// CreateTemp in the same directory keeps os.Rename a same-filesystem atomic
-	// replace, and creates the file with 0o600 (matching the prior mode).
-	tmp, err := os.CreateTemp(dir, strconv.FormatInt(bookID, 10)+".*.tmp")
+	tmp, err := os.CreateTemp(dir, filepath.Base(path)+".*.tmp")
 	if err != nil {
-		return fmt.Errorf("create temp cover %d: %w", bookID, err)
+		return fmt.Errorf("create temp file %s: %w", path, err)
 	}
 	tmpName := tmp.Name()
-	if _, err := tmp.Write(jpegData); err != nil {
+	if _, err := tmp.Write(data); err != nil {
 		_ = tmp.Close()
 		_ = os.Remove(tmpName)
-		return fmt.Errorf("write cover %d: %w", bookID, err)
+		return fmt.Errorf("write temp file %s: %w", path, err)
 	}
 	if err := tmp.Close(); err != nil {
 		_ = os.Remove(tmpName)
-		return fmt.Errorf("close temp cover %d: %w", bookID, err)
+		return fmt.Errorf("close temp file %s: %w", path, err)
 	}
-	if err := os.Rename(tmpName, s.Path(bookID)); err != nil {
+	if err := os.Rename(tmpName, path); err != nil {
 		_ = os.Remove(tmpName)
-		return fmt.Errorf("rename cover %d: %w", bookID, err)
+		return fmt.Errorf("rename temp file %s: %w", path, err)
 	}
 
 	return nil
