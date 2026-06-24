@@ -28,44 +28,6 @@ tasks:
     dir: web
     cmd: npm run dev
 
-  build:frontend:
-    desc: Type-check and bundle Vue SPA
-    dir: web
-    cmd: npm run build
-
-  build:backend:
-    desc: Compile Go binary with embedded SPA
-    deps: [build:frontend]
-    cmds:
-      - mkdir -p bin
-      - CGO_ENABLED=0 go build -ldflags="-w -s" -o bin/folio-idx cmd/folio-idx/main.go
-    generates:
-      - bin/folio-idx
-
-  build:
-    desc: Full production build (frontend + backend)
-    deps: [build:backend]
-
-  test:backend:
-    desc: Run all Go tests
-    cmd: go test -v -coverpkg=./internal/... ./internal/...
-
-  test:frontend:
-    desc: Run frontend unit tests
-    dir: web
-    cmd: npm run test
-
-  test:frontend:ci:
-    desc: Run frontend unit tests with coverage and JSON output (CI)
-    dir: web
-    cmd: npm run test:ci
-
-  test:
-    desc: Run all tests
-    cmds:
-      - task: test:backend
-      - task: test:frontend
-
   lint:sql:
     desc: Fail on non-ASCII bytes in the SQL that feeds sqlc (they silently corrupt codegen)
     cmd: |
@@ -88,24 +50,43 @@ tasks:
   lint:frontend:
     desc: Run Node.js linters
     dir: web
-    cmd: npm run lint
-
-  check:frontend:
-    desc: Run Prettier format check
-    dir: web
-    cmd: npm run format:check
+    cmds:
+      - npm run typecheck
+      - npm run lint
+      - npm run format:check
 
   lint:
     desc: Full linters run (frontend + backend)
     cmds:
+      - task: lint:frontend
       - task: lint:sql
       - task: lint:backend
-      - task: lint:frontend
-      - task: check:frontend
+
+  test:backend:
+    desc: Run all Go tests
+    cmd: go test -v -coverpkg=./internal/... ./internal/...
+
+  test:frontend:
+    desc: Run frontend unit tests
+    dir: web
+    cmd: npm run test
+
+  test:frontend:ci:
+    desc: Run frontend unit tests with coverage and JSON output (CI)
+    dir: web
+    cmd: npm run test:ci
+
+  test:
+    desc: Run all tests
+    cmds:
+      - task: test:frontend
+      - task: test:backend
 
   format:backend:
     desc: Run gofumpt
-    cmd: golangci-lint fmt
+    cmds:
+      - golangci-lint fmt
+      - golangci-lint run --fix
 
   format:frontend:
     desc: Run Prettier formatter
@@ -115,8 +96,26 @@ tasks:
   format:
     desc: Run formatters
     cmds:
-      - task: format:backend
       - task: format:frontend
+      - task: format:backend
+
+  build:frontend:
+    desc: Type-check and bundle Vue SPA
+    dir: web
+    cmd: npm run build
+
+  build:backend:
+    desc: Compile Go binary with embedded SPA
+    deps: [build:frontend]
+    cmds:
+      - mkdir -p bin
+      - CGO_ENABLED=0 go build -ldflags="-w -s" -o bin/folio-idx cmd/folio-idx/main.go
+    generates:
+      - bin/folio-idx
+
+  build:
+    desc: Full production build (frontend + backend)
+    deps: [build:backend]
 
   build:docker:
     desc: Build Docker container
