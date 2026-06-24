@@ -12,6 +12,7 @@ type coreSuite struct {
 
 func TestMetasearch(t *testing.T) {
 	suite.Run(t, new(coreSuite))
+	suite.Run(t, new(uaSuite))
 }
 
 func (s *coreSuite) TestHasCapability() {
