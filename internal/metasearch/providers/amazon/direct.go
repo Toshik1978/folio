@@ -23,7 +23,7 @@ var interstitialMarkers = []string{ //nolint:gochecknoglobals // immutable looku
 	"automated access",
 	"enter the characters",
 	"api-services-support",
-	"something went wrong",
+	"something went wrong on our end",
 }
 
 // searchDirect fetches Amazon's books search page and parses cover thumbnails,
@@ -46,7 +46,7 @@ func (s *Source) searchDirect(ctx context.Context, q metasearch.Query) ([]metase
 // fetchDirectOnce performs one direct search request.
 func (s *Source) fetchDirectOnce(ctx context.Context, q metasearch.Query) ([]metasearch.CoverCandidate, error) {
 	params := url.Values{}
-	params.Set("k", strings.TrimSpace(q.Title+" "+q.Author))
+	params.Set("k", q.SearchTerm())
 	params.Set("i", "stripbooks")
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.baseURL+"/s?"+params.Encode(), http.NoBody)
 	if err != nil {
@@ -54,7 +54,7 @@ func (s *Source) fetchDirectOnce(ctx context.Context, q metasearch.Query) ([]met
 	}
 	req.Header.Set("User-Agent", metasearch.RandomUserAgent())
 	req.Header.Set("Accept-Language", "en-US,en;q=0.9")
-	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+	req.Header.Set("Accept", acceptHTML)
 
 	resp, err := s.client.Do(req)
 	if err != nil {

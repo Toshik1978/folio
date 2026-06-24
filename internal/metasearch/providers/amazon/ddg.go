@@ -1,13 +1,11 @@
 package amazon
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
-	"slices"
 	"strings"
 
 	"golang.org/x/net/html"
@@ -47,13 +45,13 @@ func (s *Source) ddgSearch(ctx context.Context, q metasearch.Query) ([]string, e
 		return nil, err
 	}
 	params := url.Values{}
-	params.Set("q", "site:amazon.com "+strings.TrimSpace(q.Title+" "+q.Author))
+	params.Set("q", "site:amazon.com "+q.SearchTerm())
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.ddgURL+"/html/?"+params.Encode(), http.NoBody)
 	if err != nil {
 		return nil, fmt.Errorf("build ddg request: %w", err)
 	}
 	req.Header.Set("User-Agent", metasearch.RandomUserAgent())
-	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+	req.Header.Set("Accept", acceptHTML)
 
 	resp, err := s.client.Do(req)
 	if err != nil {
@@ -99,7 +97,7 @@ func ddgTarget(href string) string {
 	}
 	target := href
 	// DDG wraps external links as //duckduckgo.com/l/?uddg=<encoded>.
-	if strings.Contains(href, "/l/?") || strings.HasPrefix(href, "//duckduckgo.com/l/") {
+	if strings.Contains(href, "uddg=") {
 		probe := href
 		if strings.HasPrefix(probe, "//") {
 			probe = "https:" + probe
@@ -118,14 +116,36 @@ func ddgTarget(href string) string {
 	return target
 }
 
-// isAmazonHost reports whether rawURL's host has an "amazon" label (any TLD).
+// multiLabelTLDs are the public suffixes Amazon uses that span two labels, so
+// the registrable domain sits one label deeper than a plain ".com".
+var multiLabelTLDs = map[string]bool{ //nolint:gochecknoglobals // immutable lookup table
+	"co.uk": true, "com.au": true, "co.jp": true, "com.br": true,
+	"com.mx": true, "co.za": true, "com.tr": true, "com.be": true,
+}
+
+// isAmazonHost reports whether rawURL's registrable domain is "amazon" (e.g.
+// amazon.com, www.amazon.com, amazon.co.uk), rejecting look-alikes such as
+// amazon.evil.com. The URL comes from an external source (DDG), so this gate is
+// defense in depth, not the only control.
 func isAmazonHost(rawURL string) bool {
 	u, err := url.Parse(rawURL)
 	if err != nil {
 		return false
 	}
+	labels := strings.Split(strings.ToLower(u.Hostname()), ".")
+	if len(labels) < 2 {
+		return false
+	}
+	suffixLen := 1
+	if len(labels) >= 3 && multiLabelTLDs[labels[len(labels)-2]+"."+labels[len(labels)-1]] {
+		suffixLen = 2
+	}
+	domainIdx := len(labels) - suffixLen - 1
+	if domainIdx < 0 {
+		return false
+	}
 
-	return slices.Contains(strings.Split(strings.ToLower(u.Hostname()), "."), "amazon")
+	return labels[domainIdx] == "amazon"
 }
 
 // productCover fetches an Amazon product page and extracts its cover image,
@@ -140,7 +160,7 @@ func (s *Source) productCover(ctx context.Context, rawURL string) (metasearch.Co
 		return metasearch.CoverCandidate{}, false, fmt.Errorf("build product request: %w", err)
 	}
 	req.Header.Set("User-Agent", metasearch.RandomUserAgent())
-	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+	req.Header.Set("Accept", acceptHTML)
 
 	resp, err := s.client.Do(req)
 	if err != nil {
@@ -151,11 +171,7 @@ func (s *Source) productCover(ctx context.Context, rawURL string) (metasearch.Co
 		return metasearch.CoverCandidate{}, false, nil
 	}
 
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxHTMLBytes))
-	if err != nil {
-		return metasearch.CoverCandidate{}, false, fmt.Errorf("read product body: %w", err)
-	}
-	img := productImage(bytes.NewReader(body))
+	img := productImage(io.LimitReader(resp.Body, maxHTMLBytes))
 	if img == "" {
 		return metasearch.CoverCandidate{}, false, nil
 	}
@@ -195,7 +211,7 @@ func collectImageAttrs(doc *html.Node) (og, hires, landing string) {
 		if n.Type == html.ElementNode {
 			switch n.Data {
 			case "meta":
-				if attr(n, "property") == "og:image" {
+				if og == "" && attr(n, "property") == "og:image" {
 					og = attr(n, "content")
 				}
 			case "img":

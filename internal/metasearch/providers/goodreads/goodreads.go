@@ -11,7 +11,6 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"strings"
 	"time"
 
 	"github.com/Toshik1978/folio/internal/metasearch"
@@ -73,7 +72,7 @@ type autocompleteItem struct {
 func (s *Source) fetchOnce(ctx context.Context, q metasearch.Query) ([]metasearch.CoverCandidate, error) {
 	params := url.Values{}
 	params.Set("format", "json")
-	params.Set("q", strings.TrimSpace(q.Title+" "+q.Author))
+	params.Set("q", q.SearchTerm())
 	req, err := http.NewRequestWithContext(
 		ctx, http.MethodGet, s.baseURL+"/book/auto_complete?"+params.Encode(), http.NoBody)
 	if err != nil {

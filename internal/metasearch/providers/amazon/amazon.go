@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/Toshik1978/folio/internal/metasearch"
@@ -21,6 +22,7 @@ const (
 	maxAttempts    = 3
 	retryBackoff   = 400 * time.Millisecond
 	politeInterval = time.Second
+	maxRedirects   = 5
 )
 
 // Source scrapes Amazon for cover candidates, with a DuckDuckGo fallback.
@@ -37,14 +39,16 @@ type Source struct {
 
 // New builds an Amazon cover source with the given per-request timeout.
 func New(timeout time.Duration) *Source {
-	return &Source{
+	s := &Source{
 		baseURL:          defaultBaseURL,
 		ddgURL:           defaultDDGURL,
-		client:           &http.Client{Timeout: timeout},
 		backoff:          retryBackoff,
-		limiter:          &rateLimiter{interval: politeInterval},
+		limiter:          newRateLimiter(politeInterval),
 		allowProductHost: isAmazonHost,
 	}
+	s.client = &http.Client{Timeout: timeout, CheckRedirect: s.checkRedirect}
+
+	return s
 }
 
 // Name identifies the source.
@@ -75,6 +79,26 @@ func (s *Source) SearchCovers(ctx context.Context, q metasearch.Query) ([]metase
 	if ferr == nil && len(fb) > 0 {
 		return fb, nil
 	}
-	// Fallback found nothing: report the original block so the aggregator logs it.
+	if ferr != nil {
+		// Surface the real fallback failure (a DDG block re-wraps ErrBlocked, so
+		// errors.Is still classifies it; a timeout/network error is reported as-is).
+		return nil, fmt.Errorf("amazon search: %w", ferr)
+	}
+	// Fallback ran cleanly but found nothing usable: report the original block.
 	return nil, fmt.Errorf("amazon search: %w", metasearch.ErrBlocked)
+}
+
+// checkRedirect bounds redirect depth and blocks redirects to hosts that are
+// neither an allowed product host (Amazon) nor DuckDuckGo, so an external DDG
+// result cannot bounce the client onto an arbitrary internal host.
+func (s *Source) checkRedirect(req *http.Request, via []*http.Request) error {
+	if len(via) >= maxRedirects {
+		return fmt.Errorf("amazon: stopped after %d redirects", maxRedirects)
+	}
+	host := strings.ToLower(req.URL.Hostname())
+	if s.allowProductHost(req.URL.String()) || host == "duckduckgo.com" || strings.HasSuffix(host, ".duckduckgo.com") {
+		return nil
+	}
+
+	return fmt.Errorf("amazon: blocked redirect to disallowed host %q", host)
 }

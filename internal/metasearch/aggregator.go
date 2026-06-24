@@ -66,11 +66,12 @@ func (a *Aggregator) SearchCovers(ctx context.Context, q Query) []CoverCandidate
 // query resolved: ok, empty, blocked (anti-bot), or error.
 func (a *Aggregator) logOutcome(name string, out []CoverCandidate, err error, dur time.Duration) {
 	status := "ok"
+	warn := false
 	switch {
 	case errors.Is(err, ErrBlocked):
-		status = "blocked"
+		status, warn = "blocked", true
 	case err != nil:
-		status = "error"
+		status, warn = "error", true
 	case len(out) == 0:
 		status = "empty"
 	}
@@ -85,12 +86,12 @@ func (a *Aggregator) logOutcome(name string, out []CoverCandidate, err error, du
 		attrs = append(attrs, slog.Any("error", err))
 	}
 
-	if status == "ok" || status == "empty" {
-		a.log.Info("cover source outcome", attrs...)
+	if warn {
+		a.log.Warn("cover source outcome", attrs...)
 
 		return
 	}
-	a.log.Warn("cover source outcome", attrs...)
+	a.log.Info("cover source outcome", attrs...)
 }
 
 // flatten concatenates per-source results in source order.

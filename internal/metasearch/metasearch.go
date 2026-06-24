@@ -8,6 +8,7 @@ package metasearch //nolint:revive // max-public-structs: all types are intentio
 import (
 	"context"
 	"slices"
+	"strings"
 
 	"github.com/Toshik1978/folio/internal/ebook"
 )
@@ -37,6 +38,12 @@ type Query struct {
 	Title  string
 	Author string
 	ISBN   string
+}
+
+// SearchTerm is the normalized free-text query a provider sends: the title and
+// author joined and trimmed.
+func (q Query) SearchTerm() string {
+	return strings.TrimSpace(q.Title + " " + q.Author)
 }
 
 // Source is the common base every provider satisfies.

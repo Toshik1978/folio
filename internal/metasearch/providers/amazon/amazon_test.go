@@ -85,6 +85,21 @@ func (s *parseSuite) TestPickSrcsetSkipsMalformedAndPicksHighest() {
 	s.Equal("https://img/first.jpg", highestDensity("https://img/first.jpg 2x, https://img/second.jpg 2x"))
 }
 
+// TestBenignPhraseNotBlocked verifies a real results page that merely contains
+// the generic phrase "something went wrong" in body text (e.g. a review) is not
+// treated as an anti-bot interstitial.
+func (s *parseSuite) TestBenignPhraseNotBlocked() {
+	body := []byte(`<!doctype html><html><body>
+<p>A gripping tale where something went wrong for the hero.</p>
+<img class="s-image" src="https://m.media-amazon.com/images/I/aaa._AC_UY218_.jpg">
+</body></html>`)
+	s.False(isInterstitial(body), "generic phrase in body text must not be a block")
+
+	out, err := parseCovers(bytes.NewReader(body))
+	s.Require().NoError(err)
+	s.Require().NotEmpty(out)
+}
+
 func (s *parseSuite) TestCapabilities() {
 	src := New(time.Second)
 	s.Equal(metasearch.SourceAmazon, src.Name())
@@ -166,18 +181,40 @@ func (s *ddgSuite) TestParseDDGResultsKeepsOnlyDPLinks() {
 }
 
 func (s *ddgSuite) TestIsAmazonHost() {
+	s.True(isAmazonHost("https://amazon.com/x/dp/B01"))
 	s.True(isAmazonHost("https://www.amazon.com/x/dp/B01"))
 	s.True(isAmazonHost("https://www.amazon.co.uk/dp/B01"))
 	s.False(isAmazonHost("https://example.com/dp/B01"))
 	s.False(isAmazonHost("https://notamazon.evil.com/dp/B01"))
+	s.False(isAmazonHost("https://amazon.evil.com/x/dp/B01"))
 }
 
 func (s *ddgSuite) TestRateLimiterEnforcesInterval() {
-	rl := &rateLimiter{interval: 40 * time.Millisecond}
+	rl := newRateLimiter(40 * time.Millisecond)
 	start := time.Now()
 	s.Require().NoError(rl.wait(context.Background())) // first: no wait
 	s.Require().NoError(rl.wait(context.Background())) // second: waits ~interval
 	s.GreaterOrEqual(time.Since(start), 40*time.Millisecond)
+}
+
+// TestCheckRedirectGuards verifies the redirect guard allows Amazon and
+// DuckDuckGo hosts, blocks arbitrary hosts, and bounds redirect depth.
+func (s *ddgSuite) TestCheckRedirectGuards() {
+	src := New(time.Second)
+
+	mustReq := func(rawURL string) *http.Request {
+		req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, rawURL, http.NoBody)
+		s.Require().NoError(err)
+
+		return req
+	}
+
+	s.Require().NoError(src.checkRedirect(mustReq("https://www.amazon.com/x/dp/B01"), nil))
+	s.Require().NoError(src.checkRedirect(mustReq("https://duckduckgo.com/l/?uddg=x"), nil))
+	s.Require().Error(src.checkRedirect(mustReq("https://evil.example/x"), nil))
+
+	via := make([]*http.Request, maxRedirects)
+	s.Require().Error(src.checkRedirect(mustReq("https://www.amazon.com/x/dp/B01"), via))
 }
 
 // TestFallbackOnDirectBlock: direct server returns a CAPTCHA, DDG server returns
@@ -210,7 +247,7 @@ func (s *ddgSuite) TestFallbackOnDirectBlock() {
 	src.baseURL = direct.URL
 	src.backoff = time.Millisecond
 	src.ddgURL = ddg.URL
-	src.limiter = &rateLimiter{interval: 0}
+	src.limiter = newRateLimiter(0)
 	src.allowProductHost = func(string) bool { return true } // allow the 127.0.0.1 test host
 
 	got, err := src.SearchCovers(context.Background(), metasearch.Query{Title: "Dune"})
