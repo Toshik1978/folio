@@ -2,6 +2,7 @@ package metasearch
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 )
@@ -9,7 +10,8 @@ import (
 // RetryCovers calls fn up to attempts times, returning the first NON-EMPTY
 // result. It retries when fn errors OR returns zero candidates (a transient
 // anti-bot/interstitial response looks like an empty parse). Between attempts it
-// waits backoff*attemptIndex, honoring ctx cancellation. If every attempt is
+// waits backoff*attemptIndex, honoring ctx cancellation. It stops early and
+// returns the error when fn returns one wrapping ErrNoRetry. If every attempt is
 // empty-without-error it returns (nil, nil); if attempts errored it returns the
 // last error.
 func RetryCovers(
@@ -32,6 +34,9 @@ func RetryCovers(
 		out, err := fn(ctx)
 		if err != nil {
 			lastErr = err
+			if errors.Is(err, ErrNoRetry) {
+				return nil, err
+			}
 
 			continue
 		}

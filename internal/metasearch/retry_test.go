@@ -3,6 +3,7 @@ package metasearch
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 )
 
@@ -103,4 +104,21 @@ func (s *coreSuite) TestRetryCoversRespectsContextCancellation() {
 	s.Require().Nil(got)
 	// fn was called once (attempt 0 has no wait); attempt 1 hits ctx.Done before fn
 	s.Require().Equal(1, calls)
+}
+
+func (s *coreSuite) TestRetryCoversStopsOnNoRetry() {
+	var calls int
+	terminal := fmt.Errorf("blocked hard: %w", errors.Join(ErrBlocked, ErrNoRetry))
+
+	out, err := RetryCovers(context.Background(), 3, time.Millisecond,
+		func(context.Context) ([]CoverCandidate, error) {
+			calls++
+			return nil, terminal
+		},
+	)
+
+	s.Require().Nil(out)
+	s.Require().ErrorIs(err, ErrNoRetry)
+	s.Require().ErrorIs(err, ErrBlocked)
+	s.Require().Equal(1, calls, "a terminal error must not be retried")
 }
