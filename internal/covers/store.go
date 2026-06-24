@@ -128,6 +128,52 @@ func (s *Store) ServeHTTP(w http.ResponseWriter, r *http.Request, bookID int64) 
 	s.servePlaceholder(w)
 }
 
+// ServeThumbnail serves a book's downscaled cover thumbnail. A stored thumbnail is
+// served immutable (its bytes are pinned by the caller's ?v= buster). With none
+// yet, it falls back to the full cover — read from disk or lazily extracted —
+// served no-cache so the smaller thumbnail wins once generated, and best-effort
+// generates that thumbnail as a side effect (self-heal). A book with no cover and
+// none extractable gets the placeholder.
+func (s *Store) ServeThumbnail(w http.ResponseWriter, r *http.Request, bookID int64) {
+	thumbPath := s.ThumbPath(bookID)
+	if _, err := os.Stat(thumbPath); err == nil {
+		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+		w.Header().Set("Content-Type", "image/jpeg")
+		http.ServeFile(w, r, thumbPath)
+		return
+	}
+	data, ok := s.coverBytesForThumb(r.Context(), bookID)
+	if !ok {
+		s.servePlaceholder(w)
+		return
+	}
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Content-Type", "image/jpeg")
+	w.Header().Set("Content-Length", strconv.Itoa(len(data)))
+	_, _ = w.Write(data)
+}
+
+// coverBytesForThumb returns the full cover bytes to serve when no thumbnail is
+// cached yet, and self-heals the thumbnail for next time. A cover already on disk
+// is read and (best-effort) thumbnailed; otherwise a one-time lazy extraction
+// writes the cover and thumbnail via writeFile. The placeholder is reported as a
+// miss so the caller serves it no-cache.
+func (s *Store) coverBytesForThumb(ctx context.Context, bookID int64) ([]byte, bool) {
+	if data, err := os.ReadFile(s.Path(bookID)); err == nil {
+		if bytes.Equal(data, placeholderJPEG) {
+			return nil, false
+		}
+		s.writeThumbnail(bookID, data)
+		return data, true
+	}
+	data, ok := s.lazyExtract(ctx, bookID)
+	if !ok || bytes.Equal(data, placeholderJPEG) {
+		return nil, false
+	}
+
+	return data, true
+}
+
 // serveCached serves an on-disk cover, detecting a cached placeholder (the
 // lazy-extraction negative cache) by size + bytes so it gets the placeholder
 // cache policy rather than a year-long immutable entry.

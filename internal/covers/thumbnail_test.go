@@ -2,8 +2,11 @@ package covers
 
 import (
 	"bytes"
+	"context"
 	"image"
 	"image/jpeg"
+	"net/http"
+	"net/http/httptest"
 	"os"
 )
 
@@ -68,4 +71,65 @@ func (s *coversTestSuite) TestSavePlaceholderWritesNoThumbnail() {
 
 	_, err = os.Stat(st.ThumbPath(1))
 	s.Require().True(os.IsNotExist(err), "placeholder writes get no thumbnail")
+}
+
+func (s *coversTestSuite) TestServeThumbnailServesStoredThumb() {
+	st, err := NewStore(s.dataDir, nil)
+	s.Require().NoError(err)
+	s.Require().NoError(st.Save(1, s.bigJPEGBytes()))
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/thumb", http.NoBody)
+	st.ServeThumbnail(rec, req, 1)
+
+	s.Equal(http.StatusOK, rec.Code)
+	s.Contains(rec.Header().Get("Cache-Control"), "immutable")
+	w, h := s.decodeDims(rec.Body.Bytes())
+	s.Equal(400, w)
+	s.Equal(400, h)
+}
+
+func (s *coversTestSuite) TestServeThumbnailFallsBackToCoverAndSelfHeals() {
+	st, err := NewStore(s.dataDir, nil)
+	s.Require().NoError(err)
+	s.Require().NoError(st.Save(1, s.bigJPEGBytes()))
+	// Simulate a pre-existing cover whose thumbnail was never generated.
+	s.Require().NoError(os.Remove(st.ThumbPath(1)))
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/thumb", http.NoBody)
+	st.ServeThumbnail(rec, req, 1)
+
+	s.Equal(http.StatusOK, rec.Code)
+	s.Equal("no-cache", rec.Header().Get("Cache-Control"), "fallback must revalidate, never immutable")
+	_, err = os.Stat(st.ThumbPath(1))
+	s.Require().NoError(err, "thumbnail self-healed for the next request")
+}
+
+func (s *coversTestSuite) TestServeThumbnailLazyExtractsWhenNoCover() {
+	ext := &fakeExtractor{data: s.bigJPEGBytes()}
+	st, err := NewStore(s.dataDir, ext)
+	s.Require().NoError(err)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/thumb", http.NoBody)
+	st.ServeThumbnail(rec, req, 7)
+
+	s.Equal(http.StatusOK, rec.Code)
+	s.Equal("no-cache", rec.Header().Get("Cache-Control"))
+	_, err = os.Stat(st.ThumbPath(7))
+	s.Require().NoError(err, "extraction wrote both cover and thumbnail")
+}
+
+func (s *coversTestSuite) TestServeThumbnailPlaceholderWhenNothing() {
+	st, err := NewStore(s.dataDir, nil) // no extractor
+	s.Require().NoError(err)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/thumb", http.NoBody)
+	st.ServeThumbnail(rec, req, 99)
+
+	s.Equal(http.StatusOK, rec.Code)
+	s.Equal("no-cache", rec.Header().Get("Cache-Control"))
+	s.Equal(placeholderJPEG, rec.Body.Bytes())
 }
