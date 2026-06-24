@@ -1,6 +1,7 @@
 package metasearch
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"log/slog"
@@ -64,4 +65,26 @@ func (s *coreSuite) TestAggregatorMergesRanksAndDedupes() {
 func (s *coreSuite) TestAggregatorNoSources() {
 	agg := NewAggregator(slog.New(slog.DiscardHandler), NewRegistry())
 	s.Empty(agg.SearchCovers(context.Background(), Query{}))
+}
+
+func (s *coreSuite) TestAggregatorLogsPerSourceOutcome() {
+	var buf bytes.Buffer
+	log := slog.New(slog.NewJSONHandler(&buf, nil))
+	reg := NewRegistry(
+		fakeCover{name: SourceGoogleBooks, out: []CoverCandidate{
+			{Source: SourceGoogleBooks, FullURL: "https://gb/x.jpg"},
+		}},
+		fakeCover{name: SourceAmazon, err: ErrBlocked},
+		fakeCover{name: SourceGoodreads}, // nil out, nil err -> empty
+	)
+	agg := NewAggregator(log, reg)
+
+	agg.SearchCovers(context.Background(), Query{Title: "Dune"})
+
+	logs := buf.String()
+	s.Contains(logs, `"status":"ok"`)
+	s.Contains(logs, `"status":"blocked"`)
+	s.Contains(logs, `"status":"empty"`)
+	s.Contains(logs, `"source":"amazon"`)
+	s.Contains(logs, `"duration_ms":`)
 }

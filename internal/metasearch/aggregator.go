@@ -2,6 +2,7 @@ package metasearch
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"slices"
 	"sync"
@@ -46,10 +47,11 @@ func (a *Aggregator) SearchCovers(ctx context.Context, q Query) []CoverCandidate
 		wg.Go(func() {
 			cctx, cancel := context.WithTimeout(ctx, a.timeout)
 			defer cancel()
+
+			start := time.Now()
 			out, err := src.SearchCovers(cctx, q)
+			a.logOutcome(src.Name(), out, err, time.Since(start))
 			if err != nil {
-				a.log.Warn("cover source failed",
-					slog.String("source", src.Name()), slog.Any("error", err))
 				return
 			}
 			results[i] = out
@@ -58,6 +60,37 @@ func (a *Aggregator) SearchCovers(ctx context.Context, q Query) []CoverCandidate
 	wg.Wait()
 
 	return rankCovers(flatten(results))
+}
+
+// logOutcome emits one structured log line per source describing how its cover
+// query resolved: ok, empty, blocked (anti-bot), or error.
+func (a *Aggregator) logOutcome(name string, out []CoverCandidate, err error, dur time.Duration) {
+	status := "ok"
+	switch {
+	case errors.Is(err, ErrBlocked):
+		status = "blocked"
+	case err != nil:
+		status = "error"
+	case len(out) == 0:
+		status = "empty"
+	}
+
+	attrs := []any{
+		slog.String("source", name),
+		slog.String("status", status),
+		slog.Int("count", len(out)),
+		slog.Int64("duration_ms", dur.Milliseconds()),
+	}
+	if err != nil {
+		attrs = append(attrs, slog.Any("error", err))
+	}
+
+	if status == "ok" || status == "empty" {
+		a.log.Info("cover source outcome", attrs...)
+
+		return
+	}
+	a.log.Warn("cover source outcome", attrs...)
 }
 
 // flatten concatenates per-source results in source order.
