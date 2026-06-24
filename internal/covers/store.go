@@ -110,7 +110,7 @@ func (s *Store) ThumbPath(bookID int64) string {
 	return filepath.Join(s.dir, dir, strconv.FormatInt(bookID, 10)+".thumb.jpeg")
 }
 
-func (s *Store) ServeHTTP(w http.ResponseWriter, r *http.Request, bookID int64) {
+func (s *Store) ServeCover(w http.ResponseWriter, r *http.Request, bookID int64) {
 	// Real covers are content-addressed by the caller's ?v=<hash>-<mtime> buster
 	// and served immutable. Placeholder responses are served no-cache instead: a
 	// real cover may appear later (lazy extraction, a better edition's sync)
@@ -203,7 +203,7 @@ func (s *Store) serveBytes(w http.ResponseWriter, data []byte) {
 
 // writeFile caches already-JPEG bytes for bookID, creating the shard directory.
 // The bytes are staged in a sibling temp file and atomically renamed into place,
-// so a concurrent ServeHTTP read never observes a torn (half-written) JPEG.
+// so a concurrent ServeCover read never observes a torn (half-written) JPEG.
 func (s *Store) writeFile(bookID int64, jpegData []byte) error {
 	if err := s.atomicWrite(s.Path(bookID), jpegData); err != nil {
 		return err

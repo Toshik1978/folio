@@ -28,7 +28,7 @@ const coverFetchTimeout = 15 * time.Second
 // placeholder fallback) and reports the cover-file component of the ?v= cache
 // buster. *covers.Store satisfies it.
 type CoverServer interface {
-	ServeHTTP(w http.ResponseWriter, r *http.Request, bookID int64)
+	ServeCover(w http.ResponseWriter, r *http.Request, bookID int64)
 	ServeThumbnail(w http.ResponseWriter, r *http.Request, bookID int64)
 	Version(bookID int64) string
 }

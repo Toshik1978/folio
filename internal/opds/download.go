@@ -59,7 +59,7 @@ func (h *Handler) serveCover(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Invalid Book ID", http.StatusBadRequest)
 		return
 	}
-	h.covers.ServeHTTP(w, r, id)
+	h.covers.ServeCover(w, r, id)
 }
 
 // serveThumbnail handles GET /opds/books/{id}/cover/thumbnail (public — no Basic

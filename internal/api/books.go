@@ -302,7 +302,7 @@ func (h *BooksHandler) serveCover(w http.ResponseWriter, r *http.Request) {
 		h.writeError(w, http.StatusBadRequest, "invalid book id")
 		return
 	}
-	h.covers.ServeHTTP(w, r, id)
+	h.covers.ServeCover(w, r, id)
 }
 
 // serveThumbnail handles GET /api/books/{id}/cover/thumbnail, delegating to the
