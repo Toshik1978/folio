@@ -2,11 +2,12 @@ import { flushPromises, mount } from '@vue/test-utils';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import CoverPickerModal from '@/components/CoverPickerModal.vue';
+import { makeBook } from '@/test/factories';
 import type { Book } from '@/types';
 
 vi.mock('@/api', () => ({
-  uploadCover: vi.fn(async () => ({ id: 1, title: 'Dune' }) as Book),
-  setCoverFromUrl: vi.fn(async () => ({ id: 1, title: 'Dune' }) as Book),
+  uploadCover: vi.fn(async () => makeBook({ id: 1, title: 'Dune' })),
+  setCoverFromUrl: vi.fn(async () => makeBook({ id: 1, title: 'Dune' })),
   fetchCoverCandidates: vi.fn(async () => [
     {
       source: 'amazon',
@@ -23,7 +24,7 @@ vi.mock('@/composables/useToast', () => ({
 
 import { fetchCoverCandidates, setCoverFromUrl, uploadCover } from '@/api';
 
-const book = { id: 1, title: 'Dune', cover_url: null } as Book;
+const book = makeBook({ id: 1, title: 'Dune', cover_url: null });
 
 // The dialog is teleported to <body>; stub teleport so it renders inline and
 // the in-wrapper queries below keep resolving.

@@ -2,10 +2,11 @@ import { flushPromises, mount } from '@vue/test-utils';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import EditBookModal from '@/components/EditBookModal.vue';
+import { makeBook } from '@/test/factories';
 import type { Book } from '@/types';
 
 vi.mock('@/api', () => ({
-  updateBookMetadata: vi.fn(async () => ({ id: 1, title: 'Dune' }) as Book),
+  updateBookMetadata: vi.fn(async () => makeBook({ id: 1, title: 'Dune' })),
   fetchGenres: vi.fn(async () => ['Science Fiction', 'History']),
 }));
 vi.mock('@/composables/useToast', () => ({

@@ -1,9 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { fetchGenres, setCoverFromUrl, updateBookMetadata, uploadCover } from '@/api';
-import type { Book } from '@/types';
+import { makeBook } from '@/test/factories';
 
-const book = { id: 1, title: 'Dune' } as Book;
+const book = makeBook({ id: 1, title: 'Dune' });
 
 function mockFetch(body: unknown): typeof fetch {
   return vi.fn(
