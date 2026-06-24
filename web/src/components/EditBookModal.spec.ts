@@ -30,6 +30,7 @@ const book: Book = {
   formats: [],
   identifiers: [],
   cover_url: null,
+  thumbnail_url: null,
 };
 
 // The dialog is teleported to <body>; stub teleport so it renders inline and
