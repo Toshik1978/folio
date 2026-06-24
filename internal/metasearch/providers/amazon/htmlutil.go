@@ -7,7 +7,7 @@ import (
 	"golang.org/x/net/html"
 )
 
-// acceptHTML is the Accept header sent for Amazon/DDG HTML fetches.
+// acceptHTML is the Accept header sent for Amazon HTML fetches.
 const acceptHTML = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
 
 // hasClass reports whether n's class attribute contains the given class token.

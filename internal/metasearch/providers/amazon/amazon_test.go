@@ -19,7 +19,6 @@ import (
 func TestAmazon(t *testing.T) {
 	suite.Run(t, new(parseSuite))
 	suite.Run(t, new(searchSuite))
-	suite.Run(t, new(ddgSuite))
 }
 
 // baseSuite holds helpers shared by the parser and HTTP suites.
@@ -208,32 +207,7 @@ func (s *searchSuite) TestDirectSearchIsThrottled() {
 	s.GreaterOrEqual(time.Since(start), 60*time.Millisecond)
 }
 
-// ddgSuite covers DuckDuckGo fallback logic.
-type ddgSuite struct {
-	baseSuite
-}
-
-func (s *ddgSuite) TestParseDDGResultsKeepsOnlyDPLinks() {
-	f, err := os.Open("testdata/ddg.html")
-	s.Require().NoError(err)
-	defer func() { _ = f.Close() }()
-
-	got := parseDDGResults(f)
-	s.Require().Len(got, 2, "two /dp/ links (amazon + example.com); the /gp/ link is dropped")
-	s.Equal("https://www.amazon.com/Book-Title/dp/B01ABCDEFG/ref=sr", got[0])
-	s.Contains(got[1], "example.com")
-}
-
-func (s *ddgSuite) TestIsAmazonHost() {
-	s.True(isAmazonHost("https://amazon.com/x/dp/B01"))
-	s.True(isAmazonHost("https://www.amazon.com/x/dp/B01"))
-	s.True(isAmazonHost("https://www.amazon.co.uk/dp/B01"))
-	s.False(isAmazonHost("https://example.com/dp/B01"))
-	s.False(isAmazonHost("https://notamazon.evil.com/dp/B01"))
-	s.False(isAmazonHost("https://amazon.evil.com/x/dp/B01"))
-}
-
-func (s *ddgSuite) TestRateLimiterEnforcesInterval() {
+func (s *searchSuite) TestRateLimiterEnforcesInterval() {
 	rl := newRateLimiter(40 * time.Millisecond)
 	start := time.Now()
 	s.Require().NoError(rl.wait(context.Background())) // first: no wait
@@ -241,110 +215,14 @@ func (s *ddgSuite) TestRateLimiterEnforcesInterval() {
 	s.GreaterOrEqual(time.Since(start), 40*time.Millisecond)
 }
 
-// TestCheckRedirectE2E proves the redirect guard fires through the real
-// net/http client machinery: a server that redirects to a disallowed host
-// must cause client.Get to return an error containing "blocked redirect".
-func (s *ddgSuite) TestCheckRedirectE2E() {
-	// Stand up a test server that immediately redirects to a disallowed host.
-	disallowed := "http://disallowed.example/evil"
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		http.Redirect(w, req, disallowed, http.StatusFound)
-	}))
-	s.T().Cleanup(srv.Close)
-
-	src := New(5 * time.Second)
-	resp, err := src.client.Get(srv.URL) //nolint:noctx // test: context not needed here
-	if resp != nil {
-		_ = resp.Body.Close()
-	}
-	s.Require().Error(err, "redirect to disallowed host must return an error")
-	s.Contains(err.Error(), "blocked redirect")
-}
-
-// TestCheckRedirectGuards verifies the redirect guard allows Amazon and
-// DuckDuckGo hosts, blocks arbitrary hosts, and bounds redirect depth.
-func (s *ddgSuite) TestCheckRedirectGuards() {
+func (s *searchSuite) TestCheckRedirectBoundsDepth() {
 	src := New(time.Second)
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet,
+		"https://www.amazon.com/x/dp/B01", http.NoBody)
+	s.Require().NoError(err)
 
-	mustReq := func(rawURL string) *http.Request {
-		req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, rawURL, http.NoBody)
-		s.Require().NoError(err)
-
-		return req
-	}
-
-	s.Require().NoError(src.checkRedirect(mustReq("https://www.amazon.com/x/dp/B01"), nil))
-	s.Require().NoError(src.checkRedirect(mustReq("https://duckduckgo.com/l/?uddg=x"), nil))
-	s.Require().Error(src.checkRedirect(mustReq("https://evil.example/x"), nil))
-
+	// Within the limit: allowed. At the limit: stopped.
+	s.Require().NoError(src.checkRedirect(req, nil))
 	via := make([]*http.Request, maxRedirects)
-	s.Require().Error(src.checkRedirect(mustReq("https://www.amazon.com/x/dp/B01"), via))
-}
-
-// TestFallbackOnDirectBlock: direct server returns a CAPTCHA, DDG server returns
-// a result linking to a product page on the same server, and the product page
-// yields an og:image cover.
-func (s *ddgSuite) TestFallbackOnDirectBlock() {
-	captcha, err := os.ReadFile("testdata/captcha.html")
-	s.Require().NoError(err)
-	product, err := os.ReadFile("testdata/product.html")
-	s.Require().NoError(err)
-
-	direct := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write(captcha)
-	}))
-	s.T().Cleanup(direct.Close)
-
-	mux := http.NewServeMux()
-	var ddg *httptest.Server
-	mux.HandleFunc("/html/", func(w http.ResponseWriter, _ *http.Request) {
-		// Link straight to the product page on this same server (no uddg wrapper).
-		_, _ = w.Write([]byte(`<a class="result__a" href="` + ddg.URL + `/x/dp/B01ABCDEFG">hit</a>`))
-	})
-	mux.HandleFunc("/x/dp/", func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write(product)
-	})
-	ddg = httptest.NewServer(mux)
-	s.T().Cleanup(ddg.Close)
-
-	src := New(5 * time.Second)
-	src.baseURL = direct.URL
-	src.backoff = time.Millisecond
-	src.ddgURL = ddg.URL
-	src.limiter = newRateLimiter(0)
-	src.allowProductHost = func(string) bool { return true } // allow the 127.0.0.1 test host
-
-	got, err := src.SearchCovers(context.Background(), metasearch.Query{Title: "Dune"})
-	s.Require().NoError(err)
-	s.Require().Len(got, 1)
-	s.Equal(metasearch.SourceAmazon, got[0].Source)
-	// og:image is preferred and the _AC_SL1500_ modifier is stripped.
-	s.Equal("https://m.media-amazon.com/images/I/zzz.jpg", got[0].FullURL)
-}
-
-// TestProductImagePrecedence verifies the three-level precedence:
-// og:image > data-old-hires > src.
-func (s *ddgSuite) TestProductImagePrecedence() {
-	// (a) no og:image + landingImage with both data-old-hires and src → data-old-hires wins.
-	htmlA := `<!doctype html><html><body>
-<img id="landingImage" data-old-hires="https://example.com/hires.jpg" src="https://example.com/low.jpg">
-</body></html>`
-	s.Equal("https://example.com/hires.jpg", productImage(bytes.NewBufferString(htmlA)),
-		"data-old-hires should win when og:image absent")
-
-	// (b) no og:image + landingImage with only src → src wins.
-	htmlB := `<!doctype html><html><body>
-<img id="landingImage" src="https://example.com/low.jpg">
-</body></html>`
-	s.Equal("https://example.com/low.jpg", productImage(bytes.NewBufferString(htmlB)),
-		"src should be used when og:image and data-old-hires are absent")
-
-	// (c) og:image present → og:image wins even if landingImage exists.
-	htmlC := `<!doctype html><html><head>
-<meta property="og:image" content="https://example.com/og.jpg" />
-</head><body>
-<img id="landingImage" data-old-hires="https://example.com/hires.jpg" src="https://example.com/low.jpg">
-</body></html>`
-	s.Equal("https://example.com/og.jpg", productImage(bytes.NewBufferString(htmlC)),
-		"og:image should win over data-old-hires and src")
+	s.Require().Error(src.checkRedirect(req, via))
 }
