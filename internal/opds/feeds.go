@@ -213,7 +213,7 @@ func (h *Handler) bookEntry(b dbq.Book, rel entryRelations) entry {
 		Updated: time.Unix(b.AddedAt, 0).UTC().Format(time.RFC3339),
 		Links: []link{
 			{Rel: relImage, Href: opdsPrefix + "/books/" + id + "/cover?v=" + cv, Type: "image/jpeg"},
-			{Rel: relThumbnail, Href: opdsPrefix + "/books/" + id + "/cover?v=" + cv, Type: "image/jpeg"},
+			{Rel: relThumbnail, Href: opdsPrefix + "/books/" + id + "/cover/thumbnail?v=" + cv, Type: "image/jpeg"},
 		},
 		Language: b.Language,
 	}

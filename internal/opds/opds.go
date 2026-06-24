@@ -27,6 +27,7 @@ const opdsPrefix = "/opds"
 // of the ?v= cache buster. *covers.Store satisfies it.
 type CoverServer interface {
 	ServeHTTP(w http.ResponseWriter, r *http.Request, bookID int64)
+	ServeThumbnail(w http.ResponseWriter, r *http.Request, bookID int64)
 	Version(bookID int64) string
 }
 
@@ -69,6 +70,7 @@ func New(log *slog.Logger, database *sql.DB, covers CoverServer, authn Authentic
 func (h *Handler) Register(r chi.Router) {
 	// Public: covers (reader image loaders don't forward Basic Auth).
 	r.Get("/books/{id}/cover", h.serveCover)
+	r.Get("/books/{id}/cover/thumbnail", h.serveThumbnail)
 
 	// Protected: feeds and downloads.
 	r.Group(func(pr chi.Router) {

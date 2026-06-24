@@ -62,6 +62,17 @@ func (h *Handler) serveCover(w http.ResponseWriter, r *http.Request) {
 	h.covers.ServeHTTP(w, r, id)
 }
 
+// serveThumbnail handles GET /opds/books/{id}/cover/thumbnail (public — no Basic
+// Auth). Returns an aspect-preserving thumbnail of the cover image.
+func (h *Handler) serveThumbnail(w http.ResponseWriter, r *http.Request) {
+	id, ok := bookID(r)
+	if !ok {
+		http.Error(w, "Invalid Book ID", http.StatusBadRequest)
+		return
+	}
+	h.covers.ServeThumbnail(w, r, id)
+}
+
 func bookID(r *http.Request) (int64, bool) {
 	return parseID(chi.URLParam(r, "id"))
 }

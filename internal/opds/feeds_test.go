@@ -306,6 +306,20 @@ func (s *feedsSuite) TestPageParamClampsHugeValues() {
 	s.LessOrEqual(pageParam(r), int64(maxPage)) // shares the REST cap
 }
 
+func (s *feedsSuite) TestBookEntryThumbnailUsesThumbnailRoute() {
+	s.setCreds()
+	src := s.seedSource("folder", "/lib")
+	s.seedBook(src, bookSeed{Title: "Foundation", Format: "epub"})
+
+	w := s.getAuth("/search", testUser, testPass)
+	s.Require().Equal(http.StatusOK, w.Code)
+
+	body := w.Body.String()
+	s.Contains(body, `/cover/thumbnail?v=`, "thumbnail rel points at the thumbnail route")
+	s.Regexp(`rel="http://opds-spec.org/image/thumbnail"[^>]*href="[^"]*/cover/thumbnail\?v=`, body)
+	s.Regexp(`rel="http://opds-spec.org/image"[^>]*href="[^"]*/cover\?v=`, body)
+}
+
 func linkType(links []link, rel string) string {
 	for _, l := range links {
 		if l.Rel == rel {
