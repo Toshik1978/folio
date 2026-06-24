@@ -17,6 +17,7 @@ All `/api/*` routes are protected externally by Cloudflare Access (browser SSO/M
 | `GET` | `/api/books/{id}` | Single book detail; triggers lazy metadata backfill + online enrichment on first view (a per-book in-flight claim makes concurrent first views run them once — the losing view serves the current row) | JSON book object |
 | `GET` | `/api/books/{id}/files/{fileID}` | Download one format of a book (a book may have several; see `formats[]`) | Binary stream with correct `Content-Type` |
 | `GET` | `/api/books/{id}/cover` | Fetch cached cover image | Image binary (`image/jpeg`; covers are normalized to JPEG on import) |
+| `GET` | `/api/books/{id}/cover/thumbnail` | Aspect-preserving cover thumbnail (≤400px longest side); falls back to the full cover (no-cache) until generated | Image binary (`image/jpeg`) |
 | `GET` | `/api/books/{id}/cover/search` | Cover search: multi-source cover candidates for `?q=<query>` | JSON array of `CoverCandidate` objects |
 | `GET` | `/api/books/{id}/match` | Fix Match: Google Books candidates for `?q=<query>` | JSON array of candidates |
 | `POST` | `/api/books/{id}/match` | Apply a chosen volume (`{"volume_id":"…"}`), overwriting the book's metadata | JSON updated book object |
@@ -171,7 +172,10 @@ bar's Format/Language value-picker facets are populated separately from
 | `limit` | int | Results per page |
 
 The book object includes a nullable `rating` (1–5 stars), populated from Calibre
-ratings (see [DATABASE.md](./DATABASE.md#ingestion-sources)).
+ratings (see [DATABASE.md](./DATABASE.md#ingestion-sources)). It also includes:
+
+- `cover_url` (string|null) — the cached cover image URL, versioned `?v=<content_hash>-<cover_version>` (e.g. `/api/books/42/cover?v=abc123-1717200000`).
+- `thumbnail_url` (string|null) — the downscaled cover URL, versioned `?v=<content_hash>-<cover_version>-<thumb_token>` (e.g. `/api/books/42/cover/thumbnail?v=abc123-1717200000-t400q85`). The token encodes the rendering spec (max dimension + JPEG quality) and changes when those constants change, so clients automatically re-fetch when the thumbnail generation parameters are updated.
 
 ### Alphabet browse (`/api/<entity>` + `/api/<entity>/letters`)
 
@@ -224,6 +228,7 @@ unlike the web UI, which has a per-library selector in its header.
 | `GET` | `/opds/search` | Search results OPDS feed (`?q=` / `?author=` / `?series=` / `?tag=`; ordered by BM25 relevance for `q`) | `application/atom+xml;profile=opds-catalog` |
 | `GET` | `/opds/books/{id}/files/{fileID}` | File download for readers — one acquisition link per format (Protected) | Binary stream |
 | `GET` | `/opds/books/{id}/cover` | Book cover image (Public / Unauthenticated) | `image/jpeg` |
+| `GET` | `/opds/books/{id}/cover/thumbnail` | Book cover thumbnail (Public / Unauthenticated) | `image/jpeg` |
 
 ### OPDS Auth
 
@@ -266,6 +271,10 @@ extensions this code models explicitly — OPDS link relations
 (`http://opds-spec.org/acquisition`, `/image`, `/image/thumbnail`), the catalog
 media-type profiles (`…;profile=opds-catalog;kind=navigation|acquisition`), the
 OPDS namespace, and Dublin Core terms (`dc:publisher`/`dc:issued`/`dc:language`).
+Acquisition-entry image links: `rel="http://opds-spec.org/image"` points at the
+full cover (`/opds/books/{id}/cover`); `rel="http://opds-spec.org/image/thumbnail"`
+points at the dedicated thumbnail route (`/opds/books/{id}/cover/thumbnail`) — a
+smaller, aspect-preserving image (≤400px longest side, JPEG quality 85).
 Generic feed libraries (`gorilla/feeds`, `golang.org/x/tools/blog/atom`) model
 plain Atom/RSS only, so adopting one would add a dependency yet still require
 custom structs. The feed is hardened with golden-file tests (`feedsSuite`)
@@ -329,10 +338,11 @@ with format `fb2` (the dispatcher normalizes the wrapper — see
 To optimize performance and security when loading cover images for the Web UI or OPDS feeds, the following design rules apply:
 
 1. **JPEG Normalization**: Covers are transcoded to JPEG on save (`covers/store.go:Save` → `convertToJPEG`; already-JPEG bytes pass through untouched). Every cached cover is therefore a JPEG, so serving and the OPDS feed can declare `image/jpeg` without sniffing each file's bytes. Serving raw bytes as a fixed image type also keeps a mislabeled "cover" from ever being rendered as HTML.
-2. **Cached Reads**: Requests for `/api/books/{id}/cover` or `/opds/books/{id}/cover` serve the cached files directly from the sharded structure inside the `/data/covers/` directory (`/data/covers/0/42.jpeg`).
+2. **Cached Reads**: Requests for `/api/books/{id}/cover`, `/opds/books/{id}/cover`, and their `/cover/thumbnail` variants serve cached files directly from the sharded structure inside the `/data/covers/` directory (`/data/covers/0/42.jpeg`, `/data/covers/0/42_thumb.jpeg`).
 3. **Directory Traversal Prevention**: The `{id}` parameter is strictly validated before any filesystem interaction:
    - The string `{id}` is converted to a positive integer in Go. If conversion fails, the backend immediately returns a `400 Bad Request` or `404 Not Found`.
    - File lookups are sharded and constrained within `/data/covers/` using the integer `{id}` (e.g. `/data/covers/0/42.jpeg`), entirely eliminating path traversal vectors (e.g., `../../etc/passwd`).
-4. **Lazy Extraction**: On a cache miss, `covers/store.go:ServeHTTP` attempts a one-time extraction of the cover directly from the book's source file (via the ingest `CoverExtractor`), normalizing and caching the result for subsequent requests. A book with no extractable cover caches the placeholder instead, so a cover-dominant grid does not re-parse the source file on every render.
+4. **Lazy Extraction**: On a cache miss, `covers/store.go:ServeCover` attempts a one-time extraction of the cover directly from the book's source file (via the ingest `CoverExtractor`), normalizing and caching the result for subsequent requests. A book with no extractable cover caches the placeholder instead, so a cover-dominant grid does not re-parse the source file on every render. `covers/store.go:ServeThumbnail` self-heals a missing thumbnail on serve (regenerates from the cached cover) and falls back to the full cover with `no-cache` until a thumbnail is available.
 5. **Graceful Fallback**: If no cached cover exists and no extractor can produce one, the server responds with a placeholder image embedded in the Go binary (`internal/covers/`), rather than throwing an error.
-6. **Cache policy (`?v=` buster)**: cover URLs carry `?v=<content_hash>-<cover file mtime>` (`covers.Store.Version`), so the URL changes when the cover *selection* changes (metadata hash) **or** when the cover *bytes* change without a metadata change (a placeholder later upgraded to a real cover, a better edition's cover saved by a later sync). Real covers are served `Cache-Control: public, max-age=31536000, immutable`; placeholder responses — including the cached placeholder file from lazy extraction's negative cache, detected by byte comparison — are served `no-cache` so clients revalidate and pick up a real cover that appears later.
+6. **Thumbnail generation**: Thumbnails are generated eagerly in the cover write path (`writeFile`) — at ingest, INPX warm, and lazy extraction — so the thumbnail is ready immediately after the cover is first stored. Thumbnails preserve aspect ratio, never upscale, longest side ≤400px, JPEG quality 85.
+7. **Cache policy (`?v=` buster)**: cover URLs carry `?v=<content_hash>-<cover file mtime>` (`covers.Store.Version`), so the URL changes when the cover *selection* changes (metadata hash) **or** when the cover *bytes* change without a metadata change (a placeholder later upgraded to a real cover, a better edition's cover saved by a later sync). Thumbnail URLs add a third component: `?v=<content_hash>-<cover_version>-<thumb_token>` (e.g. `t400q85`), where the token encodes the rendering spec and changes when thumbnail generation parameters are updated. Real covers and thumbnails are served `Cache-Control: public, max-age=31536000, immutable`; placeholder and fallback responses are served `no-cache` so clients revalidate and pick up a real cover that appears later.

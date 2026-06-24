@@ -93,6 +93,7 @@ The OPDS sub-router adds HTTP Basic Auth on its protected group (see
 | `GET` | `/api/books/{id}` | Single book detail (lazy metadata backfill + online enrichment) |
 | `GET` | `/api/books/{id}/files/{fileID}` | Streamed file download (one format) |
 | `GET` | `/api/books/{id}/cover` | Cached cover image (placeholder fallback) |
+| `GET` | `/api/books/{id}/cover/thumbnail` | Aspect-preserving cover thumbnail (cover fallback + self-heal) |
 | `GET` | `/api/books/{id}/cover/search` | Cover search: multi-source cover candidates (`?q=`) |
 | `GET`/`POST` | `/api/books/{id}/match` | Fix Match: Google Books candidates · apply a chosen volume |
 | `PUT` | `/api/books/{id}` | Update book fields (title, authors, annotation, etc.) |
@@ -120,6 +121,7 @@ The OPDS sub-router adds HTTP Basic Auth on its protected group (see
 | `GET` | `/opds/search` | Search results OPDS feed (Basic Auth) |
 | `GET` | `/opds/books/{id}/files/{fileID}` | OPDS file download (Basic Auth) |
 | `GET` | `/opds/books/{id}/cover` | Book cover image (unauthenticated) |
+| `GET` | `/opds/books/{id}/cover/thumbnail` | Book cover thumbnail (unauthenticated) |
 | `GET` | `/*` | SPA: serve embedded static asset or fall back to `index.html` |
 
 Full request/response shapes for these endpoints live in
@@ -281,6 +283,9 @@ internal/
 │                          #   sync engine, and ingest without import cycles.
 ├── htmltext/              # HTML annotation → plain text / entity tables    [leaf]
 ├── covers/                # Cover store + HTTP serving + placeholder       [leaf]
+│                          #   The cover Store also generates and serves aspect-preserving
+│                          #   thumbnails (ServeThumbnail, generated eagerly in writeFile
+│                          #   alongside the cover); the cover-serving method is ServeCover.
 └── events/                # Sync-event broker (SSE fan-out + coalescing)   [leaf]
 ```
 

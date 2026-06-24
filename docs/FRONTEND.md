@@ -220,7 +220,9 @@ the theme picker, and a settings gear.
 ### Pages
 
 - **Books grid (`/`)** — responsive cover-dominant card grid (`BookCard`,
-  ~150px min, 2:3 cover, title + author, whole card links to `/books/:id`) with
+  ~150px min, 2:3 cover, title + author, whole card links to `/books/:id`);
+  `BookCard` loads the server-provided `thumbnail_url` (a downscaled cover, ≤400px
+  longest side) rather than the full cover, reducing grid bandwidth. The grid uses
   infinite scroll (`useInfiniteScroll`, loads `?page=N`, spinner at the bottom,
   no pagination controls). Active filters are shown as dismissible chips inside
   the search bar (no separate filter bar). The grid also **auto-refreshes when a
