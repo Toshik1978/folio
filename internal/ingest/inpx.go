@@ -75,7 +75,7 @@ func (p *INPXParser) Sync(
 			if !strings.EqualFold(filepath.Ext(f.Name), ".inp") {
 				continue
 			}
-			if err := ingestINP(ctx, rc, f, library.ID, libDir, p.log); err != nil {
+			if err := ingestINP(ctx, p.log, rc, f, library.ID, libDir); err != nil {
 				return err
 			}
 		}
@@ -90,8 +90,8 @@ func (p *INPXParser) Sync(
 // index can reference files that were never copied, and folio must not surface a
 // book it cannot open.
 func ingestINP(
-	ctx context.Context, recon *reconciler, f *zip.File,
-	libraryID int64, libDir string, log *slog.Logger,
+	ctx context.Context, log *slog.Logger, recon *reconciler, f *zip.File,
+	libraryID int64, libDir string,
 ) error {
 	archive := strings.TrimSuffix(filepath.Base(f.Name), filepath.Ext(f.Name)) + ".zip"
 
