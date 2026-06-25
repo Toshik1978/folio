@@ -89,13 +89,16 @@ func (s *backfillSuite) TestFillDoesNotClobberExistingAnnotation() {
 	ext := &fakeFileExtractor{meta: ebook.Metadata{Annotation: "from-file"}, ok: true}
 	src := s.insertLibrary("folder", "/lib")
 	id := s.seedBook(src.ID, "Annotated", "fb2")
-	// Give it an annotation up front.
-	s.Require().NoError(dbq.New(s.db).UpdateBookAnnotation(context.Background(), dbq.UpdateBookAnnotationParams{
-		Annotation: sqlValid("keep me"), ID: id,
-	}))
+	// Seed the annotation WITHOUT touching metadata_checked so Fill proceeds past
+	// the early-return gate and reaches the no-clobber guard.
+	_, err := s.db.ExecContext(context.Background(), "UPDATE books SET annotation = ? WHERE id = ?", "keep me", id)
+	s.Require().NoError(err)
 
 	bf := NewLocalBackfiller(s.log, s.db, db.NewWriteGuard(), ext)
 	s.Require().NoError(bf.Fill(context.Background(), id))
+
+	// The extractor must have been called — proving we passed the metadata_checked gate.
+	s.Equal(1, ext.called, "extractor must run to reach the no-clobber guard")
 
 	stored, err := dbq.New(s.db).GetBook(context.Background(), id)
 	s.Require().NoError(err)

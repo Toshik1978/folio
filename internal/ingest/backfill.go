@@ -38,7 +38,6 @@ type FileExtractor interface {
 // not only after a web-UI view. Best-effort throughout.
 type LocalBackfiller struct {
 	log       *slog.Logger
-	db        *sql.DB
 	q         *dbq.Queries
 	guard     *db.WriteGuard
 	extractor FileExtractor
@@ -51,7 +50,6 @@ func NewLocalBackfiller(
 ) *LocalBackfiller {
 	return &LocalBackfiller{
 		log:       log,
-		db:        database,
 		q:         dbq.New(database),
 		guard:     guard,
 		extractor: extractor,
@@ -62,6 +60,7 @@ func NewLocalBackfiller(
 // (metadata_checked gated). Concurrent calls for the same book id collapse via
 // single-flight, so REST and the warmer never double-parse the same file.
 func (b *LocalBackfiller) Fill(ctx context.Context, bookID int64) error {
+	// ctx is captured from the caller; safe because fill always returns nil (never propagates ctx errors).
 	_, err, _ := b.sf.Do(strconv.FormatInt(bookID, 10), func() (any, error) {
 		return nil, b.fill(ctx, bookID)
 	})
