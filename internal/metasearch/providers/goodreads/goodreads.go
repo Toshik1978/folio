@@ -115,21 +115,21 @@ func (s *Source) fetchOnce(ctx context.Context, q metasearch.Query) ([]metasearc
 		return nil, fmt.Errorf("goodreads status %d: %w", resp.StatusCode, metasearch.ErrBlocked)
 	}
 
-	return parseCovers(io.LimitReader(resp.Body, maxJSONBytes), q.Title)
+	return parseCovers(io.LimitReader(resp.Body, maxJSONBytes))
 }
 
 // parseCovers decodes the autocomplete JSON array into cover candidates,
-// upgrading each small thumbnail to its full-resolution URL. Box sets and other
-// non-single-title results are filtered out by title via the shared
-// metasearch relevance rules.
-func parseCovers(r io.Reader, queryTitle string) ([]metasearch.CoverCandidate, error) {
+// upgrading each small thumbnail to its full-resolution URL. Items with an
+// empty ImageURL are skipped; relevance filtering (e.g. box-set rejection)
+// is the aggregator's responsibility.
+func parseCovers(r io.Reader) ([]metasearch.CoverCandidate, error) {
 	var items []autocompleteItem
 	if err := json.NewDecoder(r).Decode(&items); err != nil {
 		return nil, fmt.Errorf("decode json: %w", err)
 	}
 	var out []metasearch.CoverCandidate
 	for _, it := range items {
-		if it.ImageURL == "" || !metasearch.TitleAcceptable(queryTitle, it.title()) {
+		if it.ImageURL == "" {
 			continue
 		}
 		out = append(out, metasearch.CoverCandidate{
