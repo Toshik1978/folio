@@ -422,6 +422,16 @@ func (s *coversTestSuite) TestSaveIsAtomicUnderConcurrentReads() {
 }
 
 // M1: re-saving identical bytes must not rewrite the file (mtime = ?v= buster).
+func (s *coversTestSuite) TestHasLocalCoverConservativeOnContextError() {
+	ext := &fakeExtractor{err: context.DeadlineExceeded}
+	st, err := NewStore(s.dataDir, ext)
+	s.Require().NoError(err)
+
+	// No cover on disk; extraction times out → we must NOT report "no local cover"
+	// (which would let an online thumbnail overwrite a real, just-uncomputed cover).
+	s.True(st.HasLocalCover(context.Background(), 7))
+}
+
 func (s *coversTestSuite) TestSaveSkipsIdenticalBytes() {
 	store, err := NewStore(s.dataDir, nil)
 	s.Require().NoError(err)

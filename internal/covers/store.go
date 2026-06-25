@@ -3,6 +3,7 @@ package covers
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"image"
 	"net/http"
@@ -103,6 +104,12 @@ func (s *Store) HasLocalCover(ctx context.Context, bookID int64) bool {
 		return false
 	}
 	data, ok, err := s.extractor.Cover(ctx, bookID)
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		// We couldn't determine within the budget. Assume a local cover may exist so
+		// an online thumbnail never overwrites a real cover we simply didn't finish
+		// extracting; the next view retries.
+		return true
+	}
 
 	return err == nil && ok && len(data) > 0
 }
