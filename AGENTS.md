@@ -58,6 +58,13 @@ These rules apply to every task. Non-negotiable.
 
 1. **Golang Best Practices**: Follow idiomatic Go — standard library first, proper interface declarations, correct package layout, canonical error handling. Comply with community conventions and official Effective Go guidelines.
 2. **Third-Party Dependencies Require Approval**: Before introducing any external dependency, ask for explicit approval. State the package name, what it solves, and why the standard library is insufficient. Do not add the dependency until approved.
+
+   **Approved direct dependencies (recorded):**
+   * `golang.org/x/net/html` — HTML tokenizer/parser for the Amazon product-page
+     cover scraper (`internal/metasearch/providers/amazon`). The standard library
+     has no HTML parser; this is the canonical x/ package and was already in the
+     module graph as an indirect dependency. Approved 2026-06-25.
+
 3. **Testing with testify suites**: All Go tests use `github.com/stretchr/testify`, organised as suites. Three non-negotiable rules:
    1. **One entry point per package** — exactly one top-level `func Test<Package>(t *testing.T)`. No other top-level `Test*` function may exist in the package.
    2. **The entry point only wires suites** — it consists solely of `suite.Run(t, new(...))` calls, one per `suite.Suite`, and contains no test logic itself.
