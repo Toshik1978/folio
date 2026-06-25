@@ -18,6 +18,7 @@ import (
 	"github.com/Toshik1978/folio/internal/db"
 	"github.com/Toshik1978/folio/internal/db/dbq"
 	"github.com/Toshik1978/folio/internal/ebook"
+	"github.com/Toshik1978/folio/internal/ingest"
 	"github.com/Toshik1978/folio/internal/metasearch"
 )
 
@@ -32,19 +33,6 @@ type CoverServer interface {
 	ServeThumbnail(w http.ResponseWriter, r *http.Request, bookID int64)
 	Version(bookID int64) string
 	ThumbToken() string
-}
-
-// MetadataExtractor lazily recovers metadata that wasn't captured at index time
-// (notably INPX annotations and identifiers, which live inside the book file
-// rather than the index). It is optional: a nil extractor simply means no
-// backfill. The concrete implementation lives in the ingest package (which may
-// parse ebooks).
-type MetadataExtractor interface {
-	// Backfill returns the metadata recovered from the book's source file, with
-	// identifiers already cleaned. ok is false when nothing parseable was found
-	// (missing book, unsupported/skipped format). The caller persists the fields
-	// it needs.
-	Backfill(ctx context.Context, bookID int64) (ebook.Metadata, bool, error)
 }
 
 // MetadataEnricher recovers metadata from online sources for books the local
@@ -81,10 +69,10 @@ type BooksHandler struct {
 	q           *dbq.Queries
 	writeGuard  *db.WriteGuard // process-wide single-writer guard, shared with the sync engine
 	covers      CoverServer
-	extractor   MetadataExtractor // optional; nil disables lazy backfill
-	enricher    MetadataEnricher  // optional; nil disables online enrichment
-	coverSaver  CoverSaver        // optional; caches online-fetched covers
-	coverSearch CoverSearcher     // optional; nil disables online cover search
+	backfiller  *ingest.LocalBackfiller // optional; nil disables lazy backfill
+	enricher    MetadataEnricher        // optional; nil disables online enrichment
+	coverSaver  CoverSaver              // optional; caches online-fetched covers
+	coverSearch CoverSearcher           // optional; nil disables online cover search
 	// annotationPolicy sanitizes stored annotation HTML before it is served, so the
 	// frontend can render it via v-html without an XSS risk. UGCPolicy permits
 	// common formatting tags (p, em, strong, lists, links, …) and strips scripts,
@@ -122,14 +110,14 @@ type BooksHandler struct {
 	editTxHook func() error
 }
 
-// NewBooks builds the books handler. extractor, enricher, coverSaver, and coverSearch may be nil.
+// NewBooks builds the books handler. backfiller, enricher, coverSaver, and coverSearch may be nil.
 // writeGuard is the process-wide single-writer guard shared with the sync engine.
 func NewBooks(
 	log *slog.Logger,
 	database *sql.DB,
 	writeGuard *db.WriteGuard,
 	covers CoverServer,
-	extractor MetadataExtractor,
+	backfiller *ingest.LocalBackfiller,
 	enricher MetadataEnricher,
 	coverSaver CoverSaver,
 	coverSearch CoverSearcher,
@@ -140,7 +128,7 @@ func NewBooks(
 		q:                dbq.New(database),
 		writeGuard:       writeGuard,
 		covers:           covers,
-		extractor:        extractor,
+		backfiller:       backfiller,
 		enricher:         enricher,
 		coverSaver:       coverSaver,
 		coverSearch:      coverSearch,

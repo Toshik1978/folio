@@ -3,6 +3,7 @@ package api
 import (
 	"archive/zip"
 	"bytes"
+	"context"
 	"encoding/json"
 	"image"
 	"image/jpeg"
@@ -14,10 +15,26 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/Toshik1978/folio/internal/ebook"
+	"github.com/Toshik1978/folio/internal/ingest"
 )
 
 type booksSuite struct {
 	baseSuite
+}
+
+// fakeExtractor is an ingest.FileExtractor returning fixed backfill metadata.
+type fakeExtractor struct {
+	annotation  string
+	identifiers []ebook.Identifier
+	called      int
+}
+
+func (f *fakeExtractor) Backfill(_ context.Context, _ int64) (ebook.Metadata, bool, error) {
+	f.called++
+	if f.annotation == "" && len(f.identifiers) == 0 {
+		return ebook.Metadata{}, false, nil
+	}
+	return ebook.Metadata{Annotation: f.annotation, Identifiers: f.identifiers}, true, nil
 }
 
 func (s *booksSuite) TestListBooksPaginated() {
@@ -209,7 +226,8 @@ func (s *booksSuite) TestBooksFilterByPublisher() {
 
 func (s *booksSuite) TestGetBookBackfillsAnnotation() {
 	ext := &fakeExtractor{annotation: "Recovered annotation"}
-	bh := NewBooks(slog.New(slog.DiscardHandler), s.db, s.guard, s.covers, ext, nil, s.covers, nil)
+	bf := ingest.NewLocalBackfiller(slog.New(slog.DiscardHandler), s.db, s.guard, ext)
+	bh := NewBooks(slog.New(slog.DiscardHandler), s.db, s.guard, s.covers, bf, nil, s.covers, nil)
 	r := chi.NewRouter()
 	bh.Register(r)
 	s.router = r
@@ -238,7 +256,8 @@ func (s *booksSuite) TestGetBookBackfillsAnnotation() {
 // re-parsed afterwards (the slow-detail-view bug).
 func (s *booksSuite) TestGetBookCachesMissingAnnotation() {
 	ext := &fakeExtractor{} // empty annotation → returns (ok=false)
-	bh := NewBooks(slog.New(slog.DiscardHandler), s.db, s.guard, s.covers, ext, nil, s.covers, nil)
+	bf := ingest.NewLocalBackfiller(slog.New(slog.DiscardHandler), s.db, s.guard, ext)
+	bh := NewBooks(slog.New(slog.DiscardHandler), s.db, s.guard, s.covers, bf, nil, s.covers, nil)
 	r := chi.NewRouter()
 	bh.Register(r)
 	s.router = r
@@ -312,7 +331,8 @@ func (s *booksSuite) TestGetBookBackfillsIdentifiers() {
 		annotation:  "Recovered annotation",
 		identifiers: []ebook.Identifier{{Type: "isbn", Value: "9780441013593"}},
 	}
-	bh := NewBooks(slog.New(slog.DiscardHandler), s.db, s.guard, s.covers, ext, nil, s.covers, nil)
+	bf := ingest.NewLocalBackfiller(slog.New(slog.DiscardHandler), s.db, s.guard, ext)
+	bh := NewBooks(slog.New(slog.DiscardHandler), s.db, s.guard, s.covers, bf, nil, s.covers, nil)
 	r := chi.NewRouter()
 	bh.Register(r)
 	s.router = r
@@ -340,7 +360,8 @@ func (s *booksSuite) TestBackfillTriggersOnMissingIdentifiers() {
 		annotation:  "from-file",
 		identifiers: []ebook.Identifier{{Type: "isbn", Value: "9781234567897"}},
 	}
-	bh := NewBooks(slog.New(slog.DiscardHandler), s.db, s.guard, s.covers, ext, nil, s.covers, nil)
+	bf := ingest.NewLocalBackfiller(slog.New(slog.DiscardHandler), s.db, s.guard, ext)
+	bh := NewBooks(slog.New(slog.DiscardHandler), s.db, s.guard, s.covers, bf, nil, s.covers, nil)
 	r := chi.NewRouter()
 	bh.Register(r)
 	s.router = r

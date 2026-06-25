@@ -12,8 +12,6 @@ import (
 	"github.com/Toshik1978/folio/internal/bookfile"
 	"github.com/Toshik1978/folio/internal/db"
 	"github.com/Toshik1978/folio/internal/db/dbq"
-	"github.com/Toshik1978/folio/internal/ebook"
-	"github.com/Toshik1978/folio/internal/htmltext"
 )
 
 // enrichTimeout bounds the whole online tier (lookup + cover fetch) on the
@@ -186,70 +184,18 @@ func (h *BooksHandler) releaseLazy(bookID int64) {
 	delete(h.lazyInflight, bookID)
 }
 
-// backfillMetadata recovers metadata from a book's source file on first view —
-// annotation and identifiers, which an INPX index carries for neither — persists
-// what it finds, and marks the book checked so it is parsed at most once. The
-// extractor skips PDFs, so a PDF-only book is marked without any parse.
-// Best-effort: failures are logged, not fatal. A transient extractor error leaves
-// the book unchecked so a later view retries; sync fills metadata directly on
-// re-parse and never consults the checked flag.
+// backfillMetadata recovers offline metadata (annotation + identifiers) from a
+// book's source file on first view via the shared LocalBackfiller, then reloads
+// the row so the response — and the online tier's needsEnrichment re-check —
+// reflects whatever was just persisted. Best-effort: a nil backfiller or a busy
+// guard simply leaves the book unchanged for a later view.
 func (h *BooksHandler) backfillMetadata(ctx context.Context, book *dbq.Book) {
-	if h.extractor == nil {
+	if h.backfiller == nil {
 		return
 	}
-	meta, ok, err := h.extractor.Backfill(ctx, book.ID)
-	if err != nil {
-		h.log.Warn("metadata backfill", slog.Int64("book", book.ID), slog.Any("error", err))
-		return // transient → leave unchecked, retry on next view
-	}
-
-	// The extractor parse above is file I/O and runs outside the guard; take the
-	// single-writer guard only around the DB persists below. Best-effort: if an
-	// indexing run holds the guard, skip rather than stall this read — the book
-	// stays unchecked and a later view retries.
-	release, acquired := h.tryAcquireWrite(ctx, h.writeGuard)
-	if !acquired {
-		return
-	}
-	defer release()
-
-	if ok {
-		if !book.Annotation.Valid {
-			h.persistBackfilledAnnotation(ctx, book, meta.Annotation)
-		}
-		h.persistBackfilledIdentifiers(ctx, book.ID, meta.Identifiers)
-	}
-	if err := h.q.MarkMetadataChecked(ctx, book.ID); err != nil {
-		h.log.Warn("mark metadata checked", slog.Int64("book", book.ID), slog.Any("error", err))
-	}
-}
-
-// persistBackfilledAnnotation stores a recovered annotation on the book row and
-// FTS index. A blank annotation is a no-op.
-func (h *BooksHandler) persistBackfilledAnnotation(ctx context.Context, book *dbq.Book, annotation string) {
-	if strings.TrimSpace(annotation) == "" {
-		return
-	}
-	book.Annotation = sql.NullString{String: annotation, Valid: true}
-	if err := h.q.UpdateBookAnnotation(ctx, dbq.UpdateBookAnnotationParams{
-		Annotation: book.Annotation, ID: book.ID,
-	}); err != nil {
-		h.log.Warn("persist annotation", slog.Int64("book", book.ID), slog.Any("error", err))
-		return
-	}
-	if err := h.q.UpdateBookFTSAnnotation(ctx, dbq.UpdateBookFTSAnnotationParams{
-		Annotation: htmltext.StripMarkup(annotation), BookID: itoa(book.ID),
-	}); err != nil {
-		h.log.Warn("persist annotation fts", slog.Int64("book", book.ID), slog.Any("error", err))
-	}
-}
-
-// persistBackfilledIdentifiers upserts the recovered identifiers (already cleaned
-// by the extractor) via the shared, single-sourced identifier-write path. A
-// failure is logged, not fatal — the backfill is best-effort.
-func (h *BooksHandler) persistBackfilledIdentifiers(ctx context.Context, bookID int64, ids []ebook.Identifier) {
-	if err := persistIdentifiers(ctx, h.q, bookID, ids, false); err != nil {
-		h.log.Warn("persist identifier", slog.Int64("book", bookID), slog.Any("error", err))
+	_ = h.backfiller.Fill(ctx, book.ID)
+	if reloaded, err := h.q.GetBook(ctx, book.ID); err == nil {
+		*book = reloaded
 	}
 }
 

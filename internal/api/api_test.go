@@ -72,21 +72,6 @@ func (f *fakeSync) RequestPurge(id int64) {
 	f.purged = append(f.purged, id)
 }
 
-// fakeExtractor is an api.MetadataExtractor returning fixed backfill metadata.
-type fakeExtractor struct {
-	annotation  string
-	identifiers []ebook.Identifier
-	called      int
-}
-
-func (f *fakeExtractor) Backfill(context.Context, int64) (ebook.Metadata, bool, error) {
-	f.called++
-	if f.annotation == "" && len(f.identifiers) == 0 {
-		return ebook.Metadata{}, false, nil
-	}
-	return ebook.Metadata{Annotation: f.annotation, Identifiers: f.identifiers}, true, nil
-}
-
 // fakeEnricher is an api.MetadataEnricher returning fixed online metadata.
 type fakeEnricher struct {
 	meta       ebook.Metadata
