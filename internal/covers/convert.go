@@ -21,6 +21,20 @@ import (
 // above any real book cover yet bounds the worst-case allocation.
 const maxCoverPixels = 40_000_000
 
+// guardPixelBudget rejects an image whose declared dimensions exceed maxCoverPixels,
+// reading only the header (no pixel allocation). A header it cannot read is allowed
+// through — the subsequent image.Decode returns the real error. Shared by the cover
+// transcode and the thumbnail decode so the cap is defined once.
+func guardPixelBudget(data []byte) error {
+	cfg, _, err := image.DecodeConfig(bytes.NewReader(data))
+	if err == nil && int64(cfg.Width)*int64(cfg.Height) > maxCoverPixels {
+		return fmt.Errorf("image dimensions %dx%d exceed %d pixel limit",
+			cfg.Width, cfg.Height, maxCoverPixels)
+	}
+
+	return nil
+}
+
 // convertToJPEG decodes an image and returns it as JPEG bytes.
 func convertToJPEG(inputData []byte) ([]byte, error) {
 	out, _, err := convertToJPEGImage(inputData)
@@ -37,11 +51,11 @@ func convertToJPEGImage(inputData []byte) (jpegBytes []byte, decoded image.Image
 		return nil, nil, errors.New("input data is empty")
 	}
 
-	cfg, formatName, cfgErr := image.DecodeConfig(bytes.NewReader(inputData))
-	if cfgErr == nil && int64(cfg.Width)*int64(cfg.Height) > maxCoverPixels {
-		return nil, nil, fmt.Errorf("image dimensions %dx%d exceed %d pixel limit",
-			cfg.Width, cfg.Height, maxCoverPixels)
+	if err := guardPixelBudget(inputData); err != nil {
+		return nil, nil, err
 	}
+	cfg, formatName, cfgErr := image.DecodeConfig(bytes.NewReader(inputData))
+	_ = cfg // dimensions already validated by guardPixelBudget
 	if cfgErr == nil && formatName == "jpeg" {
 		return inputData, nil, nil
 	}

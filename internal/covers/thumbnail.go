@@ -22,14 +22,8 @@ const (
 // makeThumbnail decodes a JPEG cover (guarding against a decompression bomb from
 // the header) and returns an aspect-preserving JPEG via resizeToThumb.
 func makeThumbnail(jpegData []byte) ([]byte, error) {
-	// Reject a decompression bomb from the header alone, before image.Decode
-	// allocates width×height×4 bytes. convertToJPEG passes already-JPEG covers
-	// through without a full decode to avoid exactly this allocation on low-spec
-	// hosts (NAS, Raspberry Pi); the thumbnail decode must re-establish the cap.
-	if cfg, _, err := image.DecodeConfig(bytes.NewReader(jpegData)); err == nil &&
-		int64(cfg.Width)*int64(cfg.Height) > maxCoverPixels {
-		return nil, fmt.Errorf("cover dimensions %dx%d exceed %d pixel limit",
-			cfg.Width, cfg.Height, maxCoverPixels)
+	if err := guardPixelBudget(jpegData); err != nil {
+		return nil, err
 	}
 	img, _, err := image.Decode(bytes.NewReader(jpegData))
 	if err != nil {
