@@ -27,6 +27,22 @@ func inpLine(author, genre, title, series, serno, file, size, del, lang string) 
 	return strings.Join(fields, "\x04") + "\x04"
 }
 
+// writeArchive creates a book archive <name> in dir containing one empty entry
+// per inner filename (e.g. "55.fb2"). Entry bytes are irrelevant — the skip
+// check reads only the archive's central directory (entry names).
+func (s *inpxSuite) writeArchive(dir, name string, entries ...string) {
+	f, err := os.Create(filepath.Join(dir, name))
+	s.Require().NoError(err)
+	defer func() { _ = f.Close() }()
+
+	zw := zip.NewWriter(f)
+	for _, e := range entries {
+		_, err := zw.Create(e)
+		s.Require().NoError(err)
+	}
+	s.Require().NoError(zw.Close())
+}
+
 func (s *inpxSuite) writeINPX(path string, files map[string]string) {
 	f, err := os.Create(path)
 	s.Require().NoError(err)
@@ -83,6 +99,8 @@ func (s *inpxSuite) TestSync() {
 		"d.fb2-000001-000100.inp": arc1,
 		"f.fb2-000101-000200.inp": arc2,
 	})
+	s.writeArchive(dir, "d.fb2-000001-000100.zip", "55.fb2")
+	s.writeArchive(dir, "f.fb2-000101-000200.zip", "161.fb2")
 
 	src := s.insertLibrary("inpx", inpxPath)
 	parser := INPXParser{s.log}
@@ -136,6 +154,63 @@ func (s *inpxSuite) TestParseLineDate() {
 	rec, ok = parseINPLine(short, 1, "arc.zip")
 	s.Require().True(ok)
 	s.Zero(rec.AddedAt)
+}
+
+func (s *inpxSuite) TestSyncSkipsMissingEntries() {
+	dir := s.T().TempDir()
+	inp := strings.Join([]string{
+		inpLine("A,B,:", "sf:", "Present Book", "", "", "55", "100", "0", "en"),
+		inpLine("C,D,:", "sf:", "Missing Book", "", "", "56", "100", "0", "en"),
+		"",
+	}, "\r\n")
+	inpxPath := filepath.Join(dir, "library.inpx")
+	s.writeINPX(inpxPath, map[string]string{"arc.inp": inp})
+	// Sibling archive present, but contains only 55.fb2 (56.fb2 is absent).
+	s.writeArchive(dir, "arc.zip", "55.fb2")
+
+	src := s.insertLibrary("inpx", inpxPath)
+	parser := INPXParser{s.log}
+	res, err := parser.Sync(context.Background(), src, s.db, s.store, nopReporter{})
+	s.Require().NoError(err)
+	s.Equal(1, res.Added)
+
+	books := s.booksByLibrary(src.ID)
+	s.Require().Len(books, 1)
+	_, present := books["Present Book"]
+	s.True(present, "book whose entry exists is indexed")
+	_, missing := books["Missing Book"]
+	s.False(missing, "book whose archive entry is absent must be skipped")
+}
+
+func (s *inpxSuite) TestSyncSkipsWholeMissingArchive() {
+	dir := s.T().TempDir()
+	inp := inpLine("A,B,:", "sf:", "Orphan", "", "", "55", "100", "0", "en") + "\r\n"
+	inpxPath := filepath.Join(dir, "library.inpx")
+	s.writeINPX(inpxPath, map[string]string{"arc.inp": inp})
+	// No arc.zip on disk at all.
+
+	src := s.insertLibrary("inpx", inpxPath)
+	parser := INPXParser{s.log}
+	res, err := parser.Sync(context.Background(), src, s.db, s.store, nopReporter{})
+	s.Require().NoError(err)
+	s.Equal(0, res.Added)
+	s.Empty(s.booksByLibrary(src.ID), "books in a missing archive are skipped, no error")
+}
+
+func (s *inpxSuite) TestSyncSkipsCorruptArchive() {
+	dir := s.T().TempDir()
+	inp := inpLine("A,B,:", "sf:", "Corrupt", "", "", "55", "100", "0", "en") + "\r\n"
+	inpxPath := filepath.Join(dir, "library.inpx")
+	s.writeINPX(inpxPath, map[string]string{"arc.inp": inp})
+	// arc.zip exists but is not a valid zip.
+	s.Require().NoError(os.WriteFile(filepath.Join(dir, "arc.zip"), []byte("not a zip"), 0o600))
+
+	src := s.insertLibrary("inpx", inpxPath)
+	parser := INPXParser{s.log}
+	res, err := parser.Sync(context.Background(), src, s.db, s.store, nopReporter{})
+	s.Require().NoError(err)
+	s.Equal(0, res.Added)
+	s.Empty(s.booksByLibrary(src.ID), "a corrupt archive is treated as missing")
 }
 
 func (s *inpxSuite) TestParseLine() {

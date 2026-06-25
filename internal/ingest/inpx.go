@@ -70,11 +70,12 @@ func (p *INPXParser) Sync(
 	defer func() { _ = zr.Close() }()
 
 	return runReconcile(ctx, db, covers, library, r, p.log, func(ctx context.Context, rc *reconciler) error {
+		libDir := filepath.Dir(library.Path)
 		for _, f := range zr.File {
 			if !strings.EqualFold(filepath.Ext(f.Name), ".inp") {
 				continue
 			}
-			if err := ingestINP(ctx, rc, f, library.ID); err != nil {
+			if err := ingestINP(ctx, rc, f, library.ID, libDir, p.log); err != nil {
 				return err
 			}
 		}
@@ -83,8 +84,15 @@ func (p *INPXParser) Sync(
 	})
 }
 
-// ingestINP reads one ".inp" index file and upserts each of its book records.
-func ingestINP(ctx context.Context, recon *reconciler, f *zip.File, libraryID int64) error {
+// ingestINP reads one ".inp" index file and upserts each book whose backing file
+// is present in the sibling archive. Books whose archive is missing/corrupt, or
+// whose inner entry is absent, are skipped (counted and logged per archive) — the
+// index can reference files that were never copied, and folio must not surface a
+// book it cannot open.
+func ingestINP(
+	ctx context.Context, recon *reconciler, f *zip.File,
+	libraryID int64, libDir string, log *slog.Logger,
+) error {
 	archive := strings.TrimSuffix(filepath.Base(f.Name), filepath.Ext(f.Name)) + ".zip"
 
 	rc, err := f.Open()
@@ -97,20 +105,76 @@ func ingestINP(ctx context.Context, recon *reconciler, f *zip.File, libraryID in
 		return fmt.Errorf("read %s: %w", f.Name, err)
 	}
 
-	for line := range strings.SplitSeq(string(data), "\n") {
+	entries, archivePresent := archiveEntries(filepath.Join(libDir, archive))
+	skipped, err := ingestINPLines(ctx, recon, string(data), libraryID, archive, entries, archivePresent)
+	if err != nil {
+		return err
+	}
+
+	logSkipped(log, archive, archivePresent, skipped)
+
+	return nil
+}
+
+// ingestINPLines iterates over newline-separated INP records, upserts books whose
+// archive entry is present, and returns the count of skipped records.
+func ingestINPLines(
+	ctx context.Context, recon *reconciler, data string,
+	libraryID int64, archive string,
+	entries map[string]struct{}, archivePresent bool,
+) (skipped int, err error) {
+	for line := range strings.SplitSeq(data, "\n") {
 		if err := ctx.Err(); err != nil {
-			return fmt.Errorf("inpx import canceled: %w", err)
+			return skipped, fmt.Errorf("inpx import canceled: %w", err)
 		}
 		rec, ok := parseINPLine(line, libraryID, archive)
 		if !ok {
 			continue
 		}
+		_, inner, _ := strings.Cut(rec.SourcePath, "/")
+		if _, present := entries[inner]; !archivePresent || !present {
+			skipped++
+			continue
+		}
 		if err := recon.upsert(ctx, rec); err != nil {
-			return err
+			return skipped, err
 		}
 	}
 
-	return nil
+	return skipped, nil
+}
+
+// logSkipped emits a warning when books were skipped for a given archive.
+func logSkipped(log *slog.Logger, archive string, archivePresent bool, skipped int) {
+	if skipped == 0 {
+		return
+	}
+	if !archivePresent {
+		log.Warn("inpx: archive not found, books skipped",
+			slog.String("archive", archive), slog.Int("skipped", skipped))
+	} else {
+		log.Warn("inpx: skipped books with missing archive entries",
+			slog.String("archive", archive), slog.Int("skipped", skipped))
+	}
+}
+
+// archiveEntries opens a book archive and returns the set of its entry names.
+// present is false when the archive is missing or unreadable (truncated or
+// corrupt), in which case every book referencing it is treated as unavailable
+// and skipped. Only the central directory is read — no entry is decompressed.
+func archiveEntries(path string) (entries map[string]struct{}, present bool) {
+	zr, err := zip.OpenReader(path)
+	if err != nil {
+		return nil, false
+	}
+	defer func() { _ = zr.Close() }()
+
+	entries = make(map[string]struct{}, len(zr.File))
+	for _, f := range zr.File {
+		entries[f.Name] = struct{}{}
+	}
+
+	return entries, true
 }
 
 // parseINPLine parses one ".inp" record. It returns ok=false for blank lines,
