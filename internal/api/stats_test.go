@@ -5,9 +5,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"sync"
-	"testing"
-
-	"github.com/stretchr/testify/suite"
 )
 
 // statsSuite tests concurrent cold-cache serialization for the /stats endpoint.
@@ -70,8 +67,4 @@ func (s *statsSuite) TestStatsConcurrentColdCache() {
 	hookMu.Unlock()
 
 	s.Equal(1, got, "computeStats must be called exactly once under %d concurrent cold-cache requests", n)
-}
-
-func TestStatsConcurrency(t *testing.T) {
-	suite.Run(t, new(statsSuite))
 }

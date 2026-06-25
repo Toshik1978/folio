@@ -43,6 +43,7 @@ func TestAPI(t *testing.T) {
 	suite.Run(t, new(utilSuite))
 	suite.Run(t, new(coverSearchSuite))
 	suite.Run(t, new(lettersBoundsSuite))
+	suite.Run(t, new(statsSuite))
 }
 
 // fakeSync is a lightweight api.SyncEngine for handler tests.
