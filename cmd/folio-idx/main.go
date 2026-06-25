@@ -67,6 +67,8 @@ func run() int { //revive:disable:function-length
 	// lazy cover serving, cover-warming, and metadata backfill.
 	extractor := ingest.NewExtractor(database, log, cfg.DataDir, parser)
 
+	backfiller := ingest.NewLocalBackfiller(log, database, writeGuard, extractor)
+
 	coverStore, err := covers.NewStore(cfg.DataDir, extractor)
 	if err != nil {
 		log.Error("cover store open failed", slog.Any("error", err))
@@ -113,6 +115,7 @@ func run() int { //revive:disable:function-length
 		},
 		coverStore,
 		extractor,
+		backfiller,
 		sync.WithEvents(broker),
 		sync.WithStatsObserver(catalogHandler),
 	)

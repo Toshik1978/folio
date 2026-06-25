@@ -94,7 +94,7 @@ func (s *engineSuite) TestCheckpointSkipDoesNotBustCaches() {
 	rec := &recordingPublisher{}
 	stats := &recordingStats{}
 	eng, err := New(slog.New(slog.DiscardHandler), s.db, db.NewWriteGuard(),
-		map[string]Parser{"stub": s.parser}, s.store, nil,
+		map[string]Parser{"stub": s.parser}, s.store, nil, nil,
 		WithEvents(rec), WithStatsObserver(stats))
 	s.Require().NoError(err)
 

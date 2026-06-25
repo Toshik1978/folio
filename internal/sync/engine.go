@@ -113,6 +113,7 @@ func New(
 	parsers map[string]Parser,
 	covers ingest.CoverStore,
 	extractor CoverExtractor,
+	backfiller MetadataBackfiller,
 	opts ...Option,
 ) (*Engine, error) {
 	e := &Engine{
@@ -136,7 +137,7 @@ func New(
 	e.scheduler = sched
 
 	if extractor != nil {
-		e.warmer = newWarmer(log, database, covers, extractor, e.stop, defaultWarmDelay)
+		e.warmer = newWarmer(log, database, covers, extractor, backfiller, e.stop, defaultWarmDelay)
 	}
 	for _, opt := range opts {
 		opt(e)

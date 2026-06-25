@@ -16,40 +16,51 @@ type CoverExtractor interface {
 	Cover(ctx context.Context, bookID int64) (data []byte, ok bool, err error)
 }
 
-// warmer is the low-priority cover-warming pool: a single goroutine that drains
-// per-library warm requests and caches missing covers, throttled so it never
-// starves foreground sync I/O. It reads the engine's shared stop channel and
-// closes done when its loop exits. Built only when an extractor is configured.
-type warmer struct {
-	log       *slog.Logger
-	db        *sql.DB
-	covers    ingest.CoverStore
-	extractor CoverExtractor
-	delay     time.Duration
-	ch        chan int64
-	stop      <-chan struct{} // engine's stop channel
-	done      chan struct{}   // closed when run returns
+// MetadataBackfiller recovers and persists a book's offline metadata (annotation
+// + identifiers) from its own file, at most once per book. *ingest.LocalBackfiller
+// satisfies it; nil disables metadata backfill (cover-warming still runs).
+type MetadataBackfiller interface {
+	Fill(ctx context.Context, bookID int64) error
 }
 
-// newWarmer builds a warmer over the engine's database, cover store, and stop
-// channel. delay throttles between cover writes.
+// warmer is the low-priority background pool: a single goroutine that drains
+// per-library warm requests, caches missing covers, and backfills offline
+// metadata, throttled so it never starves foreground sync I/O. It reads the
+// engine's shared stop channel and closes done when its loop exits. Built only
+// when an extractor is configured.
+type warmer struct {
+	log        *slog.Logger
+	db         *sql.DB
+	covers     ingest.CoverStore
+	extractor  CoverExtractor
+	backfiller MetadataBackfiller
+	delay      time.Duration
+	ch         chan int64
+	stop       <-chan struct{} // engine's stop channel
+	done       chan struct{}   // closed when run returns
+}
+
+// newWarmer builds a warmer over the engine's database, cover store, extractor,
+// metadata backfiller, and stop channel. delay throttles between warm writes.
 func newWarmer(
 	log *slog.Logger,
 	db *sql.DB,
 	covers ingest.CoverStore,
 	extractor CoverExtractor,
+	backfiller MetadataBackfiller,
 	stop <-chan struct{},
 	delay time.Duration,
 ) *warmer {
 	return &warmer{
-		log:       log,
-		db:        db,
-		covers:    covers,
-		extractor: extractor,
-		delay:     delay,
-		ch:        make(chan int64, 8),
-		stop:      stop,
-		done:      make(chan struct{}),
+		log:        log,
+		db:         db,
+		covers:     covers,
+		extractor:  extractor,
+		backfiller: backfiller,
+		delay:      delay,
+		ch:         make(chan int64, 8),
+		stop:       stop,
+		done:       make(chan struct{}),
 	}
 }
 
@@ -115,9 +126,12 @@ func (w *warmer) warmLibrary(libraryID int64) {
 	}
 }
 
-// warmBook caches one book's cover if it is missing and extractable. It reports
-// whether a new cover was written.
+// warmBook backfills one book's offline metadata and caches its cover if missing
+// and extractable. It reports whether a new cover was written (the throttle key).
 func (w *warmer) warmBook(ctx context.Context, id int64) bool {
+	if w.backfiller != nil {
+		_ = w.backfiller.Fill(ctx, id) // best-effort; gated by metadata_checked
+	}
 	if w.covers.Has(id) {
 		return false
 	}

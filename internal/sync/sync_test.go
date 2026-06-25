@@ -36,11 +36,12 @@ func TestSync(t *testing.T) {
 type baseSuite struct {
 	suite.Suite
 
-	db        *sql.DB
-	store     *covers.Store
-	parser    *stubParser
-	engine    *Engine
-	extractor CoverExtractor // nil unless a suite opts into cover-warming
+	db         *sql.DB
+	store      *covers.Store
+	parser     *stubParser
+	engine     *Engine
+	extractor  CoverExtractor     // nil unless a suite opts into cover-warming
+	backfiller MetadataBackfiller // nil unless a suite opts into metadata backfill
 }
 
 func (s *baseSuite) SetupTest() {
@@ -57,7 +58,7 @@ func (s *baseSuite) SetupTest() {
 		"stub":         parser,
 		libtype.Folder: parser,
 		libtype.INPX:   parser,
-	}, store, s.extractor)
+	}, store, s.extractor, s.backfiller)
 	s.Require().NoError(err)
 	engine.debounce = 20 * time.Millisecond // keep watcher tests fast
 

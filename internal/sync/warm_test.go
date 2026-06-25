@@ -3,6 +3,8 @@ package sync
 import (
 	"context"
 	"os"
+	"slices"
+	stdsync "sync"
 	"time"
 
 	"github.com/Toshik1978/folio/internal/db/dbq"
@@ -112,4 +114,47 @@ func (s *warmSuite) TestNonINPXSyncDoesNotWarm() {
 	// a non-INPX library.
 	time.Sleep(100 * time.Millisecond)
 	s.False(s.store.Has(b1))
+}
+
+// fakeBackfiller records the book ids Fill was called with.
+type fakeBackfiller struct {
+	mu    stdsync.Mutex
+	calls []int64
+}
+
+func (f *fakeBackfiller) Fill(_ context.Context, bookID int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, bookID)
+	return nil
+}
+
+func (f *fakeBackfiller) called(id int64) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	return slices.Contains(f.calls, id)
+}
+
+func (s *warmSuite) TestWarmBackfillsMetadata() {
+	s.engine.warmer.delay = 0
+	bf := &fakeBackfiller{}
+	s.engine.warmer.backfiller = bf
+
+	src := s.insertLibrary(libtype.INPX, "/lib/meta.inpx")
+	id := s.seedBook(src.ID, "needs-annotation")
+
+	s.engine.warmer.safeWarm(src.ID)
+
+	s.True(bf.called(id), "warmer must backfill metadata for each book")
+}
+
+func (s *warmSuite) TestWarmNilBackfillerIsSafe() {
+	s.engine.warmer.delay = 0
+	s.engine.warmer.backfiller = nil // explicit
+
+	src := s.insertLibrary(libtype.INPX, "/lib/nil.inpx")
+	s.seedBook(src.ID, "x")
+
+	s.NotPanics(func() { s.engine.warmer.safeWarm(src.ID) })
 }
