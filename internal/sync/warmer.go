@@ -130,7 +130,9 @@ func (w *warmer) warmLibrary(libraryID int64) {
 // and extractable. It reports whether a new cover was written (the throttle key).
 func (w *warmer) warmBook(ctx context.Context, id int64) bool {
 	if w.backfiller != nil {
-		_ = w.backfiller.Fill(ctx, id) // best-effort; gated by metadata_checked
+		// Not subject to the cover-write throttle: Fill is gated by metadata_checked
+		// (cheap no-op after the first pass) and bounded by the write guard internally.
+		_ = w.backfiller.Fill(ctx, id) // best-effort
 	}
 	if w.covers.Has(id) {
 		return false

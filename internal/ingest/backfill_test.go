@@ -2,7 +2,6 @@ package ingest
 
 import (
 	"context"
-	"database/sql"
 	"path/filepath"
 
 	"github.com/Toshik1978/folio/internal/db"
@@ -104,6 +103,3 @@ func (s *backfillSuite) TestFillDoesNotClobberExistingAnnotation() {
 	s.Require().NoError(err)
 	s.Equal("keep me", stored.Annotation.String, "backfill must not replace an existing annotation")
 }
-
-// sqlValid is a tiny local helper for a valid sql.NullString.
-func sqlValid(v string) sql.NullString { return sql.NullString{String: v, Valid: true} }

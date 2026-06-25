@@ -196,7 +196,12 @@ func (s *warmSuite) TestINPXSyncBackfillsAnnotation() {
 	s.Require().NoError(zf.Close())
 
 	// Wire real components: the extractor parses the FB2; the backfiller persists.
-	ext := ingest.NewExtractor(s.db, slog.New(slog.DiscardHandler), s.T().TempDir(), newSyncTestDispatcher())
+	ext := ingest.NewExtractor(
+		s.db,
+		slog.New(slog.DiscardHandler),
+		s.T().TempDir(),
+		newSyncTestDispatcher(),
+	) // cover-cache dir: unused in this annotation-only test
 	s.engine.warmer.extractor = ext
 	s.engine.warmer.backfiller = ingest.NewLocalBackfiller(slog.New(slog.DiscardHandler), s.db, db.NewWriteGuard(), ext)
 
