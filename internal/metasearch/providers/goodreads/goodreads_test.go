@@ -106,14 +106,18 @@ func (s *searchSuite) TestSearchCovers() {
 	}
 }
 
-func (s *searchSuite) TestSearchCovers202IsBlocked() {
+func (s *searchSuite) TestSearchCovers202IsTerminalBlock() {
+	var reqCount atomic.Int32
 	src := s.sourceForHandler(func(w http.ResponseWriter, _ *http.Request) {
+		reqCount.Add(1)
 		w.WriteHeader(http.StatusAccepted) // 202 = Cloudflare challenge
 	})
 
 	_, err := src.SearchCovers(context.Background(), metasearch.Query{Title: "Dune"})
 	s.Require().Error(err)
 	s.Require().ErrorIs(err, metasearch.ErrBlocked)
+	s.Require().ErrorIs(err, metasearch.ErrNoRetry)
+	s.Equal(int32(1), reqCount.Load(), "a Cloudflare 202 won't clear in the retry budget: no retry")
 }
 
 func (s *searchSuite) TestSearchCoversRetriesOnTransientBlock() {

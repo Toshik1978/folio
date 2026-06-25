@@ -7,6 +7,7 @@ package goodreads
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -103,8 +104,14 @@ func (s *Source) fetchOnce(ctx context.Context, q metasearch.Query) ([]metasearc
 		return nil, fmt.Errorf("goodreads request: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode == http.StatusAccepted {
+		// 202 is the Cloudflare bot challenge; it will not clear within the retry
+		// budget, so stop immediately instead of burning all attempts on it.
+		return nil, fmt.Errorf("goodreads cloudflare challenge: %w",
+			errors.Join(metasearch.ErrBlocked, metasearch.ErrNoRetry))
+	}
 	if resp.StatusCode != http.StatusOK {
-		// 202 (Cloudflare challenge) and any other non-200 are anti-bot blocks.
+		// Any other non-200 (e.g. a transient 503) is a retryable block.
 		return nil, fmt.Errorf("goodreads status %d: %w", resp.StatusCode, metasearch.ErrBlocked)
 	}
 
