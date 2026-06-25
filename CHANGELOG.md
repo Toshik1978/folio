@@ -1,3 +1,58 @@
+## v1.2.0 (2026-06-25)
+
+### Feat
+
+- **ingest**: skip INPX books whose archive file is missing
+- **sync**: warmer backfills offline metadata after INPX sync
+- **ingest**: add LocalBackfiller offline metadata tier
+- **metasearch**: filter cover relevance centrally in the aggregator
+- **metasearch**: fetch correct high-res covers via ISBN/ASIN sources
+- **amazon**: throttle the direct search to protect IP reputation
+- **amazon**: detect Akamai interstitial and stop retrying it
+- **amazon**: filter search thumbnails by title relevance
+- **amazon**: add title-relevance filter for cover candidates
+- **metasearch**: add ErrNoRetry to stop RetryCovers on terminal errors
+- **api,opds**: build thumbnail URLs server-side with a cache-spec token
+- **web**: load cover thumbnails in the book grid
+- **api**: add cover thumbnail route
+- **opds**: serve cover thumbnails and point rel=thumbnail at them
+- **covers**: serve thumbnails with self-healing cover fallback
+- **covers**: generate and invalidate thumbnails in the cover write path
+- **covers**: add aspect-preserving thumbnail generator
+
+### Fix
+
+- **web**: reject failed loadMore so infinite scroll stops retry-storming
+- **covers**: keep a local cover when extraction times out mid-enrich
+- **ingest**: raise cover_prio only after the cover file actually saves
+- **metasearch**: deterministic cover ordering with a FullURL tiebreak
+- **goodreads**: stop retrying the terminal Cloudflare 202 challenge
+- **amazon**: retry transient blocks and honor the interstitial ErrNoRetry
+- **metasearch**: require explicit source in ApplyMatch, drop guess-fallback
+- **metasearch**: resolve enrichment in one call instead of search+get
+- **amazon**: broaden audiobook/audio-cd junk markers
+- **web**: add thumbnail_url to hand-built Book literal in EditBookModal spec
+- **covers**: cap thumbnail decode dimensions to prevent OOM
+
+### Refactor
+
+- **ingest**: move logger after context in ingestINP signature
+- **api**: getBook delegates offline backfill to ingest.LocalBackfiller
+- **metasearch**: final-review polish (docs, test clarity, named type)
+- **metasearch**: single-scan CDN regex and drop stale comments
+- **metasearch**: name CDN image transforms for their real contract
+- **metasearch**: share one book->query identifier builder (fixes ASIN drift)
+- **covers**: share one decompression-bomb pixel-cap guard
+- **goodreads**: drop per-provider relevance filter (now in aggregator)
+- **amazon**: drop the dead DuckDuckGo cover fallback
+- **web**: use server thumbnail_url in the book grid
+- **covers**: extract shardDir and serveImmutableFile helpers
+- **covers**: rename Store.ServeHTTP to ServeCover
+
+### Perf
+
+- **covers**: decode a non-JPEG cover once on the write path
+
 ## v1.1.0 (2026-06-24)
 
 ### Feat
