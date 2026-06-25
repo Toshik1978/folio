@@ -1,3 +1,9 @@
+## v1.2.1 (2026-06-25)
+
+### Fix
+
+- **sync**: warm pass negative-caches cover-less books
+
 ## v1.2.0 (2026-06-25)
 
 ### Feat
