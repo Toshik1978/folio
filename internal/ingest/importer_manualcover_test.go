@@ -15,6 +15,7 @@ type failingCoverStore struct{}
 func (f *failingCoverStore) Save(_ int64, _ []byte) error { return errors.New("disk full") }
 func (f *failingCoverStore) Delete(_ int64) error         { return nil }
 func (f *failingCoverStore) Has(_ int64) bool             { return false }
+func (f *failingCoverStore) CacheMiss(_ int64) error      { return nil }
 
 // TestCoverWritesAreDeferredUntilCommit verifies that cover filesystem mutations
 // are not applied until the import batch commits: a rollback after a queued

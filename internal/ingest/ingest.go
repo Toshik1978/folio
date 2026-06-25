@@ -26,6 +26,10 @@ type CoverStore interface {
 	Save(bookID int64, data []byte) error
 	Delete(bookID int64) error
 	Has(bookID int64) bool
+	// CacheMiss records that a book has no extractable cover by caching the
+	// placeholder negative-cache, so the serve path never re-parses it. The warm
+	// pass uses it to pre-absorb the first-view parse for cover-less books.
+	CacheMiss(bookID int64) error
 }
 
 // Result summarises what a single Sync run changed.

@@ -91,6 +91,31 @@ func (s *warmSuite) TestINPXSyncWarmsMissingCovers() {
 	s.False(s.store.Has(orphanFileID), "warming must use book ids, not file ids")
 }
 
+// noCoverExtractor parses successfully but the source carries no cover.
+type noCoverExtractor struct{}
+
+func (noCoverExtractor) Cover(context.Context, int64) ([]byte, bool, error) { return nil, false, nil }
+
+// TestWarmNegativeCachesCoverlessBooks guards that warming pre-absorbs the
+// first-view parse for books with no extractable cover: it writes the
+// placeholder negative-cache so the grid never re-parses them. Without this the
+// warm pass parses each cover-less book and discards the result, and the serve
+// path parses it a second time on first view.
+func (s *warmSuite) TestWarmNegativeCachesCoverlessBooks() {
+	s.engine.warmer.delay = 0
+	s.engine.warmer.extractor = noCoverExtractor{}
+
+	src := s.insertLibrary(libtype.INPX, "/lib/nocover.inpx")
+	id := s.seedBook(src.ID, "no-cover")
+
+	s.engine.warmer.safeWarm(src.ID)
+
+	s.True(s.store.Has(id),
+		"a cover-less book must be negative-cached by warming so the grid never re-parses it")
+	s.False(s.store.HasLocalCover(context.Background(), id),
+		"the warmed negative cache is a placeholder, not a real cover")
+}
+
 // panicExtractor panics on every Cover call — a stand-in for a parser panic the
 // ebook.Parse recover doesn't cover (defense in depth for the warm goroutine).
 type panicExtractor struct{}

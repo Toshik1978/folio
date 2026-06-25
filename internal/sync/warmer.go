@@ -114,8 +114,14 @@ func (w *warmer) warmLibrary(libraryID int64) {
 		if w.stopped() {
 			return
 		}
-		if w.warmBook(ctx, bookID) {
+		outcome := w.warmBook(ctx, bookID)
+		if outcome == warmCached {
 			warmed++
+		}
+		// Throttle after any parse (real cover or negative cache): the source parse
+		// is the expensive part, so a run of cover-less books must not blast through
+		// foreground sync I/O unthrottled. A skip (already cached) does no work.
+		if outcome != warmSkipped {
 			if !w.throttle() {
 				return
 			}
@@ -126,31 +132,48 @@ func (w *warmer) warmLibrary(libraryID int64) {
 	}
 }
 
-// warmBook backfills one book's offline metadata and caches its cover if missing
-// and extractable. It reports whether a new cover was written (the throttle key).
-func (w *warmer) warmBook(ctx context.Context, id int64) bool {
+// warmOutcome reports what warmBook did, driving the log counter (real covers
+// only) and the throttle (any extraction attempt — see warmLibrary).
+type warmOutcome int
+
+const (
+	warmSkipped warmOutcome = iota // already cached or a transient error; no progress
+	warmCached                     // a real cover was extracted and cached
+	warmMissed                     // no cover; placeholder negative-cached
+)
+
+// warmBook backfills one book's offline metadata, then caches its cover if
+// missing. A book with no extractable cover is negative-cached (placeholder) so
+// the serve path never re-parses it — the warm pass already paid for the parse.
+func (w *warmer) warmBook(ctx context.Context, id int64) warmOutcome {
 	if w.backfiller != nil {
 		// Not subject to the cover-write throttle: Fill is gated by metadata_checked
 		// (cheap no-op after the first pass) and bounded by the write guard internally.
 		_ = w.backfiller.Fill(ctx, id) // best-effort
 	}
 	if w.covers.Has(id) {
-		return false
+		return warmSkipped
 	}
 	data, ok, err := w.extractor.Cover(ctx, id)
 	if err != nil {
+		// Transient (e.g. a cancelled parse): leave it uncached so a later view
+		// retries, rather than masking a good cover with a placeholder.
 		w.log.Warn("warm: extract cover", slog.Int64("book", id), slog.Any("error", err))
-		return false
+		return warmSkipped
 	}
 	if !ok {
-		return false
+		if err := w.covers.CacheMiss(id); err != nil {
+			w.log.Warn("warm: cache miss", slog.Int64("book", id), slog.Any("error", err))
+			return warmSkipped
+		}
+		return warmMissed
 	}
 	if err := w.covers.Save(id, data); err != nil {
 		w.log.Warn("warm: save cover", slog.Int64("book", id), slog.Any("error", err))
-		return false
+		return warmSkipped
 	}
 
-	return true
+	return warmCached
 }
 
 // stopped reports whether the engine is shutting down.

@@ -52,6 +52,15 @@ func (s *Store) Save(bookID int64, data []byte) error {
 	return s.writeFile(bookID, jpegData, decoded)
 }
 
+// CacheMiss records that bookID has no extractable cover by caching the
+// placeholder as a negative cache, exactly as a serve-time miss (lazyExtract)
+// does. The serve path then finds the cached placeholder and never re-parses the
+// source. The warm pass uses it to pre-absorb the first-view parse for cover-less
+// books.
+func (s *Store) CacheMiss(bookID int64) error {
+	return s.writeFile(bookID, placeholderJPEG, nil)
+}
+
 func (s *Store) Delete(bookID int64) error {
 	if err := os.Remove(s.Path(bookID)); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("remove cover %d: %w", bookID, err)

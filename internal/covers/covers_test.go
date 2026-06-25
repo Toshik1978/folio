@@ -229,6 +229,26 @@ func (s *coversTestSuite) TestLazyExtractionCachesPlaceholderForCoverlessBook() 
 	s.True(store.Has(6))
 }
 
+func (s *coversTestSuite) TestCacheMissCachesPlaceholderWithoutParsing() {
+	ext := &fakeExtractor{data: s.pngBytes()} // a cover IS available, but CacheMiss must not extract it
+	store, err := NewStore(s.dataDir, ext)
+	s.Require().NoError(err)
+
+	s.Require().NoError(store.CacheMiss(8))
+
+	s.Equal(0, ext.calls, "CacheMiss records a negative cache without parsing the source")
+	s.True(store.Has(8), "CacheMiss leaves a cached entry on disk")
+	s.False(store.HasLocalCover(context.Background(), 8), "the cached entry is a placeholder, not a real cover")
+
+	// The serve path now finds the cached placeholder and never re-extracts.
+	w := httptest.NewRecorder()
+	store.ServeCover(w,
+		httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/covers/8", http.NoBody), 8)
+	s.Equal(placeholderJPEG, w.Body.Bytes())
+	s.Equal("no-cache", w.Header().Get("Cache-Control"))
+	s.Equal(0, ext.calls, "a CacheMiss-cached book is not parsed on serve")
+}
+
 func (s *coversTestSuite) TestHasLocalCoverWithCachedReal() {
 	store, err := NewStore(s.dataDir, nil)
 	s.Require().NoError(err)
