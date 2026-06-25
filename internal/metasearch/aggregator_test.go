@@ -117,6 +117,23 @@ func (s *coreSuite) TestAggregatorFiltersJunkByTitle() {
 	s.False(urls["https://gb/wrong.jpg"], "non-matching title dropped")
 }
 
+func (s *coreSuite) TestRankCoversDeterministicTieBreak() {
+	// Same priority, no dimensions reported (the production reality): order must be
+	// stable and deterministic, broken by FullURL.
+	in := []CoverCandidate{
+		{Source: SourceOpenLibrary, FullURL: "https://ol/b.jpg"},
+		{Source: SourceOpenLibrary, FullURL: "https://ol/a.jpg"},
+		{Source: SourceOpenLibrary, FullURL: "https://ol/c.jpg"},
+	}
+	for range 5 {
+		got := rankCovers(in)
+		s.Require().Len(got, 3)
+		s.Equal("https://ol/a.jpg", got[0].FullURL)
+		s.Equal("https://ol/b.jpg", got[1].FullURL)
+		s.Equal("https://ol/c.jpg", got[2].FullURL)
+	}
+}
+
 // TestAggregatorLogsErrorStatus verifies that a plain (non-ErrBlocked) source
 // error is logged with status "error" and the correct source name, and that
 // sources surfacing other status values also log their names.

@@ -153,12 +153,18 @@ func rankCovers(in []CoverCandidate) []CoverCandidate {
 }
 
 // better reports whether a should rank ahead of b: higher provider priority
-// first, then larger pixel area.
+// first, then larger pixel area (when a provider reports dimensions), then a
+// stable FullURL tiebreak so the order is deterministic across runs even when no
+// dimensions are reported.
 func better(a, b CoverCandidate) bool {
 	pa, pb := coverPriority[a.Source], coverPriority[b.Source]
 	if pa != pb {
 		return pa > pb
 	}
+	aa, ab := a.Width*a.Height, b.Width*b.Height
+	if aa != ab {
+		return aa > ab
+	}
 
-	return a.Width*a.Height > b.Width*b.Height
+	return a.FullURL < b.FullURL
 }
