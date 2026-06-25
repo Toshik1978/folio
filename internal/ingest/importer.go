@@ -22,9 +22,12 @@ const msgIdentifierOverride = "identifier grouping overrode key-based grouping"
 
 // coverOp is a deferred cover filesystem mutation: non-nil data means Save,
 // nil data means Delete. Ops are queued during a batch and replayed on commit.
+// prio, when > 0, is written to cover_prio only after the Save succeeds so the
+// DB never claims a cover that isn't on disk.
 type coverOp struct {
 	bookID int64
 	data   []byte // non-nil = Save; nil = Delete
+	prio   int64  // when > 0 and Save succeeds, persist this as the book's cover_prio
 }
 
 // importer wraps the writable folio database and cover store, providing a
@@ -92,14 +95,26 @@ func (im *importer) commit() error {
 	return nil
 }
 
-// flushPendingCovers replays all queued cover operations in order, then clears
-// the queue. Called only after the DB transaction has successfully committed.
+// flushPendingCovers replays queued cover operations in order after a successful
+// commit: each Save/Delete, then — only for a cover that saved cleanly — the
+// raised cover_prio. A Save failure is logged and its prio bump skipped, so the
+// DB never claims a cover that isn't on disk. The sync engine holds the write
+// guard across the whole run, so these post-commit writes are serialized.
 func (im *importer) flushPendingCovers() {
 	for _, op := range im.pendingCovers {
-		if op.data != nil {
-			_ = im.covers.Save(op.bookID, op.data)
-		} else {
+		if op.data == nil {
 			_ = im.covers.Delete(op.bookID)
+			continue
+		}
+		if err := im.covers.Save(op.bookID, op.data); err != nil {
+			im.log.Warn("save cover", slog.Int64("book", op.bookID), slog.Any("error", err))
+			continue
+		}
+		if op.prio > 0 {
+			if err := dbq.New(im.db).UpdateBookCoverPrio(context.Background(),
+				dbq.UpdateBookCoverPrioParams{CoverPrio: op.prio, ID: op.bookID}); err != nil {
+				im.log.Warn("persist cover prio", slog.Int64("book", op.bookID), slog.Any("error", err))
+			}
 		}
 	}
 	im.pendingCovers = nil
@@ -247,9 +262,10 @@ func (im *importer) matchByIdentifier(
 // priority of the cover currently on disk (books.cover_prio), which survives
 // runs, so a partial re-sync of a low-priority edition can never downgrade a
 // richer edition's cover. Equal priority still saves: the owning format's cover
-// bytes may have changed, and covers.Save skips identical content. The persisted
-// priority is restamped only when it actually rises. Best-effort, like the save.
-func (im *importer) saveCoverIfBetter(ctx context.Context, bookID, persistedPrio int64, rec bookRecord) {
+// bytes may have changed, and covers.Save skips identical content. The priority
+// bump is deferred to flushPendingCovers and applied only when the Save succeeds,
+// so the DB never claims a cover that isn't on disk.
+func (im *importer) saveCoverIfBetter(_ context.Context, bookID, persistedPrio int64, rec bookRecord) {
 	if len(rec.Cover) == 0 {
 		return
 	}
@@ -260,14 +276,12 @@ func (im *importer) saveCoverIfBetter(ctx context.Context, bookID, persistedPrio
 	if cur, ok := im.coverPrio[bookID]; ok && int(p) <= cur {
 		return
 	}
-	im.pendingCovers = append(im.pendingCovers, coverOp{bookID: bookID, data: rec.Cover})
 	im.coverPrio[bookID] = int(p)
-	if p == persistedPrio {
-		return
+	op := coverOp{bookID: bookID, data: rec.Cover}
+	if p > persistedPrio {
+		op.prio = p
 	}
-	if q, err := im.getQueries(ctx); err == nil {
-		_ = q.UpdateBookCoverPrio(ctx, dbq.UpdateBookCoverPrioParams{CoverPrio: p, ID: bookID})
-	}
+	im.pendingCovers = append(im.pendingCovers, op)
 }
 
 // remove deletes a book by id (cascading authors/genres/FTS) and evicts its

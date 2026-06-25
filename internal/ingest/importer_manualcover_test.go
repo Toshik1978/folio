@@ -2,10 +2,19 @@ package ingest
 
 import (
 	"context"
+	"errors"
 	"os"
 
 	"github.com/Toshik1978/folio/internal/db/dbq"
 )
+
+// failingCoverStore is a CoverStore stub whose Save always returns an error.
+// Delete and Has are no-ops so the rest of the import pipeline can run cleanly.
+type failingCoverStore struct{}
+
+func (f *failingCoverStore) Save(_ int64, _ []byte) error { return errors.New("disk full") }
+func (f *failingCoverStore) Delete(_ int64) error         { return nil }
+func (f *failingCoverStore) Has(_ int64) bool             { return false }
 
 // TestCoverWritesAreDeferredUntilCommit verifies that cover filesystem mutations
 // are not applied until the import batch commits: a rollback after a queued
@@ -75,4 +84,25 @@ func (s *importerSuite) TestManualCoverSurvivesResync() {
 	book, err := q.GetBook(ctx, id)
 	s.Require().NoError(err)
 	s.EqualValues(1000, book.CoverPrio)
+}
+
+// TestCoverPrioNotRaisedWhenSaveFails guards that cover_prio in the DB is only
+// bumped after the cover file actually lands on disk. If Save returns an error
+// the priority must stay at 0 so a later, lower-priority edition can still win.
+func (s *importerSuite) TestCoverPrioNotRaisedWhenSaveFails() {
+	ctx := context.Background()
+	lib := s.insertLibrary("folder", "/lib/failing-cover")
+	q := dbq.New(s.db)
+
+	im := newImporter(s.log, s.db, &failingCoverStore{}, 1)
+	r := s.rec(lib, "epub", "a.epub")
+	r.Cover = s.coverFixture()
+
+	id, err := im.add(ctx, r, 1)
+	s.Require().NoError(err)
+	s.Require().NoError(im.commit())
+
+	book, err := q.GetBook(ctx, id)
+	s.Require().NoError(err)
+	s.Equal(int64(0), book.CoverPrio, "a cover that never landed must not raise cover_prio")
 }
