@@ -38,12 +38,7 @@ func (l *BookLookup) Lookup(ctx context.Context, bookID int64) (metasearch.Query
 	if err != nil {
 		return metasearch.Query{}, false, fmt.Errorf("list identifiers: %w", err)
 	}
-	for _, id := range ids {
-		if id.Type == ebook.IdentifierISBN {
-			out.ISBN = id.Value
-			break
-		}
-	}
+	ApplyIdentifierQuery(&out, ids)
 
 	authors, err := q.ListAuthorsForBook(ctx, bookID)
 	if err != nil {
@@ -54,4 +49,23 @@ func (l *BookLookup) Lookup(ctx context.Context, bookID int64) (metasearch.Query
 	}
 
 	return out, true, nil
+}
+
+// ApplyIdentifierQuery fills q.ISBN and q.ASIN from a book's identifier rows,
+// taking the first of each type. It is the single source of truth for mapping
+// stored identifiers onto a provider query, shared by BookLookup (auto-enrich) and
+// the API cover-search seed so the two never drift.
+func ApplyIdentifierQuery(q *metasearch.Query, ids []dbq.ListIdentifiersForBookRow) {
+	for _, id := range ids {
+		switch id.Type {
+		case ebook.IdentifierISBN:
+			if q.ISBN == "" {
+				q.ISBN = id.Value
+			}
+		case ebook.IdentifierAmazon:
+			if q.ASIN == "" {
+				q.ASIN = id.Value
+			}
+		}
+	}
 }

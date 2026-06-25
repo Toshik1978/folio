@@ -7,6 +7,20 @@ import (
 	"github.com/Toshik1978/folio/internal/ebook"
 )
 
+func (s *enrichSuite) TestBookLookupPicksASIN() {
+	src := s.insertLibrary("folder", "/lib")
+	id := s.seedBook(src.ID, "Dune", "", "")
+	q := dbq.New(s.db)
+	s.Require().NoError(q.InsertBookIdentifier(context.Background(), dbq.InsertBookIdentifierParams{
+		BookID: id, Type: ebook.IdentifierAmazon, Value: "B00WDVKZY0",
+	}))
+
+	lookup, ok, err := NewBookLookup(s.db).Lookup(context.Background(), id)
+	s.Require().NoError(err)
+	s.Require().True(ok)
+	s.Equal("B00WDVKZY0", lookup.ASIN, "the enrich query must carry the book's ASIN")
+}
+
 func (s *enrichSuite) TestBookLookupBuildsQuery() {
 	ctx := context.Background()
 	src := s.insertLibrary("folder", "/lib")

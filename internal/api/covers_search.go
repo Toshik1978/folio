@@ -9,7 +9,7 @@ import (
 	"strings"
 
 	"github.com/Toshik1978/folio/internal/db/dbq"
-	"github.com/Toshik1978/folio/internal/ebook"
+	"github.com/Toshik1978/folio/internal/ingest"
 	"github.com/Toshik1978/folio/internal/metasearch"
 )
 
@@ -74,18 +74,7 @@ func (h *BooksHandler) seedQuery(ctx context.Context, book dbq.Book) metasearch.
 	if ids, err := h.q.ListIdentifiersForBook(ctx, book.ID); err != nil {
 		h.log.Warn("seed query identifiers", slog.Int64("book", book.ID), slog.Any("error", err))
 	} else {
-		for _, idr := range ids {
-			switch idr.Type {
-			case ebook.IdentifierISBN:
-				if q.ISBN == "" {
-					q.ISBN = idr.Value
-				}
-			case ebook.IdentifierAmazon:
-				if q.ASIN == "" {
-					q.ASIN = idr.Value
-				}
-			}
-		}
+		ingest.ApplyIdentifierQuery(&q, ids)
 	}
 
 	return q
