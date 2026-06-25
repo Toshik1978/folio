@@ -90,21 +90,74 @@ func (s *Source) Search(ctx context.Context, q metasearch.Query) ([]metasearch.V
 }
 
 // Get fetches the full volume by id, maps it via the injected mapper, and
-// gap-fills the cover by downloading the thumbnail (best effort — a failed image
-// fetch just leaves Cover empty, matching the legacy enricher).
+// gap-fills the cover by downloading the thumbnail (best effort).
 func (s *Source) Get(ctx context.Context, id string) (ebook.Metadata, error) {
 	vol, err := s.client.GetVolume(ctx, id)
 	if err != nil {
 		return ebook.Metadata{}, fmt.Errorf("get volume: %w", err)
 	}
-	meta := s.mapVolume(vol)
+
+	return s.fillCover(ctx, vol, s.mapVolume(vol)), nil
+}
+
+// Resolve does the auto-enrich lookup-and-map in a single call: it finds the best
+// volume for the query (ISBN-exact, else title+author, else free-text) and maps it
+// directly — no second GetVolume round-trip — matching the legacy enricher's one
+// call. ok is false when nothing matched.
+func (s *Source) Resolve(ctx context.Context, q metasearch.Query) (ebook.Metadata, bool, error) {
+	vol, ok, err := s.lookupVolume(ctx, q)
+	if err != nil {
+		return ebook.Metadata{}, false, err
+	}
+	if !ok {
+		return ebook.Metadata{}, false, nil
+	}
+
+	return s.fillCover(ctx, vol, s.mapVolume(vol)), true, nil
+}
+
+// lookupVolume returns the single best-matching volume for q using the legacy
+// strategy: ISBN lookup (highest accuracy), else intitle/inauthor when an author
+// is known, else the raw free-text query.
+func (s *Source) lookupVolume(ctx context.Context, q metasearch.Query) (gb.Volume, bool, error) {
+	switch {
+	case q.ISBN != "":
+		vol, ok, err := s.client.SearchISBN(ctx, q.ISBN)
+		if err != nil {
+			return gb.Volume{}, false, fmt.Errorf("google books isbn: %w", err)
+		}
+
+		return vol, ok, nil
+	case q.Author != "":
+		return firstVolume(s.client.Search(ctx, q.Title, q.Author))
+	default:
+		return firstVolume(s.client.SearchQuery(ctx, q.Title))
+	}
+}
+
+// firstVolume maps a (volumes, err) result to the first volume, ok=false when empty.
+func firstVolume(vols []gb.Volume, err error) (gb.Volume, bool, error) {
+	if err != nil {
+		return gb.Volume{}, false, fmt.Errorf("google books search: %w", err)
+	}
+	if len(vols) == 0 {
+		return gb.Volume{}, false, nil
+	}
+
+	return vols[0], true, nil
+}
+
+// fillCover gap-fills meta.Cover by downloading the volume's thumbnail (best
+// effort — a failed image fetch just leaves Cover empty, matching the legacy
+// enricher).
+func (s *Source) fillCover(ctx context.Context, vol gb.Volume, meta ebook.Metadata) ebook.Metadata {
 	if thumb := vol.VolumeInfo.ImageLinks.Thumbnail; thumb != "" {
 		if data, ferr := s.client.FetchImage(ctx, thumb); ferr == nil {
 			meta.Cover = data
 		}
 	}
 
-	return meta, nil
+	return meta
 }
 
 // mapVolumes maps a (volumes, err) result to lightweight candidates.

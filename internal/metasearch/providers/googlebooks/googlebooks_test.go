@@ -20,33 +20,36 @@ func TestGoogleBooks(t *testing.T) {
 
 // stubClient implements the full Client interface for the adapter tests.
 type stubClient struct {
-	searchVols []gb.Volume
-	queryVols  []gb.Volume
-	isbnVol    gb.Volume
-	isbnOK     bool
-	getVol     gb.Volume
-	image      []byte
-	err        error
-	imageErr   error
+	searchVols     []gb.Volume
+	queryVols      []gb.Volume
+	isbnVol        gb.Volume
+	isbnOK         bool
+	getVol         gb.Volume
+	image          []byte
+	err            error
+	imageErr       error
+	getVolumeCalls int
 }
 
-func (s stubClient) Search(context.Context, string, string) ([]gb.Volume, error) {
+func (s *stubClient) Search(context.Context, string, string) ([]gb.Volume, error) {
 	return s.searchVols, s.err
 }
 
-func (s stubClient) SearchQuery(context.Context, string) ([]gb.Volume, error) {
+func (s *stubClient) SearchQuery(context.Context, string) ([]gb.Volume, error) {
 	return s.queryVols, s.err
 }
 
-func (s stubClient) SearchISBN(context.Context, string) (gb.Volume, bool, error) {
+func (s *stubClient) SearchISBN(context.Context, string) (gb.Volume, bool, error) {
 	return s.isbnVol, s.isbnOK, s.err
 }
 
-func (s stubClient) GetVolume(context.Context, string) (gb.Volume, error) {
+func (s *stubClient) GetVolume(context.Context, string) (gb.Volume, error) {
+	s.getVolumeCalls++
+
 	return s.getVol, s.err
 }
 
-func (s stubClient) FetchImage(context.Context, string) ([]byte, error) {
+func (s *stubClient) FetchImage(context.Context, string) ([]byte, error) {
 	return s.image, s.imageErr
 }
 
@@ -70,13 +73,13 @@ type coversSuite struct {
 }
 
 func (s *coversSuite) TestDualCapability() {
-	src := New(stubClient{}, mapTitle)
+	src := New(&stubClient{}, mapTitle)
 	s.True(metasearch.HasCapability(src.Capabilities(), metasearch.CapCover))
 	s.True(metasearch.HasCapability(src.Capabilities(), metasearch.CapIdentify))
 }
 
 func (s *coversSuite) TestSearchCoversMapsThumbnails() {
-	src := New(stubClient{searchVols: []gb.Volume{
+	src := New(&stubClient{searchVols: []gb.Volume{
 		newVolume("1", "Dune", "http://books.google.com/x.jpg"),
 		newVolume("2", "No Image", ""),
 	}}, mapTitle)
@@ -88,7 +91,7 @@ func (s *coversSuite) TestSearchCoversMapsThumbnails() {
 }
 
 func (s *coversSuite) TestSearchCoversStripsEdgeCurl() {
-	src := New(stubClient{searchVols: []gb.Volume{
+	src := New(&stubClient{searchVols: []gb.Volume{
 		newVolume("1", "Dune", "http://books.google.com/x.jpg?zoom=1&edge=curl&source=gbs_api"),
 	}}, mapTitle)
 
@@ -108,7 +111,7 @@ type metadataSuite struct {
 }
 
 func (s *metadataSuite) TestSearchByISBNUsesISBNLookup() {
-	src := New(stubClient{isbnVol: newVolume("isbn1", "Dune", ""), isbnOK: true}, mapTitle)
+	src := New(&stubClient{isbnVol: newVolume("isbn1", "Dune", ""), isbnOK: true}, mapTitle)
 
 	got, err := src.Search(context.Background(), metasearch.Query{ISBN: "9780441013593"})
 	s.Require().NoError(err)
@@ -119,20 +122,20 @@ func (s *metadataSuite) TestSearchByISBNUsesISBNLookup() {
 
 func (s *metadataSuite) TestSearchByTitleAuthorVsRaw() {
 	// With an author, uses the structured Search.
-	withAuthor := New(stubClient{searchVols: []gb.Volume{newVolume("a", "Dune", "")}}, mapTitle)
+	withAuthor := New(&stubClient{searchVols: []gb.Volume{newVolume("a", "Dune", "")}}, mapTitle)
 	got, err := withAuthor.Search(context.Background(), metasearch.Query{Title: "Dune", Author: "Herbert"})
 	s.Require().NoError(err)
 	s.Equal("a", got[0].ID)
 
 	// Title only (Fix-Match free text) uses the raw query path.
-	rawOnly := New(stubClient{queryVols: []gb.Volume{newVolume("q", "Dune", "")}}, mapTitle)
+	rawOnly := New(&stubClient{queryVols: []gb.Volume{newVolume("q", "Dune", "")}}, mapTitle)
 	got, err = rawOnly.Search(context.Background(), metasearch.Query{Title: "Dune"})
 	s.Require().NoError(err)
 	s.Equal("q", got[0].ID)
 }
 
 func (s *metadataSuite) TestGetMapsAndDownloadsCover() {
-	src := New(stubClient{
+	src := New(&stubClient{
 		getVol: newVolume("g", "Dune", "https://books.google.com/c.jpg"),
 		image:  []byte("JPEGBYTES"),
 	}, mapTitle)
@@ -147,7 +150,7 @@ func (s *metadataSuite) TestGetMapsAndDownloadsCover() {
 // GetVolume succeeds (returns a volume with a thumbnail) but FetchImage fails —
 // Get must still return metadata with an empty Cover, not an error.
 func (s *metadataSuite) TestGetCoverFetchFailureIsNonFatal() {
-	src := New(stubClient{
+	src := New(&stubClient{
 		getVol:   newVolume("g", "Dune", "https://books.google.com/c.jpg"),
 		imageErr: errors.New("net"),
 	}, mapTitle)
@@ -161,10 +164,26 @@ func (s *metadataSuite) TestGetCoverFetchFailureIsNonFatal() {
 // TestGetVolumeErrorPropagates verifies that an error from GetVolume itself
 // (the shared err field) surfaces as an error from Get.
 func (s *metadataSuite) TestGetVolumeErrorPropagates() {
-	src := New(stubClient{
+	src := New(&stubClient{
 		err: errors.New("rpc unavailable"),
 	}, mapTitle)
 
 	_, err := src.Get(context.Background(), "g")
 	s.Require().Error(err, "GetVolume failing is a real error")
+}
+
+func (s *metadataSuite) TestResolveByISBNMapsSearchedVolumeAndCover() {
+	client := &stubClient{
+		isbnVol: newVolume("v1", "Dune", "https://books.example/thumb.jpg"),
+		isbnOK:  true,
+		image:   []byte("JPEGBYTES"),
+	}
+	src := New(client, mapTitle)
+
+	meta, ok, err := src.Resolve(context.Background(), metasearch.Query{ISBN: "9780441013593"})
+	s.Require().NoError(err)
+	s.Require().True(ok)
+	s.Equal("Dune", meta.Title)
+	s.Equal([]byte("JPEGBYTES"), meta.Cover, "cover is filled from the searched volume, no GetVolume call")
+	s.Zero(client.getVolumeCalls, "Resolve must not issue a second GetVolume round-trip")
 }

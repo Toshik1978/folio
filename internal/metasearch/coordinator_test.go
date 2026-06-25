@@ -10,12 +10,15 @@ import (
 
 // fakeMeta is a MetadataSource backed by canned results.
 type fakeMeta struct {
-	name      string
-	searchOut []Volume
-	searchErr error
-	getOut    ebook.Metadata
-	getErr    error
-	lastQuery Query
+	name       string
+	searchOut  []Volume
+	searchErr  error
+	getOut     ebook.Metadata
+	getErr     error
+	resolveOut ebook.Metadata
+	resolveOk  bool
+	resolveErr error
+	lastQuery  Query
 }
 
 func (f *fakeMeta) Name() string               { return f.name }
@@ -28,6 +31,12 @@ func (f *fakeMeta) Search(_ context.Context, q Query) ([]Volume, error) {
 
 func (f *fakeMeta) Get(context.Context, string) (ebook.Metadata, error) {
 	return f.getOut, f.getErr
+}
+
+func (f *fakeMeta) Resolve(_ context.Context, q Query) (ebook.Metadata, bool, error) {
+	f.lastQuery = q
+
+	return f.resolveOut, f.resolveOk, f.resolveErr
 }
 
 // fakeLookup returns a fixed query for a known book.
@@ -81,11 +90,11 @@ func (s *coreSuite) TestCoordinatorApplyMatchEmptySourceFallsBack() {
 	s.Equal("Dune", meta.Title)
 }
 
-func (s *coreSuite) TestCoordinatorEnrichUsesLookupAndGets() {
+func (s *coreSuite) TestCoordinatorEnrichUsesLookupAndResolves() {
 	gb := &fakeMeta{
-		name:      SourceGoogleBooks,
-		searchOut: []Volume{{Source: SourceGoogleBooks, ID: "1"}},
-		getOut:    ebook.Metadata{Title: "Dune"},
+		name:       SourceGoogleBooks,
+		resolveOut: ebook.Metadata{Title: "Dune"},
+		resolveOk:  true,
 	}
 	c := coord(NewRegistry(gb), fakeLookup{q: Query{ISBN: "9780441013593"}, ok: true})
 
@@ -93,11 +102,11 @@ func (s *coreSuite) TestCoordinatorEnrichUsesLookupAndGets() {
 	s.Require().NoError(err)
 	s.Require().True(ok)
 	s.Equal("Dune", meta.Title)
-	s.Equal("9780441013593", gb.lastQuery.ISBN, "Enrich searches with the looked-up ISBN")
+	s.Equal("9780441013593", gb.lastQuery.ISBN, "Enrich resolves with the looked-up ISBN")
 }
 
 func (s *coreSuite) TestCoordinatorEnrichNoMatch() {
-	gb := &fakeMeta{name: SourceGoogleBooks, searchOut: nil}
+	gb := &fakeMeta{name: SourceGoogleBooks, resolveOk: false}
 	c := coord(NewRegistry(gb), fakeLookup{q: Query{Title: "x"}, ok: true})
 
 	_, ok, err := c.Enrich(context.Background(), 42)
@@ -113,9 +122,8 @@ func (s *coreSuite) TestCoordinatorEnrichUnknownBook() {
 }
 
 func (s *coreSuite) TestCoordinatorEnrichSurfacesError() {
-	// Every source errors and returns no volumes: Enrich must surface the error
-	// and return ok=false (the lastErr return path of the Enrich loop).
-	gb := &fakeMeta{name: SourceGoogleBooks, searchErr: errors.New("upstream down")}
+	// The sole source's Resolve errors: Enrich surfaces it with ok=false.
+	gb := &fakeMeta{name: SourceGoogleBooks, resolveErr: errors.New("upstream down")}
 	c := coord(NewRegistry(gb), fakeLookup{q: Query{Title: "x"}, ok: true})
 
 	_, ok, err := c.Enrich(context.Background(), 42)

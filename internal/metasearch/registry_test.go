@@ -25,6 +25,9 @@ func (d dual) Capabilities() []Capability                                    { r
 func (d dual) SearchCovers(context.Context, Query) ([]CoverCandidate, error) { return nil, nil }
 func (d dual) Search(context.Context, Query) ([]Volume, error)               { return nil, nil }
 func (d dual) Get(context.Context, string) (ebook.Metadata, error)           { return ebook.Metadata{}, nil }
+func (d dual) Resolve(context.Context, Query) (ebook.Metadata, bool, error) {
+	return ebook.Metadata{}, false, nil
+}
 
 func (s *coreSuite) TestRegistryFiltersByCapability() {
 	d := dual{name: "gb", caps: []Capability{CapCover}} // cover-only for now

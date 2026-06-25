@@ -96,17 +96,12 @@ func (c *Coordinator) Enrich(ctx context.Context, bookID int64) (ebook.Metadata,
 
 	var lastErr error
 	for _, ms := range c.registry.MetadataSources() {
-		vols, serr := ms.Search(ctx, q)
-		if serr != nil {
-			lastErr = serr
+		meta, found, rerr := ms.Resolve(ctx, q)
+		if rerr != nil {
+			lastErr = rerr
 			continue
 		}
-		if len(vols) == 0 {
-			continue
-		}
-		meta, gerr := ms.Get(ctx, vols[0].ID)
-		if gerr != nil {
-			lastErr = gerr
+		if !found {
 			continue
 		}
 

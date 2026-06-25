@@ -80,11 +80,13 @@ type CoverCandidate struct {
 }
 
 // MetadataSource returns structured metadata. Search is light (grid candidates);
-// Get fetches the full record by the provider-local id. (Wired in Phase 3.)
+// Get fetches the full record by the provider-local id; Resolve does an auto-enrich
+// lookup-and-map in one provider-optimal operation (no Search+Get round-trip).
 type MetadataSource interface {
 	Source
 	Search(ctx context.Context, q Query) ([]Volume, error)
 	Get(ctx context.Context, id string) (ebook.Metadata, error)
+	Resolve(ctx context.Context, q Query) (ebook.Metadata, bool, error)
 }
 
 // CoverSource returns cover-image candidates for a query.
