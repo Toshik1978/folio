@@ -53,11 +53,13 @@ func (s *coreSuite) TestAggregatorMergesRanksAndDedupes() {
 
 	// dup/c.jpg deduped to one entry; ol timed out; goodreads errored.
 	s.Len(got, 3)
-	// Amazon outranks Google Books; the deduped dup kept the Amazon (higher-res) copy.
-	s.Equal(SourceAmazon, got[0].Source)
+	// Google Books now outranks Amazon (ISBN-keyed REST sources lead); the
+	// deduped dup keeps the higher-PRIORITY copy (Google Books) even though
+	// Amazon's metadata had a higher resolution.
+	s.Equal(SourceGoogleBooks, got[0].Source)
 	for _, c := range got {
 		if c.FullURL == "https://dup/c.jpg" {
-			s.Equal(SourceAmazon, c.Source, "dedupe keeps the higher-priority/res copy")
+			s.Equal(SourceGoogleBooks, c.Source, "dedupe keeps the higher-priority copy")
 		}
 	}
 }

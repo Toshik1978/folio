@@ -48,6 +48,31 @@ func (s *openLibrarySuite) TestSearchCovers() {
 	s.Equal("https://covers.openlibrary.org/b/id/123-M.jpg", got[0].ThumbURL)
 }
 
+func (s *openLibrarySuite) TestSearchByISBNIgnoresTitle() {
+	// With an ISBN present, the query must be ISBN-only: a stored series-subtitle
+	// title would otherwise zero the result for the exact edition.
+	var gotISBN, gotTitle string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotISBN = r.URL.Query().Get("isbn")
+		gotTitle = r.URL.Query().Get("title")
+		_, _ = w.Write([]byte(`{"docs":[{"title":"Death's End","cover_i":7893958}]}`))
+	}))
+	defer srv.Close()
+
+	src := New(5 * time.Second)
+	src.baseURL = srv.URL
+
+	got, err := src.SearchCovers(context.Background(), metasearch.Query{
+		Title: "Death's End (Remembrance of Earth's Past)",
+		ISBN:  "9781466853454",
+	})
+	s.Require().NoError(err)
+	s.Equal("9781466853454", gotISBN)
+	s.Empty(gotTitle, "title must not be sent alongside an exact ISBN")
+	s.Require().Len(got, 1)
+	s.Equal("https://covers.openlibrary.org/b/id/7893958-L.jpg", got[0].FullURL)
+}
+
 func (s *openLibrarySuite) TestCapabilities() {
 	src := New(time.Second)
 	s.Equal(metasearch.SourceOpenLibrary, src.Name())

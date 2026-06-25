@@ -53,9 +53,11 @@ func (s *parseSuite) TestParseCoversFromFixture() {
 	s.Require().NoError(err)
 	defer func() { _ = f.Close() }()
 
-	got, err := parseCovers(f)
+	got, err := parseCovers(f, "Dune")
 	s.Require().NoError(err)
-	s.Require().Len(got, 2, "two items with imageUrl; the empty one is skipped")
+	// Two single-title editions are kept; the boxed set is dropped by relevance
+	// and the empty-image item is skipped.
+	s.Require().Len(got, 2)
 	for _, c := range got {
 		s.Equal(metasearch.SourceGoodreads, c.Source)
 		s.NotEmpty(c.FullURL)
@@ -63,6 +65,22 @@ func (s *parseSuite) TestParseCoversFromFixture() {
 	// The _SX50_ Amazon-CDN size modifier is stripped for the full-res URL.
 	s.Equal("https://images-na.ssl-images-amazon.com/images/S/aaa.jpg", got[0].FullURL)
 	s.Equal("https://images-na.ssl-images-amazon.com/images/S/bbb.jpg", got[1].FullURL)
+	// The "Dune 6-Book Boxed Set" cover (ccc) must not appear.
+	for _, c := range got {
+		s.NotContains(c.FullURL, "ccc")
+	}
+}
+
+func (s *parseSuite) TestParseCoversFailOpenOnEmptyQuery() {
+	f, err := os.Open("testdata/autocomplete.json")
+	s.Require().NoError(err)
+	defer func() { _ = f.Close() }()
+
+	// Empty query title: the title match fails open, but the boxed set is still
+	// dropped as junk. Three items have images; the boxed set goes, leaving two.
+	got, err := parseCovers(f, "")
+	s.Require().NoError(err)
+	s.Require().Len(got, 2)
 }
 
 func (s *parseSuite) TestCapabilities() {

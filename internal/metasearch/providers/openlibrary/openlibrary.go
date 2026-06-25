@@ -51,15 +51,19 @@ type searchResponse struct {
 
 // SearchCovers runs a title/author search and maps docs that carry a cover id.
 func (s *Source) SearchCovers(ctx context.Context, q metasearch.Query) ([]metasearch.CoverCandidate, error) {
+	// ISBN is an exact key: search by it alone. Adding a title/author that
+	// doesn't match Open Library's record for that ISBN (e.g. a series subtitle)
+	// zeroes the result, so the title is only used when no ISBN is available.
 	params := url.Values{}
-	if q.Title != "" {
-		params.Set("title", q.Title)
-	}
-	if q.Author != "" {
-		params.Set("author", q.Author)
-	}
 	if q.ISBN != "" {
 		params.Set("isbn", q.ISBN)
+	} else {
+		if q.Title != "" {
+			params.Set("title", q.Title)
+		}
+		if q.Author != "" {
+			params.Set("author", q.Author)
+		}
 	}
 	params.Set("limit", strconv.Itoa(maxDocs))
 

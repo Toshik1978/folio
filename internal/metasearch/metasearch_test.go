@@ -13,6 +13,7 @@ type coreSuite struct {
 func TestMetasearch(t *testing.T) {
 	suite.Run(t, new(coreSuite))
 	suite.Run(t, new(uaSuite))
+	suite.Run(t, new(relevanceSuite))
 }
 
 func (s *coreSuite) TestHasCapability() {
@@ -64,6 +65,35 @@ func (s *coreSuite) TestOriginalAmazonImage() {
 	for _, tc := range cases {
 		s.Run(tc.name, func() {
 			s.Equal(tc.want, OriginalAmazonImage(tc.in))
+		})
+	}
+}
+
+func (s *coreSuite) TestThumbAmazonImage() {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{
+			name: "replaces AC adaptive-crop modifier",
+			in:   "https://m.media-amazon.com/images/I/91naQyo8fsL._AC_UY218_.jpg",
+			want: "https://m.media-amazon.com/images/I/91naQyo8fsL._SY450_.jpg",
+		},
+		{
+			name: "upgrades tiny goodreads thumbnail",
+			in:   "https://i.gr-assets.com/images/S/books/123i/25451264._SY75_.jpg",
+			want: "https://i.gr-assets.com/images/S/books/123i/25451264._SY450_.jpg",
+		},
+		{
+			name: "non-amazon URL unchanged",
+			in:   "https://books.google.com/books/content?id=abc&img=1",
+			want: "https://books.google.com/books/content?id=abc&img=1",
+		},
+	}
+	for _, tc := range cases {
+		s.Run(tc.name, func() {
+			s.Equal(tc.want, ThumbAmazonImage(tc.in, 450))
 		})
 	}
 }

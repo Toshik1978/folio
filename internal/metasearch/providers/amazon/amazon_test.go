@@ -1,12 +1,9 @@
 package amazon
 
 import (
-	"bytes"
 	"context"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -26,89 +23,50 @@ type baseSuite struct {
 	suite.Suite
 }
 
-// fixture returns the golden Amazon search-result HTML.
-func (s *baseSuite) fixture() []byte {
-	data, err := os.ReadFile("testdata/search.html")
-	s.Require().NoError(err)
-
-	return data
-}
-
 // sourceForHandler starts an httptest server with h (cleaned up automatically)
-// and returns a Source wired to it with a near-zero retry backoff so retry tests
-// don't wait the full 400 ms.
+// and returns a Source wired to it with a zero rate-limit interval for speed.
 func (s *baseSuite) sourceForHandler(h http.HandlerFunc) *Source {
 	srv := httptest.NewServer(h)
 	s.T().Cleanup(srv.Close)
 
 	src := New(5 * time.Second)
 	src.baseURL = srv.URL
-	src.backoff = time.Millisecond
 	src.limiter = newRateLimiter(0)
 
 	return src
 }
 
-// parseSuite covers the offline HTML parser and capability reporting.
+// parseSuite covers the offline product-page cover extraction.
 type parseSuite struct {
 	baseSuite
 }
 
-func (s *parseSuite) TestParseCandidatesFromFixture() {
-	f, err := os.Open("testdata/search.html")
-	s.Require().NoError(err)
-	defer func() { _ = f.Close() }()
-
-	got, err := parseCandidates(f)
-	s.Require().NoError(err)
-
-	// Three s-image results; the sprite (other-image) is ignored.
-	s.Require().Len(got, 3)
-	s.Equal("Dune", got[0].title)
-	s.Equal("https://m.media-amazon.com/images/I/aaa.jpg", got[0].cover.FullURL)
-	s.Equal("https://m.media-amazon.com/images/I/bbb.jpg", got[1].cover.FullURL)
-}
-
-func (s *parseSuite) TestParseThenFilterDropsUnrelated() {
-	f, err := os.Open("testdata/search.html")
-	s.Require().NoError(err)
-	defer func() { _ = f.Close() }()
-
-	cands, err := parseCandidates(f)
-	s.Require().NoError(err)
-
-	got := filterByTitle(cands, "Dune", maxCandidates)
-	// "The Notebook" is dropped; the two Dune editions remain.
-	s.Require().Len(got, 2)
-	s.Equal("https://m.media-amazon.com/images/I/aaa.jpg", got[0].FullURL)
-	s.Equal("https://m.media-amazon.com/images/I/bbb.jpg", got[1].FullURL)
-}
-
-func (s *parseSuite) TestPickSrcsetSkipsMalformedAndPicksHighest() {
-	// Malformed descriptor before any valid entry must be skipped; highest valid wins.
-	srcset := "https://img/bad.jpg garbage, https://img/lo.jpg 1x, https://img/hi.jpg 3x"
-	s.Equal("https://img/hi.jpg", highestDensity(srcset))
-
-	// A srcset that contains only a malformed entry should return "".
-	s.Empty(highestDensity("https://img/bad.jpg garbage"))
-
-	// Equal densities: first entry wins (strict > keeps the earlier one).
-	s.Equal("https://img/first.jpg", highestDensity("https://img/first.jpg 2x, https://img/second.jpg 2x"))
-}
-
-// TestBenignPhraseNotBlocked verifies a real results page that merely contains
-// the generic phrase "something went wrong" in body text (e.g. a review) is not
-// treated as an anti-bot interstitial.
-func (s *parseSuite) TestBenignPhraseNotBlocked() {
+func (s *parseSuite) TestProductCoverURLPrefersHiRes() {
 	body := []byte(`<!doctype html><html><body>
-<p>A gripping tale where something went wrong for the hero.</p>
-<img class="s-image" src="https://m.media-amazon.com/images/I/aaa._AC_UY218_.jpg">
+<img id="landingImage" class="a-dynamic-image"
+  data-old-hires="https://m.media-amazon.com/images/I/81G3FEapceL._SL1500_.jpg"
+  data-a-dynamic-image="{&quot;https://m.media-amazon.com/images/I/81G3FEapceL._SY342_.jpg&quot;:[230,342]}">
 </body></html>`)
-	s.False(isInterstitial(body), "generic phrase in body text must not be a block")
+	s.Equal("https://m.media-amazon.com/images/I/81G3FEapceL._SL1500_.jpg", productCoverURL(body))
+}
 
-	out, err := parseCandidates(bytes.NewReader(body))
-	s.Require().NoError(err)
-	s.Require().NotEmpty(out)
+func (s *parseSuite) TestProductCoverURLFallsBackToLargestDynamic() {
+	body := []byte(`<!doctype html><html><body>
+<img class="a-dynamic-image"
+  data-a-dynamic-image="{&quot;https://img/a._SY200_.jpg&quot;:[130,200],&quot;https://img/a._SY500_.jpg&quot;:[325,500]}">
+</body></html>`)
+	s.Equal("https://img/a._SY500_.jpg", productCoverURL(body))
+}
+
+func (s *parseSuite) TestProductCoverURLEmptyWhenNoImage() {
+	s.Empty(productCoverURL([]byte(`<html><body><p>no image</p></body></html>`)))
+}
+
+func (s *parseSuite) TestIsInterstitial() {
+	block := []byte(`<html><body>Enter the characters you see below</body></html>`)
+	s.True(isInterstitial(block))
+	// A benign page that merely quotes "something went wrong" in a review is not a block.
+	s.False(isInterstitial([]byte(`<p>a tale where something went wrong for the hero</p>`)))
 }
 
 func (s *parseSuite) TestCapabilities() {
@@ -122,90 +80,72 @@ type searchSuite struct {
 	baseSuite
 }
 
-func (s *searchSuite) TestSearchCovers() {
-	src := s.sourceForHandler(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write(s.fixture())
+func (s *searchSuite) TestSearchByASINUsesProductPage() {
+	var paths []string
+	src := s.sourceForHandler(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		_, _ = w.Write([]byte(`<!doctype html><html><body>
+<img id="landingImage" class="a-dynamic-image"
+  data-old-hires="https://m.media-amazon.com/images/I/81G3FEapceL._SL1500_.jpg"
+  data-a-dynamic-image="{&quot;https://m.media-amazon.com/images/I/81G3FEapceL._SY342_.jpg&quot;:[230,342]}">
+</body></html>`))
 	})
 
-	got, err := src.SearchCovers(context.Background(), metasearch.Query{Title: "Dune"})
+	got, err := src.SearchCovers(context.Background(),
+		metasearch.Query{Title: "Death's End", ASIN: "B00WDVKZY0"})
 	s.Require().NoError(err)
-	s.Require().NotEmpty(got)
-	for _, c := range got {
-		s.Equal(metasearch.SourceAmazon, c.Source)
-	}
+	s.Require().Len(got, 1)
+	// The product page's high-res image, stripped to its full-resolution URL,
+	// with a uniform thumbnail.
+	s.Equal("https://m.media-amazon.com/images/I/81G3FEapceL.jpg", got[0].FullURL)
+	s.Equal("https://m.media-amazon.com/images/I/81G3FEapceL._SY450_.jpg", got[0].ThumbURL)
+	s.Require().Len(paths, 1)
+	s.Contains(paths[0], "/dp/B00WDVKZY0")
 }
 
-func (s *searchSuite) TestSearchCoversNon200IsBlocked() {
+func (s *searchSuite) TestSearchWithoutASINReturnsNothing() {
+	hit := false
+	src := s.sourceForHandler(func(http.ResponseWriter, *http.Request) { hit = true })
+
+	got, err := src.SearchCovers(context.Background(), metasearch.Query{Title: "Death's End"})
+	s.Require().NoError(err)
+	s.Empty(got)
+	s.False(hit, "no ASIN must not issue any request")
+}
+
+func (s *searchSuite) TestProductPageNon200IsBlocked() {
 	src := s.sourceForHandler(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusServiceUnavailable)
 	})
 
-	_, err := src.SearchCovers(context.Background(), metasearch.Query{Title: "Dune"})
+	_, err := src.SearchCovers(context.Background(), metasearch.Query{ASIN: "B00WDVKZY0"})
 	s.Require().Error(err)
 	s.Require().ErrorIs(err, metasearch.ErrBlocked)
 }
 
-func (s *searchSuite) TestSearchCoversCaptchaIsBlocked() {
-	captcha, err := os.ReadFile("testdata/captcha.html")
-	s.Require().NoError(err)
+func (s *searchSuite) TestProductPageInterstitialIsBlocked() {
 	src := s.sourceForHandler(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write(captcha) // HTTP 200 with a CAPTCHA body
+		_, _ = w.Write([]byte(`<html><body>Enter the characters you see below</body></html>`))
 	})
 
-	_, err = src.SearchCovers(context.Background(), metasearch.Query{Title: "Dune"})
+	_, err := src.SearchCovers(context.Background(), metasearch.Query{ASIN: "B00WDVKZY0"})
 	s.Require().Error(err)
 	s.Require().ErrorIs(err, metasearch.ErrBlocked)
 }
 
-func (s *searchSuite) TestSearchCoversInterstitialNotRetried() {
-	var reqCount atomic.Int32
+func (s *searchSuite) TestProductFetchIsThrottled() {
 	src := s.sourceForHandler(func(w http.ResponseWriter, _ *http.Request) {
-		reqCount.Add(1)
-		// Minimal Akamai bot-manager interstitial stub (HTTP 200).
-		_, _ = w.Write([]byte(`<!doctype html><html><head><title>&nbsp;</title>` +
-			`<meta http-equiv="refresh" content="5; URL='/s?bm-verify=abc'"></head>` +
-			`<body><script>function triggerInterstitialChallenge(){}</script></body></html>`))
+		_, _ = w.Write([]byte(`<img class="a-dynamic-image" data-old-hires="https://img/a._SL1500_.jpg">`))
 	})
-
-	_, err := src.SearchCovers(context.Background(), metasearch.Query{Title: "Dune"})
-	s.Require().Error(err)
-	s.Require().ErrorIs(err, metasearch.ErrBlocked)
-	s.Equal(int32(1), reqCount.Load(), "a hard interstitial block must not be retried")
-}
-
-func (s *searchSuite) TestSearchCoversRetriesOnTransientBlock() {
-	var reqCount atomic.Int32
-	src := s.sourceForHandler(func(w http.ResponseWriter, _ *http.Request) {
-		n := reqCount.Add(1)
-		if n == 1 {
-			w.WriteHeader(http.StatusServiceUnavailable)
-
-			return
-		}
-		_, _ = w.Write(s.fixture())
-	})
-
-	got, err := src.SearchCovers(context.Background(), metasearch.Query{Title: "Dune"})
-	s.Require().NoError(err)
-	s.Require().NotEmpty(got)
-	s.GreaterOrEqual(int(reqCount.Load()), 2, "server should have been hit at least twice")
-}
-
-func (s *searchSuite) TestDirectSearchIsThrottled() {
-	src := s.sourceForHandler(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write(s.fixture())
-	})
-	// Give the limiter a real interval and confirm two back-to-back searches
-	// are spaced by it (the helper otherwise sets a zero interval for speed).
 	src.limiter = newRateLimiter(60 * time.Millisecond)
 
 	start := time.Now()
-	_, err := src.SearchCovers(context.Background(), metasearch.Query{Title: "Dune"})
+	_, err := src.SearchCovers(context.Background(), metasearch.Query{ASIN: "A1"})
 	s.Require().NoError(err)
-	_, err = src.SearchCovers(context.Background(), metasearch.Query{Title: "Dune"})
+	_, err = src.SearchCovers(context.Background(), metasearch.Query{ASIN: "A2"})
 	s.Require().NoError(err)
 	elapsed := time.Since(start)
-	s.GreaterOrEqual(elapsed, 60*time.Millisecond, "two searches must be spaced by one interval")
+	s.GreaterOrEqual(elapsed, 60*time.Millisecond, "two fetches must be spaced by one interval")
 	s.Less(elapsed, 5*time.Second, "throttle must not hang or stack extra intervals")
 }
 
@@ -223,7 +163,6 @@ func (s *searchSuite) TestCheckRedirectBoundsDepth() {
 		"https://www.amazon.com/x/dp/B01", http.NoBody)
 	s.Require().NoError(err)
 
-	// Within the limit: allowed. At the limit: stopped.
 	s.Require().NoError(src.checkRedirect(req, nil))
 	via := make([]*http.Request, maxRedirects)
 	s.Require().Error(src.checkRedirect(req, via))

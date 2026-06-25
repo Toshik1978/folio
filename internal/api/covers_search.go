@@ -46,9 +46,13 @@ func (h *BooksHandler) searchCovers(w http.ResponseWriter, r *http.Request) {
 
 	q := h.seedQuery(r.Context(), book)
 	if explicit := strings.TrimSpace(r.URL.Query().Get("q")); explicit != "" {
-		// An explicit query is verbatim: don't let stale stored author/ISBN
-		// narrow it (a publisher-as-author can zero out provider results).
-		q = metasearch.Query{Title: explicit}
+		// An explicit query overrides the title and drops the stored author (a
+		// publisher-as-author can zero out provider results). The ISBN and ASIN
+		// are kept: they are exact ids, never narrow wrongly, and are the keys
+		// that yield the correct edition's cover (OpenLibrary by ISBN, Amazon by
+		// ASIN product page).
+		q.Title = explicit
+		q.Author = ""
 	}
 
 	candidates := h.coverSearch.SearchCovers(r.Context(), q)
@@ -71,9 +75,15 @@ func (h *BooksHandler) seedQuery(ctx context.Context, book dbq.Book) metasearch.
 		h.log.Warn("seed query identifiers", slog.Int64("book", book.ID), slog.Any("error", err))
 	} else {
 		for _, idr := range ids {
-			if idr.Type == ebook.IdentifierISBN {
-				q.ISBN = idr.Value
-				break
+			switch idr.Type {
+			case ebook.IdentifierISBN:
+				if q.ISBN == "" {
+					q.ISBN = idr.Value
+				}
+			case ebook.IdentifierAmazon:
+				if q.ASIN == "" {
+					q.ASIN = idr.Value
+				}
 			}
 		}
 	}

@@ -13,12 +13,16 @@ import (
 // one slow source can't stall the grid.
 const defaultCoverTimeout = 8 * time.Second
 
-// coverPriority ranks providers highest-quality first. Unknown sources sort last.
+// coverPriority ranks providers highest-quality first. Unknown sources sort
+// last. ISBN-keyed REST sources (Open Library, Google Books) lead: they return
+// the exact edition's portrait cover. Amazon ranks last — it is scraped, its
+// search thumbnails are often square audiobook/crop art rather than the print
+// cover, and results vary by region and anti-bot state.
 var coverPriority = map[string]int{ //nolint:gochecknoglobals // package-level lookup table, not mutable state
-	SourceAmazon:      4,
-	SourceGoodreads:   3,
-	SourceOpenLibrary: 2,
-	SourceGoogleBooks: 1,
+	SourceOpenLibrary: 4,
+	SourceGoogleBooks: 3,
+	SourceGoodreads:   2,
+	SourceAmazon:      1,
 }
 
 // Aggregator fans a cover query out to every CoverSource in its registry,

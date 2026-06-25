@@ -38,6 +38,10 @@ type Query struct {
 	Title  string
 	Author string
 	ISBN   string
+	// ASIN is the Amazon product id, when known. It lets the Amazon source fetch
+	// the product page directly for the exact edition's high-resolution cover,
+	// instead of scraping a square search-result thumbnail.
+	ASIN string
 }
 
 // SearchTerm is the normalized free-text query a provider sends: the title and

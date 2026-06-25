@@ -21,6 +21,9 @@ const (
 	maxJSONBytes   = 1 << 20
 	maxAttempts    = 3
 	retryBackoff   = 400 * time.Millisecond
+	// thumbHeight is the uniform pixel height for picker thumbnails; the
+	// autocomplete API returns tiny _SY75_ images that render blurry.
+	thumbHeight = 450
 )
 
 // Source queries Goodreads for cover candidates.
@@ -64,8 +67,22 @@ func (s *Source) SearchCovers(ctx context.Context, q metasearch.Query) ([]metase
 }
 
 // autocompleteItem is one element of the Goodreads auto_complete JSON array.
+// Title drives relevance filtering: the endpoint freely returns box sets and
+// omnibuses (e.g. "… The Three-Body Trilogy (…, Death's End)") whose cover shows
+// the whole series rather than the requested book.
 type autocompleteItem struct {
-	ImageURL string `json:"imageUrl"`
+	ImageURL      string `json:"imageUrl"`
+	Title         string `json:"title"`
+	BookTitleBare string `json:"bookTitleBare"`
+}
+
+// title returns the best available title for relevance filtering.
+func (it autocompleteItem) title() string {
+	if it.Title != "" {
+		return it.Title
+	}
+
+	return it.BookTitleBare
 }
 
 // fetchOnce performs a single request to the autocomplete API.
@@ -91,24 +108,26 @@ func (s *Source) fetchOnce(ctx context.Context, q metasearch.Query) ([]metasearc
 		return nil, fmt.Errorf("goodreads status %d: %w", resp.StatusCode, metasearch.ErrBlocked)
 	}
 
-	return parseCovers(io.LimitReader(resp.Body, maxJSONBytes))
+	return parseCovers(io.LimitReader(resp.Body, maxJSONBytes), q.Title)
 }
 
 // parseCovers decodes the autocomplete JSON array into cover candidates,
-// upgrading each small thumbnail to its full-resolution URL.
-func parseCovers(r io.Reader) ([]metasearch.CoverCandidate, error) {
+// upgrading each small thumbnail to its full-resolution URL. Box sets and other
+// non-single-title results are filtered out by title via the shared
+// metasearch relevance rules.
+func parseCovers(r io.Reader, queryTitle string) ([]metasearch.CoverCandidate, error) {
 	var items []autocompleteItem
 	if err := json.NewDecoder(r).Decode(&items); err != nil {
 		return nil, fmt.Errorf("decode json: %w", err)
 	}
 	var out []metasearch.CoverCandidate
 	for _, it := range items {
-		if it.ImageURL == "" {
+		if it.ImageURL == "" || !metasearch.TitleAcceptable(queryTitle, it.title()) {
 			continue
 		}
 		out = append(out, metasearch.CoverCandidate{
 			Source:   metasearch.SourceGoodreads,
-			ThumbURL: it.ImageURL,
+			ThumbURL: metasearch.ThumbAmazonImage(it.ImageURL, thumbHeight),
 			FullURL:  metasearch.OriginalAmazonImage(it.ImageURL),
 		})
 	}

@@ -42,6 +42,10 @@ type Identifier struct {
 // IdentifierISBN is the canonical type label for ISBN identifiers.
 const IdentifierISBN = "isbn"
 
+// IdentifierAmazon is the canonical type label for Amazon ASIN identifiers
+// (ingest normalizes amazon-asin/mobi-asin/asin to this).
+const IdentifierAmazon = "amazon"
+
 // maxCoverBytes caps a cover image extracted from a source file, mirroring the
 // API's upload/fetch cap (internal/api.maxCoverBytes). A tiny compressed archive
 // entry can inflate to gigabytes (a zip bomb); without a read cap that would

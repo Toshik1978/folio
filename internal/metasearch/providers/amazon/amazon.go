@@ -1,6 +1,8 @@
-// Package amazon is a metasearch CoverSource that scrapes Amazon search-result
-// thumbnails. Scraping is accepted here: a private personal server, a handful
-// of one-off lookups, and a maintainer who fixes the parser when markup drifts.
+// Package amazon is a metasearch CoverSource that fetches a book's cover from
+// its Amazon product page, keyed by ASIN. The product page carries the real
+// high-resolution print cover; Amazon's search results only expose a squared
+// thumbnail, so this source contributes nothing without an ASIN and lets the
+// ISBN/title sources handle those books.
 package amazon
 
 import (
@@ -15,17 +17,19 @@ import (
 const (
 	defaultBaseURL = "https://www.amazon.com"
 	maxHTMLBytes   = 4 << 20
-	maxAttempts    = 3
-	retryBackoff   = 400 * time.Millisecond
 	politeInterval = time.Second
 	maxRedirects   = 5
+	// imgTag is the HTML img element name.
+	imgTag = "img"
+	// thumbHeight is the uniform pixel height requested for the picker thumbnail,
+	// large enough to render crisply.
+	thumbHeight = 450
 )
 
-// Source scrapes Amazon for cover candidates.
+// Source fetches Amazon product-page covers.
 type Source struct {
 	baseURL string
 	client  *http.Client
-	backoff time.Duration
 	limiter *rateLimiter
 }
 
@@ -33,7 +37,6 @@ type Source struct {
 func New(timeout time.Duration) *Source {
 	s := &Source{
 		baseURL: defaultBaseURL,
-		backoff: retryBackoff,
 		limiter: newRateLimiter(politeInterval),
 	}
 	s.client = &http.Client{Timeout: timeout, CheckRedirect: s.checkRedirect}
@@ -49,21 +52,22 @@ func (s *Source) Capabilities() []metasearch.Capability {
 	return []metasearch.Capability{metasearch.CapCover}
 }
 
-// SearchCovers scrapes Amazon's search-results page for cover candidates. It is
-// best-effort: when Amazon serves a bot interstitial the error wraps
-// ErrBlocked and the aggregator simply drops this source for that query.
+// SearchCovers returns the cover from the book's Amazon product page, keyed by
+// ASIN. Without an ASIN there is nothing reliable to fetch, so it returns no
+// candidates rather than scraping noisy search-result thumbnails.
 func (s *Source) SearchCovers(ctx context.Context, q metasearch.Query) ([]metasearch.CoverCandidate, error) {
-	out, err := s.searchDirect(ctx, q)
+	if q.ASIN == "" {
+		return nil, nil
+	}
+	covers, err := s.fetchProductCover(ctx, q.ASIN)
 	if err != nil {
-		return nil, fmt.Errorf("amazon search: %w", err)
+		return nil, fmt.Errorf("amazon product: %w", err)
 	}
 
-	return out, nil
+	return covers, nil
 }
 
-// checkRedirect bounds redirect depth on the direct Amazon fetch. The host
-// allowlist that previously guarded externally-sourced URLs went away with the
-// DuckDuckGo fallback; the only request target now is Amazon itself.
+// checkRedirect bounds redirect depth on the product fetch.
 func (s *Source) checkRedirect(_ *http.Request, via []*http.Request) error {
 	if len(via) >= maxRedirects {
 		return fmt.Errorf("amazon: stopped after %d redirects", maxRedirects)

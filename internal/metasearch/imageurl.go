@@ -1,6 +1,7 @@
 package metasearch
 
 import (
+	"fmt"
 	"regexp"
 	"strings"
 )
@@ -13,9 +14,25 @@ import (
 // chars, a trailing underscore, then dot + extension at end of string.
 var amazonSizeModifier = regexp.MustCompile(`(?i)\._[A-Za-z0-9,_]+_\.(jpg|jpeg|png|gif)$`)
 
+// replaceAmazonModifier swaps the Amazon-CDN size-modifier segment of url for
+// repl (placed before the lower-cased extension), or returns url unchanged when
+// it carries no recognizable modifier (e.g. a Google Books content URL). repl is
+// "" to strip the modifier entirely, or "._SY450_" to resize.
+func replaceAmazonModifier(url, repl string) string {
+	loc := amazonSizeModifier.FindStringIndex(url)
+	if loc == nil {
+		return url
+	}
+	m := amazonSizeModifier.FindStringSubmatch(url)
+	if m == nil {
+		return url
+	}
+
+	return url[:loc[0]] + repl + "." + strings.ToLower(m[1])
+}
+
 // OriginalAmazonImage strips the Amazon-CDN size-modifier segment from url and
-// returns the original full-resolution image URL. If url contains no modifier
-// (or is not an Amazon CDN URL) it is returned unchanged.
+// returns the original full-resolution image URL.
 //
 // Examples:
 //
@@ -25,16 +42,14 @@ var amazonSizeModifier = regexp.MustCompile(`(?i)\._[A-Za-z0-9,_]+_\.(jpg|jpeg|p
 //	"https://images-na.ssl-images-amazon.com/images/S/abc._SX50_.jpg"
 //	  → "https://images-na.ssl-images-amazon.com/images/S/abc.jpg"
 func OriginalAmazonImage(url string) string {
-	loc := amazonSizeModifier.FindStringIndex(url)
-	if loc == nil {
-		return url
-	}
-	// FindStringSubmatch to grab the captured extension group.
-	m := amazonSizeModifier.FindStringSubmatch(url)
-	if m == nil {
-		return url
-	}
-	ext := strings.ToLower(m[1])
+	return replaceAmazonModifier(url, "")
+}
 
-	return url[:loc[0]] + "." + ext
+// ThumbAmazonImage returns url with its Amazon-CDN size modifier replaced by a
+// uniform height-scaled modifier (_SY<height>_), yielding a crisp,
+// aspect-preserving thumbnail. It deliberately drops the _AC_ "adaptive crop"
+// modifier, which squares or pads some covers, and replaces tiny modifiers like
+// _SY75_ that render blurry.
+func ThumbAmazonImage(url string, height int) string {
+	return replaceAmazonModifier(url, fmt.Sprintf("._SY%d_", height))
 }
