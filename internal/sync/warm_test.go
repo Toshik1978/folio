@@ -1,13 +1,19 @@
 package sync
 
 import (
+	"archive/zip"
 	"context"
+	"log/slog"
 	"os"
+	"path/filepath"
 	"slices"
 	stdsync "sync"
 	"time"
 
+	"github.com/Toshik1978/folio/internal/db"
 	"github.com/Toshik1978/folio/internal/db/dbq"
+	"github.com/Toshik1978/folio/internal/ebook"
+	"github.com/Toshik1978/folio/internal/ingest"
 	"github.com/Toshik1978/folio/internal/libtype"
 )
 
@@ -157,4 +163,75 @@ func (s *warmSuite) TestWarmNilBackfillerIsSafe() {
 	s.seedBook(src.ID, "x")
 
 	s.NotPanics(func() { s.engine.warmer.safeWarm(src.ID) })
+}
+
+// fb2Doc builds a minimal FB2 document carrying an annotation.
+func fb2Doc(title, annotation string) string {
+	return `<?xml version="1.0" encoding="utf-8"?>
+<FictionBook><description><title-info>
+<book-title>` + title + `</book-title>
+<author><first-name>A</first-name><last-name>B</last-name></author>
+<annotation>` + annotation + `</annotation>
+<lang>en</lang>
+</title-info></description></FictionBook>`
+}
+
+func (s *warmSuite) TestINPXSyncBackfillsAnnotation() {
+	s.engine.warmer.delay = 0
+
+	// A real INPX library: an .inpx index path whose sibling archive holds the FB2.
+	dir := s.T().TempDir()
+	inpxPath := filepath.Join(dir, "lib.inpx")
+	archivePath := filepath.Join(dir, "books.zip")
+	innerName := "1.fb2"
+
+	zf, err := os.Create(archivePath)
+	s.Require().NoError(err)
+	zw := zip.NewWriter(zf)
+	fw, err := zw.Create(innerName)
+	s.Require().NoError(err)
+	_, err = fw.Write([]byte(fb2Doc("Backfilled", "Recovered over OPDS")))
+	s.Require().NoError(err)
+	s.Require().NoError(zw.Close())
+	s.Require().NoError(zf.Close())
+
+	// Wire real components: the extractor parses the FB2; the backfiller persists.
+	ext := ingest.NewExtractor(s.db, slog.New(slog.DiscardHandler), s.T().TempDir(), newSyncTestDispatcher())
+	s.engine.warmer.extractor = ext
+	s.engine.warmer.backfiller = ingest.NewLocalBackfiller(slog.New(slog.DiscardHandler), s.db, db.NewWriteGuard(), ext)
+
+	src := s.insertLibrary(libtype.INPX, inpxPath)
+	id := s.seedBookWithFile(src.ID, "Backfilled", "books.zip/"+innerName)
+
+	s.engine.warmer.safeWarm(src.ID)
+
+	stored, err := dbq.New(s.db).GetBook(context.Background(), id)
+	s.Require().NoError(err)
+	s.True(stored.Annotation.Valid, "annotation backfilled from FB2")
+	s.Contains(stored.Annotation.String, "Recovered over OPDS")
+	s.Equal(int64(1), stored.MetadataChecked)
+}
+
+// seedBookWithFile seeds a book whose single file's SourcePath points at an INPX
+// inner entry ("archive.zip/inner"). The warmer's Extractor resolves it relative
+// to the library's .inpx path.
+func (s *warmSuite) seedBookWithFile(libraryID int64, title, sourcePath string) int64 {
+	q := dbq.New(s.db)
+	id, err := q.InsertBook(context.Background(), dbq.InsertBookParams{
+		LibraryID: libraryID, LibraryKey: title, Title: title,
+		Language: "en", ContentHash: title, AddedAt: time.Now().UnixNano(),
+	})
+	s.Require().NoError(err)
+	_, err = q.InsertBookFile(context.Background(), dbq.InsertBookFileParams{
+		BookID: id, FileFormat: "fb2", FileSize: 1, SourcePath: sourcePath,
+	})
+	s.Require().NoError(err)
+
+	return id
+}
+
+// newSyncTestDispatcher builds the production parser set for the sync package's
+// real-extractor tests.
+func newSyncTestDispatcher() *ebook.Dispatcher {
+	return ebook.NewDispatcher(ebook.NewEPUB(), ebook.NewFB2(), ebook.NewMOBI(), ebook.NewPDF())
 }
