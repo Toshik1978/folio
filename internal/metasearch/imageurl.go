@@ -19,16 +19,14 @@ var cdnSizeModifier = regexp.MustCompile(`(?i)\._[A-Za-z0-9,_]+_\.(jpg|jpeg|png|
 // it carries no recognizable modifier (e.g. a Google Books content URL). repl is
 // "" to strip the modifier entirely, or "._SY450_" to resize.
 func replaceCDNModifier(url, repl string) string {
-	loc := cdnSizeModifier.FindStringIndex(url)
+	loc := cdnSizeModifier.FindStringSubmatchIndex(url)
 	if loc == nil {
 		return url
 	}
-	m := cdnSizeModifier.FindStringSubmatch(url)
-	if m == nil {
-		return url
-	}
+	// loc[0] = match start; loc[2]:loc[3] = the extension capture group.
+	ext := strings.ToLower(url[loc[2]:loc[3]])
 
-	return url[:loc[0]] + repl + "." + strings.ToLower(m[1])
+	return url[:loc[0]] + repl + "." + ext
 }
 
 // OriginalCDNImage strips the CDN size-modifier segment (the Amazon/Goodreads

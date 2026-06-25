@@ -45,7 +45,8 @@ func isInterstitial(body []byte) bool {
 // cover — the high-resolution portrait image Amazon shows on the detail page
 // (e.g. _SL1500_), which is the actual print cover rather than the squared
 // search-result thumbnail. It returns an empty slice (no error) when the page
-// has no recognizable main image, so the caller can fall back to search.
+// has no recognizable main image, so the aggregator simply gets no Amazon
+// candidate for this book.
 func (s *Source) fetchProductCover(ctx context.Context, asin string) ([]metasearch.CoverCandidate, error) {
 	if err := s.limiter.wait(ctx); err != nil {
 		return nil, err

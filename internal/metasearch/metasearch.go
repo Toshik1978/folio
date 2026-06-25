@@ -59,8 +59,7 @@ type Source interface {
 // Volume is a lightweight metadata search candidate. Source+ID is the routable
 // handle used to fetch the full record (see MetadataSource.Get) when the user
 // applies a pick. It is the provider-neutral replacement for googlebooks.Volume
-// leaking through the API. (Consumed in Phase 3; defined here so the surface is
-// built once.)
+// leaking through the API.
 type Volume struct {
 	Source       string   `json:"source"`
 	ID           string   `json:"id"`
