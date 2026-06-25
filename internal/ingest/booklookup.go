@@ -12,7 +12,7 @@ import (
 )
 
 // BookLookup builds a metasearch query from a book in the folio database: its
-// title, first author, and first ISBN identifier. It satisfies
+// title, first author, first ISBN identifier, and first Amazon ASIN. It satisfies
 // metasearch.BookLookup, the seam the Coordinator uses to auto-enrich.
 type BookLookup struct {
 	db *sql.DB

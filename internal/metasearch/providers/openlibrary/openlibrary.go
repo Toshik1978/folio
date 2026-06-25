@@ -42,11 +42,14 @@ func (s *Source) Capabilities() []metasearch.Capability {
 	return []metasearch.Capability{metasearch.CapCover}
 }
 
+// searchDoc is a single document entry from the Open Library search API response.
+type searchDoc struct {
+	Title  string `json:"title"`
+	CoverI int    `json:"cover_i"`
+}
+
 type searchResponse struct {
-	Docs []struct {
-		Title  string `json:"title"`
-		CoverI int    `json:"cover_i"`
-	} `json:"docs"`
+	Docs []searchDoc `json:"docs"`
 }
 
 // searchParams builds the Open Library query parameters for q. ISBN is an
@@ -72,11 +75,7 @@ func searchParams(q metasearch.Query) url.Values {
 // toCandidates maps the search response docs to cover candidates. When byISBN
 // is true the candidate Title is left empty so the aggregator's relevance
 // filter fails open (the ISBN already pins the exact edition).
-func toCandidates(docs []struct {
-	Title  string `json:"title"`
-	CoverI int    `json:"cover_i"`
-}, byISBN bool,
-) []metasearch.CoverCandidate {
+func toCandidates(docs []searchDoc, byISBN bool) []metasearch.CoverCandidate {
 	out := make([]metasearch.CoverCandidate, 0, len(docs))
 	for _, d := range docs {
 		if d.CoverI == 0 {

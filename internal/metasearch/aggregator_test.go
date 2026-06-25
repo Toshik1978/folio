@@ -107,6 +107,7 @@ func (s *coreSuite) TestAggregatorFiltersJunkByTitle() {
 
 	got := agg.SearchCovers(context.Background(), Query{Title: "Dune"})
 
+	s.Len(got, 2, "exactly the matching GB cover and the empty-title Amazon cover survive")
 	urls := make(map[string]bool)
 	for _, c := range got {
 		urls[c.FullURL] = true

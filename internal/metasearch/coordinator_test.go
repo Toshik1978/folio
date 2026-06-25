@@ -18,7 +18,7 @@ type fakeMeta struct {
 	resolveOut ebook.Metadata
 	resolveOk  bool
 	resolveErr error
-	lastQuery  Query
+	lastQuery  Query // captures the most recent Search OR Resolve call's query
 }
 
 func (f *fakeMeta) Name() string               { return f.name }

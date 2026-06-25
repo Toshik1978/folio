@@ -98,7 +98,7 @@ func (s *importerSuite) TestCoverPrioNotRaisedWhenSaveFails() {
 	r := s.rec(lib, "epub", "a.epub")
 	r.Cover = s.coverFixture()
 
-	id, err := im.add(ctx, r, 1)
+	id, err := im.add(ctx, r, 0)
 	s.Require().NoError(err)
 	s.Require().NoError(im.commit())
 
