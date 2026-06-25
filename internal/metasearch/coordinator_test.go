@@ -81,13 +81,12 @@ func (s *coreSuite) TestCoordinatorApplyMatchRoutesBySource() {
 	s.Error(err, "unknown source is an error")
 }
 
-func (s *coreSuite) TestCoordinatorApplyMatchEmptySourceFallsBack() {
+func (s *coreSuite) TestCoordinatorApplyMatchRejectsEmptySource() {
 	gb := &fakeMeta{name: SourceGoogleBooks, getOut: ebook.Metadata{Title: "Dune"}}
 	c := coord(NewRegistry(gb), fakeLookup{})
 
-	meta, err := c.ApplyMatch(context.Background(), "", "1")
-	s.Require().NoError(err, "an empty source (legacy body) tries each metadata source")
-	s.Equal("Dune", meta.Title)
+	_, err := c.ApplyMatch(context.Background(), "", "1")
+	s.Require().Error(err, "an empty source must be rejected, never guessed across sources")
 }
 
 func (s *coreSuite) TestCoordinatorEnrichUsesLookupAndResolves() {

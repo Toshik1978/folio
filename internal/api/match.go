@@ -156,8 +156,8 @@ func (h *BooksHandler) persistMatch(
 }
 
 // decodeMatch reads the {"source":"…","volume_id":"…"} body of an applyMatch
-// request. volume_id is required; source may be empty (the coordinator then
-// tries each metadata source).
+// request. Both source and volume_id are required; the frontend always sends the
+// candidate's source, and the coordinator rejects an empty one.
 func (h *BooksHandler) decodeMatch(w http.ResponseWriter, r *http.Request) (source, id string, ok bool) {
 	var body struct {
 		Source   string `json:"source"`

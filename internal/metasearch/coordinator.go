@@ -48,37 +48,24 @@ func (c *Coordinator) Search(ctx context.Context, query string) ([]Volume, error
 	return out, nil
 }
 
-// ApplyMatch fetches the full metadata for a chosen candidate. A named source is
-// routed directly; an empty source (legacy {volume_id}-only body) falls back to
-// trying each metadata source until one resolves.
+// ApplyMatch fetches the full metadata for a chosen candidate from the named
+// source. The source is required: a candidate id is only meaningful to the source
+// that produced it, so guessing across sources could apply a foreign record.
 func (c *Coordinator) ApplyMatch(ctx context.Context, source, id string) (ebook.Metadata, error) {
-	if source != "" {
-		ms, ok := c.registry.MetadataSourceByName(source)
-		if !ok {
-			return ebook.Metadata{}, fmt.Errorf("unknown metadata source %q", source)
-		}
-
-		meta, err := ms.Get(ctx, id)
-		if err != nil {
-			return ebook.Metadata{}, fmt.Errorf("get metadata from %q: %w", source, err)
-		}
-
-		return meta, nil
+	if source == "" {
+		return ebook.Metadata{}, errors.New("apply match: source is required")
+	}
+	ms, ok := c.registry.MetadataSourceByName(source)
+	if !ok {
+		return ebook.Metadata{}, fmt.Errorf("unknown metadata source %q", source)
 	}
 
-	var lastErr error
-	for _, ms := range c.registry.MetadataSources() {
-		meta, err := ms.Get(ctx, id)
-		if err == nil {
-			return meta, nil
-		}
-		lastErr = err
-	}
-	if lastErr != nil {
-		return ebook.Metadata{}, fmt.Errorf("get metadata from fallback: %w", lastErr)
+	meta, err := ms.Get(ctx, id)
+	if err != nil {
+		return ebook.Metadata{}, fmt.Errorf("get metadata from %q: %w", source, err)
 	}
 
-	return ebook.Metadata{}, errors.New("no metadata sources configured")
+	return meta, nil
 }
 
 // Enrich auto-enriches a book: it builds the lookup query (ISBN-first, else
