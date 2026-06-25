@@ -19,9 +19,8 @@ const (
 	thumbQuality = 85
 )
 
-// makeThumbnail decodes a JPEG cover and returns an aspect-preserving JPEG whose
-// longest side is at most thumbMaxDim. A cover already within the bound is
-// returned unchanged (no re-encode, never upscaled).
+// makeThumbnail decodes a JPEG cover (guarding against a decompression bomb from
+// the header) and returns an aspect-preserving JPEG via resizeToThumb.
 func makeThumbnail(jpegData []byte) ([]byte, error) {
 	// Reject a decompression bomb from the header alone, before image.Decode
 	// allocates width×height×4 bytes. convertToJPEG passes already-JPEG covers
@@ -36,10 +35,20 @@ func makeThumbnail(jpegData []byte) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("decode cover for thumbnail: %w", err)
 	}
+
+	return resizeToThumb(img, jpegData)
+}
+
+// resizeToThumb downsizes an already-decoded image to at most thumbMaxDim on its
+// longest side. original is the encoded source bytes, returned unchanged when the
+// image is already within the bound (no re-encode, never upscaled). Callers that
+// already hold the decoded image (the cover write path) use this to avoid a second
+// decode.
+func resizeToThumb(img image.Image, original []byte) ([]byte, error) {
 	src := img.Bounds()
 	tw, th := fitWithin(src.Dx(), src.Dy(), thumbMaxDim)
 	if tw == src.Dx() && th == src.Dy() {
-		return jpegData, nil
+		return original, nil
 	}
 	dst := image.NewRGBA(image.Rect(0, 0, tw, th))
 	draw.CatmullRom.Scale(dst, dst.Bounds(), img, src, draw.Over, nil)

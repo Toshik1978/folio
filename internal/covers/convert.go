@@ -21,39 +21,40 @@ import (
 // above any real book cover yet bounds the worst-case allocation.
 const maxCoverPixels = 40_000_000
 
-// convertToJPEG decodes an image from a byte slice in memory and returns new slice as a JPEG.
+// convertToJPEG decodes an image and returns it as JPEG bytes.
 func convertToJPEG(inputData []byte) ([]byte, error) {
+	out, _, err := convertToJPEGImage(inputData)
+
+	return out, err
+}
+
+// convertToJPEGImage returns the JPEG bytes and, when a full decode happened
+// (non-JPEG input), the decoded image so the caller can derive a thumbnail without
+// decoding the JPEG a second time. For the already-JPEG fast path decoded is nil
+// (no decode occurred).
+func convertToJPEGImage(inputData []byte) (jpegBytes []byte, decoded image.Image, err error) {
 	if len(inputData) == 0 {
-		return nil, errors.New("input data is empty")
+		return nil, nil, errors.New("input data is empty")
 	}
 
-	// Check the image format and dimensions using only the header metadata.
-	cfg, formatName, err := image.DecodeConfig(bytes.NewReader(inputData))
-	// Reject decompression bombs from the header alone, before either the
-	// JPEG fast-path return or image.Decode allocates the full pixel buffer.
-	// A header we cannot read falls through to image.Decode below, which
-	// returns the real decode error.
-	if err == nil && int64(cfg.Width)*int64(cfg.Height) > maxCoverPixels {
-		return nil, fmt.Errorf("image dimensions %dx%d exceed %d pixel limit",
+	cfg, formatName, cfgErr := image.DecodeConfig(bytes.NewReader(inputData))
+	if cfgErr == nil && int64(cfg.Width)*int64(cfg.Height) > maxCoverPixels {
+		return nil, nil, fmt.Errorf("image dimensions %dx%d exceed %d pixel limit",
 			cfg.Width, cfg.Height, maxCoverPixels)
 	}
-	// If it is already a JPEG and within the pixel cap, bypass
-	// decoding/encoding completely (no allocation).
-	if err == nil && formatName == "jpeg" {
-		return inputData, nil
+	if cfgErr == nil && formatName == "jpeg" {
+		return inputData, nil, nil
 	}
 
-	// Otherwise do decode
-	img, formatName, err := image.Decode(bytes.NewReader(inputData))
-	if err != nil {
-		return nil, fmt.Errorf("failed to decode image data: %w", err)
+	img, formatName, decErr := image.Decode(bytes.NewReader(inputData))
+	if decErr != nil {
+		return nil, nil, fmt.Errorf("failed to decode image data: %w", decErr)
 	}
 
 	var outputBuffer bytes.Buffer
-	err = jpeg.Encode(&outputBuffer, img, &jpeg.Options{Quality: 95})
-	if err != nil {
-		return nil, fmt.Errorf("failed to encode image to jpeg (source format was %s): %w", formatName, err)
+	if encErr := jpeg.Encode(&outputBuffer, img, &jpeg.Options{Quality: 95}); encErr != nil {
+		return nil, nil, fmt.Errorf("failed to encode image to jpeg (source format was %s): %w", formatName, encErr)
 	}
 
-	return outputBuffer.Bytes(), nil
+	return outputBuffer.Bytes(), img, nil
 }

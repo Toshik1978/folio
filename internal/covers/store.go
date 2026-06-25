@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"image"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -39,7 +40,7 @@ func NewStore(dataDir string, extractor CoverExtractor) (*Store, error) {
 // part of the ?v= cache-buster, so re-saving an unchanged cover would needlessly
 // invalidate every client's cached copy.
 func (s *Store) Save(bookID int64, data []byte) error {
-	jpegData, err := convertToJPEG(data)
+	jpegData, decoded, err := convertToJPEGImage(data)
 	if err != nil {
 		return fmt.Errorf("save as jpeg: %w", err)
 	}
@@ -47,7 +48,7 @@ func (s *Store) Save(bookID int64, data []byte) error {
 		return nil
 	}
 
-	return s.writeFile(bookID, jpegData)
+	return s.writeFile(bookID, jpegData, decoded)
 }
 
 func (s *Store) Delete(bookID int64) error {
@@ -173,7 +174,7 @@ func (s *Store) coverBytesForThumb(ctx context.Context, bookID int64) ([]byte, b
 		if bytes.Equal(data, placeholderJPEG) {
 			return nil, false
 		}
-		s.writeThumbnail(bookID, data)
+		s.writeThumbnail(bookID, data, nil)
 		return data, true
 	}
 	data, ok := s.lazyExtract(ctx, bookID)
@@ -218,25 +219,34 @@ func (s *Store) serveBytes(w http.ResponseWriter, data []byte) {
 	_, _ = w.Write(data)
 }
 
-// writeFile caches already-JPEG bytes for bookID, creating the shard directory.
-// The bytes are staged in a sibling temp file and atomically renamed into place,
-// so a concurrent ServeCover read never observes a torn (half-written) JPEG.
-func (s *Store) writeFile(bookID int64, jpegData []byte) error {
+// writeFile caches already-JPEG bytes for bookID and derives its thumbnail. decoded
+// is the already-decoded image when the caller had to decode (non-JPEG source),
+// letting writeThumbnail skip a second decode; pass nil when only bytes are known.
+func (s *Store) writeFile(bookID int64, jpegData []byte, decoded image.Image) error {
 	if err := s.atomicWrite(s.Path(bookID), jpegData); err != nil {
 		return err
 	}
-	s.writeThumbnail(bookID, jpegData)
+	s.writeThumbnail(bookID, jpegData, decoded)
+
 	return nil
 }
 
 // writeThumbnail derives and caches a downscaled thumbnail beside the cover.
-// Best-effort: any failure leaves cover serving intact (ServeThumbnail falls back
-// to the full cover). The placeholder negative-cache write gets no thumbnail.
-func (s *Store) writeThumbnail(bookID int64, jpegData []byte) {
+// Best-effort. When decoded is non-nil it is reused (no second decode); otherwise
+// the JPEG bytes are decoded. The placeholder negative-cache write gets no thumbnail.
+func (s *Store) writeThumbnail(bookID int64, jpegData []byte, decoded image.Image) {
 	if bytes.Equal(jpegData, placeholderJPEG) {
 		return
 	}
-	thumb, err := makeThumbnail(jpegData)
+	var (
+		thumb []byte
+		err   error
+	)
+	if decoded != nil {
+		thumb, err = resizeToThumb(decoded, jpegData)
+	} else {
+		thumb, err = makeThumbnail(jpegData)
+	}
 	if err != nil {
 		return
 	}
@@ -300,7 +310,7 @@ func (s *Store) lazyExtract(ctx context.Context, bookID int64) ([]byte, bool) {
 		jpegData = placeholderJPEG
 	}
 	// Best-effort cache; serving still succeeds if the write fails.
-	_ = s.writeFile(bookID, jpegData)
+	_ = s.writeFile(bookID, jpegData, nil)
 
 	return jpegData, true
 }

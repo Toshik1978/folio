@@ -10,6 +10,24 @@ import (
 	"os"
 )
 
+func (s *coversTestSuite) TestResizeFromImageMatchesMakeThumbnail() {
+	// 600x900 (2:3) downscales to 267x400 either way.
+	img := image.NewRGBA(image.Rect(0, 0, 600, 900))
+	var buf bytes.Buffer
+	s.Require().NoError(jpeg.Encode(&buf, img, &jpeg.Options{Quality: 90}))
+
+	fromBytes, err := makeThumbnail(buf.Bytes())
+	s.Require().NoError(err)
+	fromImage, err := resizeToThumb(img, buf.Bytes())
+	s.Require().NoError(err)
+
+	wb, hb := s.decodeDims(fromBytes)
+	wi, hi := s.decodeDims(fromImage)
+	s.Equal(wb, wi)
+	s.Equal(hb, hi)
+	s.Equal(400, hi)
+}
+
 // decodeDims decodes JPEG bytes and returns their width and height.
 func (s *coversTestSuite) decodeDims(data []byte) (int, int) {
 	cfg, _, err := image.DecodeConfig(bytes.NewReader(data))
