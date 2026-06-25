@@ -53,6 +53,8 @@ Open `http://localhost:8080`. Mount your book sources read-only at `/library`; F
 | [BUILD-AND-DEPLOY.md](docs/BUILD-AND-DEPLOY.md) | Taskfile targets, Docker multi-stage build, local dev workflow. |
 | [CHANGELOG.md](CHANGELOG.md) | Dated history of notable changes, with the rationale behind each. |
 
+> **Contributing with an AI agent?** Start with [AGENTS.md](AGENTS.md) — setup commands, task rules, and a task-to-doc map. Claude Code loads it automatically via [CLAUDE.md](CLAUDE.md), which simply imports `AGENTS.md`.
+
 ---
 
 ## Core Constraints

@@ -172,9 +172,14 @@ Every package owns its tests and follows the same testify-suite layout. Tests ar
 
 ### Test Layout (testify suites)
 
-All tests use `github.com/stretchr/testify/suite`:
+All tests use `github.com/stretchr/testify/suite`. Three non-negotiable rules:
 
-- A **runner file** named after the package (`<package>_test.go`) holds the package's *only* top-level `Test*` function, `Test<Package>(t)`, which just `suite.Run`s each suite. Shared setup (a `baseSuite` + common helpers) lives here.
+1. **One entry point per package.** Exactly one top-level `func Test<Package>(t *testing.T)` exists in the package — no other top-level `Test*` function. It lives in a **runner file** named after the package (`<package>_test.go`), alongside shared setup (a `baseSuite` + common helpers).
+2. **The entry point only wires suites.** Its body is nothing but `suite.Run(t, new(<suite>))` calls — one per suite, as many as needed — and holds no test logic.
+3. **All real tests are suite methods.** Every assertion lives in a method on a `suite.Suite`, using suite assertion methods (`s.Equal`, `s.Require().NoError`, …). A bare `func TestX(t *testing.T)` containing `require.X(t, …)`/`assert.X(t, …)` is forbidden.
+
+Layout that follows from the rules:
+
 - **One file per area of behaviour**, each declaring its own `suite.Suite` (embedding `baseSuite` when it shares setup) and its test methods. Use `s.Run(name, func(){…})` for table subtests.
 
 This groups `go test` output by suite, isolates fixtures per concern, and gives each suite its own `SetupTest`/`TearDownTest`. A single-concern package keeps one suite (`covers`, `server`); a multi-concern package splits per concern (`ebook`, `ingest`).

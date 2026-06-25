@@ -13,6 +13,10 @@ All automation is managed via `go-task` (`Taskfile.yml`).
   ```bash
   task setup
   ```
+* Regenerate sqlc query code after changing SQL queries or migrations:
+  ```bash
+  task generate
+  ```
 
 ### Local Development Servers
 * Run backend Go server (watches for changes, listens on `PORT` or default `8080`):
@@ -33,6 +37,14 @@ All automation is managed via `go-task` (`Taskfile.yml`).
   ```bash
   task test
   ```
+* Run all linters (Go + frontend) — the same gate CI enforces. Run it before finishing any change:
+  ```bash
+  task lint
+  ```
+* Auto-format the codebase (gofumpt for Go, Prettier for the frontend):
+  ```bash
+  task format
+  ```
 * Remove compiled binaries and temporary build assets:
   ```bash
   task clean
@@ -46,8 +58,29 @@ These rules apply to every task. Non-negotiable.
 
 1. **Golang Best Practices**: Follow idiomatic Go — standard library first, proper interface declarations, correct package layout, canonical error handling. Comply with community conventions and official Effective Go guidelines.
 2. **Third-Party Dependencies Require Approval**: Before introducing any external dependency, ask for explicit approval. State the package name, what it solves, and why the standard library is insufficient. Do not add the dependency until approved.
-3. **Testing with testify**: All Go tests use `github.com/stretchr/testify`. Use `suite.Suite` for test organization and suite assertion methods (`s.Equal`, `s.NoError`, `s.Contains`, etc.) for all checks.
+3. **Testing with testify suites**: All Go tests use `github.com/stretchr/testify`, organised as suites. Three non-negotiable rules:
+   1. **One entry point per package** — exactly one top-level `func Test<Package>(t *testing.T)`. No other top-level `Test*` function may exist in the package.
+   2. **The entry point only wires suites** — it consists solely of `suite.Run(t, new(...))` calls, one per `suite.Suite`, and contains no test logic itself.
+   3. **All real tests are suite methods** — every assertion lives in a method on a `suite.Suite`, using suite assertion methods (`s.Equal`, `s.NoError`, `s.Require().NoError`, `s.Contains`, …). Never write a bare `func TestX(t *testing.T)` with `require.X(t, …)` / `assert.X(t, …)` for an actual test.
 4. **Branch Naming**: Any branch created for feature work **MUST** use the prefix `feature/` (e.g. `feature/sync-events`). Never use `feat/`, `feat-`, or any other variant. Only `feature/` is permitted.
+
+---
+
+## Changelog vs. Release Notes
+
+Folio keeps two separate, complementary files. Do not merge them.
+
+* **`CHANGELOG.md` — machine-generated, do not hand-edit.** Commitizen
+  regenerates it from conventional commits on `cz bump` (see `.cz.yaml`). It is
+  the exhaustive, commit-level technical log for developers.
+* **`RELEASE_NOTES.md` — curated, hand-written.** Short, specific,
+  human-readable highlights for people running Folio. After a release is
+  bumped, add a new entry derived from the fresh `CHANGELOG.md` section (and the
+  diffs where needed): group by user-facing theme, call out breaking changes and
+  upgrade steps, and skip noise like pure refactors or test-only commits. Use
+  the same `## vX.Y.Z — YYYY-MM-DD` heading style so the two files cross-reference
+  cleanly. `RELEASE_NOTES.md` links to `CHANGELOG.md`; `CHANGELOG.md` stays
+  untouched.
 
 ---
 
