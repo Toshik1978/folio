@@ -40,6 +40,7 @@ func TestIngest(t *testing.T) {
 	suite.Run(t, new(enrichSuite))
 	suite.Run(t, new(importerSuite))
 	suite.Run(t, new(mergeSuite))
+	suite.Run(t, new(backfillSuite))
 	suite.Run(t, new(groupKeySuite))
 	suite.Run(t, new(langSuite))
 	suite.Run(t, new(reconcileReportSuite))
