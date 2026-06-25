@@ -77,6 +77,11 @@ type CoverCandidate struct {
 	FullURL  string `json:"full_url"`
 	Width    int    `json:"width"`
 	Height   int    `json:"height"`
+	// Title is the candidate's own title, used by the aggregator to filter out
+	// box sets / wrong editions via TitleAcceptable. It is empty for exact-key
+	// results (Amazon by ASIN, Open Library by ISBN), which fail open. Internal
+	// only — not part of the API response.
+	Title string `json:"-"`
 }
 
 // MetadataSource returns structured metadata. Search is light (grid candidates);

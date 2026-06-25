@@ -63,7 +63,7 @@ func (a *Aggregator) SearchCovers(ctx context.Context, q Query) []CoverCandidate
 	}
 	wg.Wait()
 
-	return rankCovers(flatten(results))
+	return rankCovers(filterRelevant(q.Title, flatten(results)))
 }
 
 // logOutcome emits one structured log line per source describing how its cover
@@ -103,6 +103,22 @@ func flatten(groups [][]CoverCandidate) []CoverCandidate {
 	var out []CoverCandidate
 	for _, g := range groups {
 		out = append(out, g...)
+	}
+
+	return out
+}
+
+// filterRelevant drops candidates whose own title is not an acceptable match for
+// the query title (box sets, wrong editions, foreign-script). A candidate with an
+// empty title fails open — exact-key sources (ASIN/ISBN) set no title because the
+// id already pins the edition. This is the one place cover relevance is applied,
+// so every provider is filtered consistently.
+func filterRelevant(queryTitle string, in []CoverCandidate) []CoverCandidate {
+	out := make([]CoverCandidate, 0, len(in))
+	for _, c := range in {
+		if TitleAcceptable(queryTitle, c.Title) {
+			out = append(out, c)
+		}
 	}
 
 	return out

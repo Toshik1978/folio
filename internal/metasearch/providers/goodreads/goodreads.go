@@ -134,6 +134,7 @@ func parseCovers(r io.Reader, queryTitle string) ([]metasearch.CoverCandidate, e
 		}
 		out = append(out, metasearch.CoverCandidate{
 			Source:   metasearch.SourceGoodreads,
+			Title:    it.title(),
 			ThumbURL: metasearch.ThumbAmazonImage(it.ImageURL, thumbHeight),
 			FullURL:  metasearch.OriginalAmazonImage(it.ImageURL),
 		})

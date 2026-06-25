@@ -49,11 +49,10 @@ type searchResponse struct {
 	} `json:"docs"`
 }
 
-// SearchCovers runs a title/author search and maps docs that carry a cover id.
-func (s *Source) SearchCovers(ctx context.Context, q metasearch.Query) ([]metasearch.CoverCandidate, error) {
-	// ISBN is an exact key: search by it alone. Adding a title/author that
-	// doesn't match Open Library's record for that ISBN (e.g. a series subtitle)
-	// zeroes the result, so the title is only used when no ISBN is available.
+// searchParams builds the Open Library query parameters for q. ISBN is an
+// exact key and is searched alone; title/author are only used when no ISBN is
+// available (adding a mismatched title/author would zero the result).
+func searchParams(q metasearch.Query) url.Values {
 	params := url.Values{}
 	if q.ISBN != "" {
 		params.Set("isbn", q.ISBN)
@@ -66,6 +65,41 @@ func (s *Source) SearchCovers(ctx context.Context, q metasearch.Query) ([]metase
 		}
 	}
 	params.Set("limit", strconv.Itoa(maxDocs))
+
+	return params
+}
+
+// toCandidates maps the search response docs to cover candidates. When byISBN
+// is true the candidate Title is left empty so the aggregator's relevance
+// filter fails open (the ISBN already pins the exact edition).
+func toCandidates(docs []struct {
+	Title  string `json:"title"`
+	CoverI int    `json:"cover_i"`
+}, byISBN bool,
+) []metasearch.CoverCandidate {
+	out := make([]metasearch.CoverCandidate, 0, len(docs))
+	for _, d := range docs {
+		if d.CoverI == 0 {
+			continue
+		}
+		title := d.Title
+		if byISBN {
+			title = "" // exact key: fail open, never title-filter
+		}
+		out = append(out, metasearch.CoverCandidate{
+			Source:   metasearch.SourceOpenLibrary,
+			Title:    title,
+			ThumbURL: fmt.Sprintf("%s/%d-M.jpg", coversBase, d.CoverI),
+			FullURL:  fmt.Sprintf("%s/%d-L.jpg", coversBase, d.CoverI),
+		})
+	}
+
+	return out
+}
+
+// SearchCovers runs a title/author search and maps docs that carry a cover id.
+func (s *Source) SearchCovers(ctx context.Context, q metasearch.Query) ([]metasearch.CoverCandidate, error) {
+	params := searchParams(q)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.baseURL+"/search.json?"+params.Encode(), http.NoBody)
 	if err != nil {
@@ -85,17 +119,5 @@ func (s *Source) SearchCovers(ctx context.Context, q metasearch.Query) ([]metase
 		return nil, fmt.Errorf("decode response: %w", err)
 	}
 
-	candidates := make([]metasearch.CoverCandidate, 0, len(out.Docs))
-	for _, d := range out.Docs {
-		if d.CoverI == 0 {
-			continue
-		}
-		candidates = append(candidates, metasearch.CoverCandidate{
-			Source:   metasearch.SourceOpenLibrary,
-			ThumbURL: fmt.Sprintf("%s/%d-M.jpg", coversBase, d.CoverI),
-			FullURL:  fmt.Sprintf("%s/%d-L.jpg", coversBase, d.CoverI),
-		})
-	}
-
-	return candidates, nil
+	return toCandidates(out.Docs, q.ISBN != ""), nil
 }

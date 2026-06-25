@@ -91,6 +91,32 @@ func (s *coreSuite) TestAggregatorLogsPerSourceOutcome() {
 	s.Contains(logs, `"duration_ms":`)
 }
 
+func (s *coreSuite) TestAggregatorFiltersJunkByTitle() {
+	reg := NewRegistry(
+		fakeCover{name: SourceGoogleBooks, out: []CoverCandidate{
+			{Source: SourceGoogleBooks, FullURL: "https://gb/ok.jpg", Title: "Dune"},
+			{Source: SourceGoogleBooks, FullURL: "https://gb/box.jpg", Title: "Dune 6-Book Boxed Set"},
+			{Source: SourceGoogleBooks, FullURL: "https://gb/wrong.jpg", Title: "Foundation"},
+		}},
+		// Exact-key source: empty Title must fail open (never filtered).
+		fakeCover{name: SourceAmazon, out: []CoverCandidate{
+			{Source: SourceAmazon, FullURL: "https://amz/exact.jpg", Title: ""},
+		}},
+	)
+	agg := NewAggregator(slog.New(slog.DiscardHandler), reg)
+
+	got := agg.SearchCovers(context.Background(), Query{Title: "Dune"})
+
+	urls := make(map[string]bool)
+	for _, c := range got {
+		urls[c.FullURL] = true
+	}
+	s.True(urls["https://gb/ok.jpg"], "matching single title kept")
+	s.True(urls["https://amz/exact.jpg"], "empty-title exact-key candidate fails open")
+	s.False(urls["https://gb/box.jpg"], "box set dropped by relevance")
+	s.False(urls["https://gb/wrong.jpg"], "non-matching title dropped")
+}
+
 // TestAggregatorLogsErrorStatus verifies that a plain (non-ErrBlocked) source
 // error is logged with status "error" and the correct source name, and that
 // sources surfacing other status values also log their names.

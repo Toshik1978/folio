@@ -59,7 +59,10 @@ func (s *Source) SearchCovers(ctx context.Context, q metasearch.Query) ([]metase
 		}
 		u := httpsURL(thumb)
 		out = append(out, metasearch.CoverCandidate{
-			Source: metasearch.SourceGoogleBooks, ThumbURL: u, FullURL: upscale(u),
+			Source:   metasearch.SourceGoogleBooks,
+			Title:    vols[i].VolumeInfo.Title,
+			ThumbURL: u,
+			FullURL:  upscale(u),
 		})
 	}
 
