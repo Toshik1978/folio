@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -32,6 +33,7 @@ func (s *baseSuite) sourceForHandler(h http.HandlerFunc) *Source {
 	src := New(5 * time.Second)
 	src.baseURL = srv.URL
 	src.limiter = newRateLimiter(0)
+	src.backoff = time.Millisecond
 
 	return src
 }
@@ -166,4 +168,38 @@ func (s *searchSuite) TestCheckRedirectBoundsDepth() {
 	s.Require().NoError(src.checkRedirect(req, nil))
 	via := make([]*http.Request, maxRedirects)
 	s.Require().Error(src.checkRedirect(req, via))
+}
+
+func (s *searchSuite) TestSearchRetriesTransientBlock() {
+	var reqCount atomic.Int32
+	src := s.sourceForHandler(func(w http.ResponseWriter, _ *http.Request) {
+		if reqCount.Add(1) == 1 {
+			w.WriteHeader(http.StatusServiceUnavailable)
+
+			return
+		}
+		_, _ = w.Write(
+			[]byte(
+				`<img class="a-dynamic-image" data-old-hires="https://img/a._SL1500_.jpg" data-a-dynamic-image="{&quot;https://img/a._SY342_.jpg&quot;:[230,342]}">`,
+			),
+		)
+	})
+
+	got, err := src.SearchCovers(context.Background(), metasearch.Query{ASIN: "B00WDVKZY0"})
+	s.Require().NoError(err)
+	s.Require().NotEmpty(got)
+	s.GreaterOrEqual(int(reqCount.Load()), 2, "a transient 503 must be retried")
+}
+
+func (s *searchSuite) TestSearchDoesNotRetryInterstitial() {
+	var reqCount atomic.Int32
+	src := s.sourceForHandler(func(w http.ResponseWriter, _ *http.Request) {
+		reqCount.Add(1)
+		_, _ = w.Write([]byte(`<html><body>Enter the characters you see below</body></html>`))
+	})
+
+	_, err := src.SearchCovers(context.Background(), metasearch.Query{ASIN: "B00WDVKZY0"})
+	s.Require().Error(err)
+	s.Require().ErrorIs(err, metasearch.ErrBlocked)
+	s.Equal(int32(1), reqCount.Load(), "an interstitial is terminal (ErrNoRetry): no retry")
 }

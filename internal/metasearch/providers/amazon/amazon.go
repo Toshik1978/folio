@@ -24,6 +24,11 @@ const (
 	// thumbHeight is the uniform pixel height requested for the picker thumbnail,
 	// large enough to render crisply.
 	thumbHeight = 450
+	// maxAttempts/retryBackoff bound the retry of transient anti-bot responses,
+	// mirroring the Goodreads scraper. A terminal interstitial wraps ErrNoRetry
+	// and stops the loop immediately.
+	maxAttempts  = 3
+	retryBackoff = 400 * time.Millisecond
 )
 
 // Source fetches Amazon product-page covers.
@@ -31,6 +36,7 @@ type Source struct {
 	baseURL string
 	client  *http.Client
 	limiter *rateLimiter
+	backoff time.Duration
 }
 
 // New builds an Amazon cover source with the given per-request timeout.
@@ -38,6 +44,7 @@ func New(timeout time.Duration) *Source {
 	s := &Source{
 		baseURL: defaultBaseURL,
 		limiter: newRateLimiter(politeInterval),
+		backoff: retryBackoff,
 	}
 	s.client = &http.Client{Timeout: timeout, CheckRedirect: s.checkRedirect}
 
@@ -54,17 +61,21 @@ func (s *Source) Capabilities() []metasearch.Capability {
 
 // SearchCovers returns the cover from the book's Amazon product page, keyed by
 // ASIN. Without an ASIN there is nothing reliable to fetch, so it returns no
-// candidates rather than scraping noisy search-result thumbnails.
+// candidates. Transient anti-bot responses are retried; a terminal interstitial
+// (ErrNoRetry) stops immediately.
 func (s *Source) SearchCovers(ctx context.Context, q metasearch.Query) ([]metasearch.CoverCandidate, error) {
 	if q.ASIN == "" {
 		return nil, nil
 	}
-	covers, err := s.fetchProductCover(ctx, q.ASIN)
+	out, err := metasearch.RetryCovers(ctx, maxAttempts, s.backoff,
+		func(c context.Context) ([]metasearch.CoverCandidate, error) {
+			return s.fetchProductCover(c, q.ASIN)
+		})
 	if err != nil {
-		return nil, fmt.Errorf("amazon product: %w", err)
+		return nil, fmt.Errorf("amazon: %w", err)
 	}
 
-	return covers, nil
+	return out, nil
 }
 
 // checkRedirect bounds redirect depth on the product fetch.
