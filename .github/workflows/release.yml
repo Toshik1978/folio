@@ -23,7 +23,7 @@ jobs:
         uses: commitizen-tools/commitizen-action@master
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
-          changelog_increment_filename: release_notes.md
+          changelog_increment_filename: release.md
 
       - name: Did a bump happen?
         id: check
@@ -72,5 +72,5 @@ jobs:
         uses: softprops/action-gh-release@v3
         with:
           tag_name: v${{ env.REVISION }}
-          body_path: release_notes.md
+          body_path: release.md
           token: ${{ secrets.GITHUB_TOKEN }}
