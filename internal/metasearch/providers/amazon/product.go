@@ -85,8 +85,8 @@ func (s *Source) fetchProductCover(ctx context.Context, asin string) ([]metasear
 
 	return []metasearch.CoverCandidate{{
 		Source:   metasearch.SourceAmazon,
-		ThumbURL: metasearch.ThumbAmazonImage(cover, thumbHeight),
-		FullURL:  metasearch.OriginalAmazonImage(cover),
+		ThumbURL: metasearch.ThumbCDNImage(cover, thumbHeight),
+		FullURL:  metasearch.OriginalCDNImage(cover),
 	}}, nil
 }
 

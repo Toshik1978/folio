@@ -30,7 +30,7 @@ func (s *coreSuite) TestSourceNamesAreDistinct() {
 	s.Len(names, 4, "source name constants must be unique")
 }
 
-func (s *coreSuite) TestOriginalAmazonImage() {
+func (s *coreSuite) TestOriginalCDNImage() {
 	cases := []struct {
 		name string
 		in   string
@@ -64,12 +64,12 @@ func (s *coreSuite) TestOriginalAmazonImage() {
 	}
 	for _, tc := range cases {
 		s.Run(tc.name, func() {
-			s.Equal(tc.want, OriginalAmazonImage(tc.in))
+			s.Equal(tc.want, OriginalCDNImage(tc.in))
 		})
 	}
 }
 
-func (s *coreSuite) TestThumbAmazonImage() {
+func (s *coreSuite) TestThumbCDNImage() {
 	cases := []struct {
 		name string
 		in   string
@@ -93,7 +93,7 @@ func (s *coreSuite) TestThumbAmazonImage() {
 	}
 	for _, tc := range cases {
 		s.Run(tc.name, func() {
-			s.Equal(tc.want, ThumbAmazonImage(tc.in, 450))
+			s.Equal(tc.want, ThumbCDNImage(tc.in, 450))
 		})
 	}
 }

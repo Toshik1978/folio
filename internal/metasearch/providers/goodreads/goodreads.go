@@ -135,8 +135,8 @@ func parseCovers(r io.Reader) ([]metasearch.CoverCandidate, error) {
 		out = append(out, metasearch.CoverCandidate{
 			Source:   metasearch.SourceGoodreads,
 			Title:    it.title(),
-			ThumbURL: metasearch.ThumbAmazonImage(it.ImageURL, thumbHeight),
-			FullURL:  metasearch.OriginalAmazonImage(it.ImageURL),
+			ThumbURL: metasearch.ThumbCDNImage(it.ImageURL, thumbHeight),
+			FullURL:  metasearch.OriginalCDNImage(it.ImageURL),
 		})
 	}
 
