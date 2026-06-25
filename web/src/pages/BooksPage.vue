@@ -96,7 +96,7 @@ function setSort(value: string): void {
 // in-flight page load) can't append stale rows into the fresh result set.
 let loadGen = 0;
 
-async function loadBooks(reset = false): Promise<void> {
+async function loadBooks(reset = false): Promise<boolean> {
   if (reset) {
     loadGen += 1;
     page.value = 1;
@@ -107,22 +107,29 @@ async function loadBooks(reset = false): Promise<void> {
 
   try {
     const res = await fetchBooks({ ...filters.value, page: page.value, limit: 24 });
-    if (gen !== loadGen) return; // superseded by a newer reset
+    if (gen !== loadGen) return true; // superseded by a newer reset
     books.value.push(...res.items);
     hasMore.value = books.value.length < res.total;
+    return true;
   } catch (err) {
-    if (gen !== loadGen) return; // superseded; the newer load reports its own errors
+    if (gen !== loadGen) return true; // superseded; the newer load reports its own errors
     // Roll back the optimistic increment so the next scroll retries this page
     // instead of skipping it.
     if (!reset && page.value > 1) page.value -= 1;
     toast.error(`Failed to load books: ${(err as Error).message}`);
+    return false;
   }
 }
 
 async function loadMore(): Promise<void> {
   if (!hasMore.value) return;
   page.value++;
-  await loadBooks();
+  // Reject on failure so useInfiniteScroll does NOT re-arm the observer (which,
+  // with the sentinel still visible, would retry-storm the failing request). The
+  // original observation stays intact, so a manual scroll still retries.
+  if (!(await loadBooks())) {
+    throw new Error('load more failed');
+  }
 }
 
 const { loading } = useInfiniteScroll(scrollTrigger, loadMore, () => hasMore.value);
