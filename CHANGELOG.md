@@ -1,3 +1,9 @@
+## v1.3.1 (2026-06-26)
+
+### Fix
+
+- **opds**: advertise OpenSearch with correct media type
+
 ## v1.3.0 (2026-06-26)
 
 ### Feat
