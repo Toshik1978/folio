@@ -61,7 +61,7 @@ func (s *coversTestSuite) TestMakeThumbnailRejectsUndecodable() {
 }
 
 func (s *coversTestSuite) TestSaveWritesThumbnail() {
-	st, err := NewStore(s.dataDir, nil)
+	st, err := NewStore(s.dataDir, nil, newFakeState())
 	s.Require().NoError(err)
 	s.Require().NoError(st.Save(1, s.bigJPEGBytes())) // 512x512 > 400
 
@@ -73,7 +73,7 @@ func (s *coversTestSuite) TestSaveWritesThumbnail() {
 }
 
 func (s *coversTestSuite) TestDeleteRemovesThumbnail() {
-	st, err := NewStore(s.dataDir, nil)
+	st, err := NewStore(s.dataDir, nil, newFakeState())
 	s.Require().NoError(err)
 	s.Require().NoError(st.Save(1, s.bigJPEGBytes()))
 	s.Require().NoError(st.Delete(1))
@@ -83,7 +83,7 @@ func (s *coversTestSuite) TestDeleteRemovesThumbnail() {
 }
 
 func (s *coversTestSuite) TestSavePlaceholderWritesNoThumbnail() {
-	st, err := NewStore(s.dataDir, nil)
+	st, err := NewStore(s.dataDir, nil, newFakeState())
 	s.Require().NoError(err)
 	s.Require().NoError(st.Save(1, placeholderJPEG))
 
@@ -92,7 +92,7 @@ func (s *coversTestSuite) TestSavePlaceholderWritesNoThumbnail() {
 }
 
 func (s *coversTestSuite) TestServeThumbnailServesStoredThumb() {
-	st, err := NewStore(s.dataDir, nil)
+	st, err := NewStore(s.dataDir, nil, newFakeState())
 	s.Require().NoError(err)
 	s.Require().NoError(st.Save(1, s.bigJPEGBytes()))
 
@@ -108,7 +108,7 @@ func (s *coversTestSuite) TestServeThumbnailServesStoredThumb() {
 }
 
 func (s *coversTestSuite) TestServeThumbnailFallsBackToCoverAndSelfHeals() {
-	st, err := NewStore(s.dataDir, nil)
+	st, err := NewStore(s.dataDir, nil, newFakeState())
 	s.Require().NoError(err)
 	s.Require().NoError(st.Save(1, s.bigJPEGBytes()))
 	// Simulate a pre-existing cover whose thumbnail was never generated.
@@ -126,7 +126,7 @@ func (s *coversTestSuite) TestServeThumbnailFallsBackToCoverAndSelfHeals() {
 
 func (s *coversTestSuite) TestServeThumbnailLazyExtractsWhenNoCover() {
 	ext := &fakeExtractor{data: s.bigJPEGBytes()}
-	st, err := NewStore(s.dataDir, ext)
+	st, err := NewStore(s.dataDir, ext, newFakeState())
 	s.Require().NoError(err)
 
 	rec := httptest.NewRecorder()
@@ -140,7 +140,7 @@ func (s *coversTestSuite) TestServeThumbnailLazyExtractsWhenNoCover() {
 }
 
 func (s *coversTestSuite) TestServeThumbnailPlaceholderWhenNothing() {
-	st, err := NewStore(s.dataDir, nil) // no extractor
+	st, err := NewStore(s.dataDir, nil, newFakeState()) // no extractor
 	s.Require().NoError(err)
 
 	rec := httptest.NewRecorder()

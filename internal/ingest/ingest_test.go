@@ -71,7 +71,7 @@ func (s *baseSuite) SetupTest() {
 	database, err := db.Open(s.log, dir)
 	s.Require().NoError(err)
 
-	store, err := covers.NewStore(dir, nil)
+	store, err := covers.NewStore(dir, nil, NewCoverState(database))
 	s.Require().NoError(err)
 
 	s.db = database

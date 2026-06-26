@@ -69,7 +69,9 @@ func run() int { //revive:disable:function-length
 
 	backfiller := ingest.NewLocalBackfiller(log, database, writeGuard, extractor)
 
-	coverStore, err := covers.NewStore(cfg.DataDir, extractor)
+	coverState := ingest.NewCoverState(database)
+
+	coverStore, err := covers.NewStore(cfg.DataDir, extractor, coverState)
 	if err != nil {
 		log.Error("cover store open failed", slog.Any("error", err))
 		return 2

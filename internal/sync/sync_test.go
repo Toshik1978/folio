@@ -50,7 +50,7 @@ func (s *baseSuite) SetupTest() {
 	database, err := db.Open(slog.New(slog.DiscardHandler), dir)
 	s.Require().NoError(err)
 
-	store, err := covers.NewStore(dir, nil)
+	store, err := covers.NewStore(dir, nil, ingest.NewCoverState(database))
 	s.Require().NoError(err)
 
 	parser := &stubParser{result: ingest.Result{Added: 1}}

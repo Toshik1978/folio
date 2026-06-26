@@ -19,20 +19,37 @@ type CoverExtractor interface {
 	Cover(ctx context.Context, bookID int64) (data []byte, ok bool, err error)
 }
 
+// Cover-extraction state for a book, the single source of truth for whether a
+// book has a cover. It replaces the on-disk placeholder negative cache.
+const (
+	StateUnknown int8 = 0 // never parsed for a cover
+	StateHas     int8 = 1 // a real cover is cached on disk
+	StateNone    int8 = 2 // parsed; source carries no cover (serve placeholder)
+)
+
+// CoverState reads and records a book's cover-extraction state. Implemented by
+// *ingest.CoverState; covers stays a leaf package by depending only on this
+// interface rather than importing db.
+type CoverState interface {
+	Get(ctx context.Context, bookID int64) (int8, error)
+	Set(ctx context.Context, bookID int64, state int8) error
+}
+
 type Store struct {
 	dir       string
 	extractor CoverExtractor
+	state     CoverState
 }
 
 // NewStore opens (creating if needed) the cover cache under dataDir. extractor
-// enables lazy extraction on cache misses; pass nil to fall back to the
-// placeholder for every miss.
-func NewStore(dataDir string, extractor CoverExtractor) (*Store, error) {
+// enables lazy extraction on a cache miss; state records the outcome so a
+// cover-less book is served the in-memory placeholder without re-parsing.
+func NewStore(dataDir string, extractor CoverExtractor, state CoverState) (*Store, error) {
 	dir := filepath.Join(dataDir, "covers")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, fmt.Errorf("create covers directory: %w", err)
 	}
-	return &Store{dir: dir, extractor: extractor}, nil
+	return &Store{dir: dir, extractor: extractor, state: state}, nil
 }
 
 // Save transcodes data to JPEG (a no-op for already-JPEG bytes) and caches it,
@@ -48,17 +65,27 @@ func (s *Store) Save(bookID int64, data []byte) error {
 	if existing, rerr := os.ReadFile(s.Path(bookID)); rerr == nil && bytes.Equal(existing, jpegData) {
 		return nil
 	}
+	if err := s.writeFile(bookID, jpegData, decoded); err != nil {
+		return err
+	}
+	// A real cover is now on disk; record it so HasLocalCover and the serve path
+	// treat it as authoritative without re-reading or re-parsing.
+	_ = s.state.Set(context.Background(), bookID, StateHas)
 
-	return s.writeFile(bookID, jpegData, decoded)
+	return nil
 }
 
-// CacheMiss records that bookID has no extractable cover by caching the
-// placeholder as a negative cache, exactly as a serve-time miss (lazyExtract)
-// does. The serve path then finds the cached placeholder and never re-parses the
-// source. The warm pass uses it to pre-absorb the first-view parse for cover-less
-// books.
+// CacheMiss records that bookID has no extractable cover by marking its
+// cover_state StateNone — the in-memory equivalent of the former on-disk
+// placeholder negative cache, writing NOTHING to disk. The serve path then reads
+// the marker and returns the memory placeholder without re-parsing the source.
+// The warm pass uses it to pre-absorb the first-view parse for cover-less books.
 func (s *Store) CacheMiss(bookID int64) error {
-	return s.writeFile(bookID, placeholderJPEG, nil)
+	if err := s.state.Set(context.Background(), bookID, StateNone); err != nil {
+		return fmt.Errorf("mark cover state none %d: %w", bookID, err)
+	}
+
+	return nil
 }
 
 func (s *Store) Delete(bookID int64) error {
@@ -100,24 +127,23 @@ func (s *Store) Has(bookID int64) bool {
 	return err == nil
 }
 
-// HasLocalCover reports whether bookID has a real cover sourced from the book's
-// own library files — either a non-placeholder cover already cached, or one the
-// extractor can pull from the source (e.g. a PDF's page-1 render). It lets
-// callers keep a good local cover instead of overwriting it with a lower-quality
-// online cover (a Google Books thumbnail). A cached placeholder does not count.
+// HasLocalCover reports whether bookID has a real cover from its own library
+// files. StateHas is yes, StateNone is no; only an unknown book falls back to a
+// budget-bounded extractor probe. It lets callers keep a good local cover
+// instead of overwriting it with a lower-quality online thumbnail.
 func (s *Store) HasLocalCover(ctx context.Context, bookID int64) bool {
-	if data, err := os.ReadFile(s.Path(bookID)); err == nil {
-		return !bytes.Equal(data, placeholderJPEG)
+	switch st, err := s.state.Get(ctx, bookID); {
+	case err == nil && st == StateHas:
+		return true
+	case err == nil && st == StateNone:
+		return false
 	}
 	if s.extractor == nil {
 		return false
 	}
 	data, ok, err := s.extractor.Cover(ctx, bookID)
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-		// We couldn't determine within the budget. Assume a local cover may exist so
-		// an online thumbnail never overwrites a real cover we simply didn't finish
-		// extracting; the next view retries.
-		return true
+		return true // undetermined within budget; assume a cover may exist
 	}
 
 	return err == nil && ok && len(data) > 0
@@ -134,20 +160,22 @@ func (s *Store) ThumbPath(bookID int64) string {
 }
 
 func (s *Store) ServeCover(w http.ResponseWriter, r *http.Request, bookID int64) {
-	// Real covers are content-addressed by the caller's ?v=<hash>-<mtime> buster
-	// and served immutable. Placeholder responses are served no-cache instead: a
-	// real cover may appear later (lazy extraction, a better edition's sync)
-	// without the URL changing for clients that already cached the placeholder.
-	path := s.Path(bookID)
-	if info, err := os.Stat(path); err == nil {
-		s.serveCached(w, r, path, info.Size())
+	// A real cover on disk is content-addressed by the caller's ?v= buster and
+	// served immutable. Otherwise cover_state decides: a known cover-less book
+	// gets the in-memory placeholder (no file ever written); an unknown book is
+	// parsed once via lazyExtract, which records the result.
+	if _, err := os.Stat(s.Path(bookID)); err == nil {
+		serveImmutableFile(w, r, s.Path(bookID))
+		return
+	}
+	if st, err := s.state.Get(r.Context(), bookID); err == nil && st == StateNone {
+		s.servePlaceholder(w)
 		return
 	}
 	if data, ok := s.lazyExtract(r.Context(), bookID); ok {
 		s.serveBytes(w, data)
 		return
 	}
-	// No cached cover and no extractor configured to produce one.
 	s.servePlaceholder(w)
 }
 
@@ -187,9 +215,6 @@ func (s *Store) shardDir(bookID int64) string {
 // miss so the caller serves it no-cache.
 func (s *Store) coverBytesForThumb(ctx context.Context, bookID int64) ([]byte, bool) {
 	if data, err := os.ReadFile(s.Path(bookID)); err == nil {
-		if bytes.Equal(data, placeholderJPEG) {
-			return nil, false
-		}
 		s.writeThumbnail(bookID, data, nil)
 		return data, true
 	}
@@ -208,19 +233,6 @@ func serveImmutableFile(w http.ResponseWriter, r *http.Request, path string) {
 	w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
 	w.Header().Set("Content-Type", "image/jpeg")
 	http.ServeFile(w, r, path)
-}
-
-// serveCached serves an on-disk cover, detecting a cached placeholder (the
-// lazy-extraction negative cache) by size + bytes so it gets the placeholder
-// cache policy rather than a year-long immutable entry.
-func (s *Store) serveCached(w http.ResponseWriter, r *http.Request, path string, size int64) {
-	if size == int64(len(placeholderJPEG)) {
-		if data, err := os.ReadFile(path); err == nil && bytes.Equal(data, placeholderJPEG) {
-			s.servePlaceholder(w)
-			return
-		}
-	}
-	serveImmutableFile(w, r, path)
 }
 
 // serveBytes serves freshly-extracted bytes with the cache policy they merit.
@@ -299,14 +311,11 @@ func (s *Store) atomicWrite(path string, data []byte) error {
 	return nil
 }
 
-// lazyExtract attempts a one-time extraction of a missing cover, transcoding it
-// to JPEG and caching it. A book whose source parsed fine but carries no cover
-// caches the placeholder (a negative cache), so a cover-dominant grid doesn't
-// re-parse the source on every render. An extraction *error* — typically a
-// browser-aborted request cancelling ctx mid-parse, or a transient I/O failure —
-// serves the placeholder for this response only and caches nothing: caching it
-// would permanently mask a perfectly good cover. The returned bytes are always
-// JPEG, matching the served type.
+// lazyExtract performs a one-time extraction of a missing cover. A real cover is
+// transcoded to JPEG, cached, and marked StateHas. A source that parsed cleanly
+// but carries no cover is marked StateNone and written NOWHERE — the in-memory
+// placeholder is returned. A parse error records no state and caches nothing, so
+// a later view retries rather than permanently masking a good cover.
 func (s *Store) lazyExtract(ctx context.Context, bookID int64) ([]byte, bool) {
 	if s.extractor == nil {
 		return nil, false
@@ -314,19 +323,22 @@ func (s *Store) lazyExtract(ctx context.Context, bookID int64) ([]byte, bool) {
 
 	data, ok, err := s.extractor.Cover(ctx, bookID)
 	if err != nil {
-		return placeholderJPEG, true // serve, but do not negative-cache an error
+		return placeholderJPEG, true // serve once; do not record state
 	}
 	if !ok || len(data) == 0 {
-		data = placeholderJPEG
+		_ = s.state.Set(ctx, bookID, StateNone) // best-effort negative mark
+		return placeholderJPEG, true
 	}
 
 	jpegData, err := convertToJPEG(data)
 	if err != nil {
-		// Undecodable cover bytes from a successful parse: deterministic, cacheable.
-		jpegData = placeholderJPEG
+		// Undecodable bytes from a successful parse: deterministic, mark none.
+		_ = s.state.Set(ctx, bookID, StateNone)
+		return placeholderJPEG, true
 	}
-	// Best-effort cache; serving still succeeds if the write fails.
-	_ = s.writeFile(bookID, jpegData, nil)
+	if err := s.writeFile(bookID, jpegData, nil); err == nil {
+		_ = s.state.Set(ctx, bookID, StateHas)
+	}
 
 	return jpegData, true
 }

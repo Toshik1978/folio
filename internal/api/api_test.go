@@ -123,7 +123,7 @@ func (s *baseSuite) SetupTest() {
 
 	database, err := db.Open(slog.New(slog.DiscardHandler), s.dir)
 	s.Require().NoError(err)
-	store, err := covers.NewStore(s.dir, nil)
+	store, err := covers.NewStore(s.dir, nil, ingest.NewCoverState(database))
 	s.Require().NoError(err)
 
 	s.db = database

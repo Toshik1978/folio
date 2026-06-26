@@ -40,6 +40,33 @@ func (f *fakeExtractor) Cover(context.Context, int64) ([]byte, bool, error) {
 	return f.data, true, nil
 }
 
+// fakeState is an in-memory covers.CoverState for store tests.
+type fakeState struct {
+	mu     sync.Mutex
+	states map[int64]int8
+	getErr error
+}
+
+func newFakeState() *fakeState { return &fakeState{states: map[int64]int8{}} }
+
+func (f *fakeState) Get(_ context.Context, id int64) (int8, error) {
+	if f.getErr != nil {
+		return 0, f.getErr
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	return f.states[id], nil
+}
+
+func (f *fakeState) Set(_ context.Context, id int64, s int8) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.states[id] = s
+
+	return nil
+}
+
 func TestCovers(t *testing.T) {
 	suite.Run(t, new(coversTestSuite))
 }
@@ -102,14 +129,14 @@ func isJPEG(b []byte) bool {
 }
 
 func (s *coversTestSuite) TestStoreCreatesCoverDirectory() {
-	store, err := NewStore(s.dataDir, nil)
+	store, err := NewStore(s.dataDir, nil, newFakeState())
 	s.Require().NoError(err)
 	s.NotNil(store)
 	s.DirExists(filepath.Join(s.dataDir, "covers"))
 }
 
 func (s *coversTestSuite) TestPathHasJPEGExtensionInShard() {
-	store, err := NewStore(s.dataDir, nil)
+	store, err := NewStore(s.dataDir, nil, newFakeState())
 	s.Require().NoError(err)
 	// Sharded by id/1000; the id is the filename with a .jpeg extension.
 	s.Equal("42.jpeg", filepath.Base(store.Path(42)))
@@ -117,7 +144,7 @@ func (s *coversTestSuite) TestPathHasJPEGExtensionInShard() {
 }
 
 func (s *coversTestSuite) TestSaveTranscodesPNGToJPEG() {
-	store, err := NewStore(s.dataDir, nil)
+	store, err := NewStore(s.dataDir, nil, newFakeState())
 	s.Require().NoError(err)
 
 	src := s.pngBytes()
@@ -130,7 +157,7 @@ func (s *coversTestSuite) TestSaveTranscodesPNGToJPEG() {
 }
 
 func (s *coversTestSuite) TestSaveKeepsExistingJPEGAsIs() {
-	store, err := NewStore(s.dataDir, nil)
+	store, err := NewStore(s.dataDir, nil, newFakeState())
 	s.Require().NoError(err)
 
 	src := s.jpegBytes()
@@ -142,13 +169,13 @@ func (s *coversTestSuite) TestSaveKeepsExistingJPEGAsIs() {
 }
 
 func (s *coversTestSuite) TestSaveRejectsNonImage() {
-	store, err := NewStore(s.dataDir, nil)
+	store, err := NewStore(s.dataDir, nil, newFakeState())
 	s.Require().NoError(err)
 	s.Error(store.Save(2, []byte("definitely not an image")))
 }
 
 func (s *coversTestSuite) TestSaveOverwrites() {
-	store, err := NewStore(s.dataDir, nil)
+	store, err := NewStore(s.dataDir, nil, newFakeState())
 	s.Require().NoError(err)
 
 	s.Require().NoError(store.Save(1, s.pngBytes()))
@@ -160,7 +187,7 @@ func (s *coversTestSuite) TestSaveOverwrites() {
 }
 
 func (s *coversTestSuite) TestServeExistingCover() {
-	store, err := NewStore(s.dataDir, nil)
+	store, err := NewStore(s.dataDir, nil, newFakeState())
 	s.Require().NoError(err)
 	s.Require().NoError(store.Save(7, s.jpegBytes()))
 
@@ -174,7 +201,7 @@ func (s *coversTestSuite) TestServeExistingCover() {
 }
 
 func (s *coversTestSuite) TestServeMissingCoverReturnsPlaceholder() {
-	store, err := NewStore(s.dataDir, nil) // no extractor
+	store, err := NewStore(s.dataDir, nil, newFakeState()) // no extractor
 	s.Require().NoError(err)
 
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/covers/999", http.NoBody)
@@ -188,7 +215,7 @@ func (s *coversTestSuite) TestServeMissingCoverReturnsPlaceholder() {
 
 func (s *coversTestSuite) TestLazyExtractionTranscodesAndCaches() {
 	ext := &fakeExtractor{data: s.pngBytes()} // extractor yields a PNG
-	store, err := NewStore(s.dataDir, ext)
+	store, err := NewStore(s.dataDir, ext, newFakeState())
 	s.Require().NoError(err)
 
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/covers/5", http.NoBody)
@@ -212,72 +239,91 @@ func (s *coversTestSuite) TestLazyExtractionTranscodesAndCaches() {
 	s.True(store.Has(5))
 }
 
-func (s *coversTestSuite) TestLazyExtractionCachesPlaceholderForCoverlessBook() {
-	ext := &fakeExtractor{} // no cover available
-	store, err := NewStore(s.dataDir, ext)
+func (s *coversTestSuite) TestServeNoCoverMarksNoneAndWritesNoFile() {
+	st := newFakeState()
+	store, err := NewStore(s.dataDir, &fakeExtractor{}, st) // extractor returns no cover
 	s.Require().NoError(err)
 
-	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/covers/6", http.NoBody)
-	w := httptest.NewRecorder()
-	store.ServeCover(w, req, 6)
-	s.Equal("image/jpeg", w.Header().Get("Content-Type"))
-	s.Equal(placeholderJPEG, w.Body.Bytes())
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/cover", http.NoBody)
+	store.ServeCover(rr, req, 42)
 
-	// The placeholder is cached, so a cover-less book is not re-parsed.
-	store.ServeCover(httptest.NewRecorder(), req, 6)
-	s.Equal(1, ext.calls)
-	s.True(store.Has(6))
+	s.Equal(http.StatusOK, rr.Code)
+	s.Equal("no-cache", rr.Header().Get("Cache-Control")) // placeholder policy
+	s.Equal(placeholderJPEG, rr.Body.Bytes())             // served from memory
+	state, _ := st.Get(context.Background(), 42)
+	s.Equal(StateNone, state) // marked, not re-parsed
+	_, statErr := os.Stat(store.Path(42))
+	s.True(os.IsNotExist(statErr)) // NO file on disk
 }
 
-func (s *coversTestSuite) TestCacheMissCachesPlaceholderWithoutParsing() {
-	ext := &fakeExtractor{data: s.pngBytes()} // a cover IS available, but CacheMiss must not extract it
-	store, err := NewStore(s.dataDir, ext)
+func (s *coversTestSuite) TestServeKnownNoneServesPlaceholderWithoutParsing() {
+	st := newFakeState()
+	s.Require().NoError(st.Set(context.Background(), 7, StateNone))
+	ext := &fakeExtractor{}
+	store, err := NewStore(s.dataDir, ext, st)
 	s.Require().NoError(err)
 
-	s.Require().NoError(store.CacheMiss(8))
+	rr := httptest.NewRecorder()
+	store.ServeCover(rr, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/cover", http.NoBody), 7)
 
-	s.Equal(0, ext.calls, "CacheMiss records a negative cache without parsing the source")
-	s.True(store.Has(8), "CacheMiss leaves a cached entry on disk")
-	s.False(store.HasLocalCover(context.Background(), 8), "the cached entry is a placeholder, not a real cover")
-
-	// The serve path now finds the cached placeholder and never re-extracts.
-	w := httptest.NewRecorder()
-	store.ServeCover(w,
-		httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/covers/8", http.NoBody), 8)
-	s.Equal(placeholderJPEG, w.Body.Bytes())
-	s.Equal("no-cache", w.Header().Get("Cache-Control"))
-	s.Equal(0, ext.calls, "a CacheMiss-cached book is not parsed on serve")
+	s.Equal(placeholderJPEG, rr.Body.Bytes())
+	s.Equal(0, ext.calls) // known-none must not parse the source
 }
 
-func (s *coversTestSuite) TestHasLocalCoverWithCachedReal() {
-	store, err := NewStore(s.dataDir, nil)
+func (s *coversTestSuite) TestServeRealCoverMarksHasAndCachesFile() {
+	st := newFakeState()
+	store, err := NewStore(s.dataDir, &fakeExtractor{data: s.jpegBytes()}, st)
 	s.Require().NoError(err)
-	s.Require().NoError(store.Save(1, s.jpegBytes()))
 
-	s.True(store.HasLocalCover(context.Background(), 1), "a cached non-placeholder cover is a real local cover")
+	rr := httptest.NewRecorder()
+	store.ServeCover(rr, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/cover", http.NoBody), 9)
+
+	s.Equal("public, max-age=31536000, immutable", rr.Header().Get("Cache-Control"))
+	state, _ := st.Get(context.Background(), 9)
+	s.Equal(StateHas, state)
+	s.True(store.Has(9)) // real cover file on disk
 }
 
-func (s *coversTestSuite) TestHasLocalCoverWithCachedPlaceholderIsFalse() {
-	ext := &fakeExtractor{} // no cover available -> serving caches the placeholder
-	store, err := NewStore(s.dataDir, ext)
+func (s *coversTestSuite) TestServeExtractErrorLeavesStateUnknownAndUncached() {
+	st := newFakeState()
+	ext := &fakeExtractor{err: context.Canceled}
+	store, err := NewStore(s.dataDir, ext, st)
 	s.Require().NoError(err)
-	store.ServeCover(httptest.NewRecorder(),
-		httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/covers/2", http.NoBody), 2)
-	s.Require().True(store.Has(2), "placeholder is cached")
 
-	s.False(store.HasLocalCover(context.Background(), 2), "a cached placeholder is not a real local cover")
+	rr := httptest.NewRecorder()
+	store.ServeCover(rr, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/cover", http.NoBody), 5)
+
+	s.Equal(placeholderJPEG, rr.Body.Bytes()) // served, this response only
+	state, _ := st.Get(context.Background(), 5)
+	s.Equal(StateUnknown, state) // not negative-cached
+	_, statErr := os.Stat(store.Path(5))
+	s.True(os.IsNotExist(statErr))
+}
+
+func (s *coversTestSuite) TestHasLocalCoverByState() {
+	st := newFakeState()
+	s.Require().NoError(st.Set(context.Background(), 1, StateHas))
+	s.Require().NoError(st.Set(context.Background(), 2, StateNone))
+	ext := &fakeExtractor{}
+	store, err := NewStore(s.dataDir, ext, st)
+	s.Require().NoError(err)
+
+	s.True(store.HasLocalCover(context.Background(), 1))
+	s.False(store.HasLocalCover(context.Background(), 2))
+	s.Equal(0, ext.calls) // state answered both without parsing
 }
 
 func (s *coversTestSuite) TestHasLocalCoverWithExtractableCover() {
 	ext := &fakeExtractor{data: s.pngBytes()} // source yields a cover, not yet cached
-	store, err := NewStore(s.dataDir, ext)
+	store, err := NewStore(s.dataDir, ext, newFakeState())
 	s.Require().NoError(err)
 
 	s.True(store.HasLocalCover(context.Background(), 3), "an extractable cover counts even before it is cached")
 }
 
 func (s *coversTestSuite) TestHasLocalCoverFalseWithoutExtractor() {
-	store, err := NewStore(s.dataDir, nil)
+	store, err := NewStore(s.dataDir, nil, newFakeState())
 	s.Require().NoError(err)
 
 	s.False(store.HasLocalCover(context.Background(), 4), "no cache and no extractor means no local cover")
@@ -285,14 +331,14 @@ func (s *coversTestSuite) TestHasLocalCoverFalseWithoutExtractor() {
 
 func (s *coversTestSuite) TestHasLocalCoverFalseWithCoverlessExtractor() {
 	ext := &fakeExtractor{} // source has no cover
-	store, err := NewStore(s.dataDir, ext)
+	store, err := NewStore(s.dataDir, ext, newFakeState())
 	s.Require().NoError(err)
 
 	s.False(store.HasLocalCover(context.Background(), 5))
 }
 
 func (s *coversTestSuite) TestVersionIsZeroWithoutCoverAndMtimeAfterSave() {
-	store, err := NewStore(s.dataDir, nil)
+	store, err := NewStore(s.dataDir, nil, newFakeState())
 	s.Require().NoError(err)
 
 	s.Equal("0", store.Version(42))
@@ -301,7 +347,7 @@ func (s *coversTestSuite) TestVersionIsZeroWithoutCoverAndMtimeAfterSave() {
 }
 
 func (s *coversTestSuite) TestServePlaceholderIsNotImmutable() {
-	store, err := NewStore(s.dataDir, nil)
+	store, err := NewStore(s.dataDir, nil, newFakeState())
 	s.Require().NoError(err)
 
 	w := httptest.NewRecorder()
@@ -315,7 +361,7 @@ func (s *coversTestSuite) TestServeCachedPlaceholderIsNotImmutable() {
 	// A coverless extractor makes lazyExtract cache the placeholder file; the
 	// second request reads that cached file and must still avoid immutable.
 	ext := &fakeExtractor{} // no cover available
-	store, err := NewStore(s.dataDir, ext)
+	store, err := NewStore(s.dataDir, ext, newFakeState())
 	s.Require().NoError(err)
 	for range 2 {
 		w := httptest.NewRecorder()
@@ -326,7 +372,7 @@ func (s *coversTestSuite) TestServeCachedPlaceholderIsNotImmutable() {
 }
 
 func (s *coversTestSuite) TestServeRealCoverIsImmutable() {
-	store, err := NewStore(s.dataDir, nil)
+	store, err := NewStore(s.dataDir, nil, newFakeState())
 	s.Require().NoError(err)
 	s.Require().NoError(store.Save(9, s.jpegBytes()))
 
@@ -343,7 +389,7 @@ func (s *coversTestSuite) TestPlaceholderIsValidJPEG() {
 }
 
 func (s *coversTestSuite) TestStoreDelete() {
-	store, err := NewStore(s.dataDir, nil)
+	store, err := NewStore(s.dataDir, nil, newFakeState())
 	s.Require().NoError(err)
 
 	// Deleting a non-existent cover should be a no-op
@@ -361,7 +407,7 @@ func (s *coversTestSuite) TestStoreDelete() {
 // placeholder for this response only — never cache it as "no cover".
 func (s *coversTestSuite) TestExtractorErrorIsNotNegativeCached() {
 	ext := &fakeExtractor{err: context.Canceled}
-	store, err := NewStore(s.dataDir, ext)
+	store, err := NewStore(s.dataDir, ext, newFakeState())
 	s.Require().NoError(err)
 
 	w := httptest.NewRecorder()
@@ -378,23 +424,11 @@ func (s *coversTestSuite) TestExtractorErrorIsNotNegativeCached() {
 	s.NotEqual(placeholderJPEG, w.Body.Bytes())
 }
 
-// A successful parse that finds no cover still negative-caches the placeholder.
-func (s *coversTestSuite) TestNoCoverStillNegativeCaches() {
-	ext := &fakeExtractor{}
-	store, err := NewStore(s.dataDir, ext)
-	s.Require().NoError(err)
-
-	w := httptest.NewRecorder()
-	store.ServeCover(w, httptest.NewRequestWithContext(s.T().Context(), http.MethodGet, "/", http.NoBody), 8)
-	s.Equal(http.StatusOK, w.Code)
-	s.True(store.Has(8), "deterministic no-cover must cache the placeholder")
-}
-
 // Save must replace a cover atomically: a concurrent reader either sees the
 // old or the new complete JPEG, never a torn (half-written) file, and no temp
 // staging file is left behind.
 func (s *coversTestSuite) TestSaveIsAtomicUnderConcurrentReads() {
-	store, err := NewStore(s.dataDir, nil)
+	store, err := NewStore(s.dataDir, nil, newFakeState())
 	s.Require().NoError(err)
 
 	small := s.jpegBytes()
@@ -444,7 +478,7 @@ func (s *coversTestSuite) TestSaveIsAtomicUnderConcurrentReads() {
 // M1: re-saving identical bytes must not rewrite the file (mtime = ?v= buster).
 func (s *coversTestSuite) TestHasLocalCoverConservativeOnContextError() {
 	ext := &fakeExtractor{err: context.DeadlineExceeded}
-	st, err := NewStore(s.dataDir, ext)
+	st, err := NewStore(s.dataDir, ext, newFakeState())
 	s.Require().NoError(err)
 
 	// No cover on disk; extraction times out → we must NOT report "no local cover"
@@ -453,7 +487,7 @@ func (s *coversTestSuite) TestHasLocalCoverConservativeOnContextError() {
 }
 
 func (s *coversTestSuite) TestSaveSkipsIdenticalBytes() {
-	store, err := NewStore(s.dataDir, nil)
+	store, err := NewStore(s.dataDir, nil, newFakeState())
 	s.Require().NoError(err)
 	data := s.jpegBytes()
 	s.Require().NoError(store.Save(9, data))
