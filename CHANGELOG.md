@@ -1,3 +1,20 @@
+## v1.3.0 (2026-06-26)
+
+### Feat
+
+- **opds**: offline metadata backfill on acquisition feed (bounded, no online trip)
+- **covers**: drive cover serving from cover_state, drop on-disk placeholder
+- **ingest**: add CoverState adapter over books.cover_state
+- **db**: add books.cover_state column and queries
+
+### Fix
+
+- **covers**: short-circuit thumbnail serve on StateNone; test-double + comment cleanup
+
+### Refactor
+
+- **sync**: remove eager cover warmer; covers/metadata now lazy
+
 ## v1.2.1 (2026-06-25)
 
 ### Fix
