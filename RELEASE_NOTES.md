@@ -6,6 +6,30 @@ people running the app. For the full commit-level technical log, see
 
 ---
 
+## v1.3.2 — 2026-06-26
+
+### Notable fixes
+
+- **OPDS search now works in Moon+ Reader (and Librera/Stanza).** These readers
+  don't follow the OpenSearch description document — they look for a search link
+  with the `{searchTerms}` template right in the feed. Folio now advertises that
+  inline link alongside the standard one, so the search box appears and works.
+  Spec-compliant clients like Koodo Reader are unaffected. Re-add (or refresh)
+  the catalog in your reader to pick it up.
+
+---
+
+## v1.3.1 — 2026-06-26
+
+### Notable fixes
+
+- **OPDS search advertised with the correct media type.** The search link and
+  OpenSearch description document are now served as
+  `application/opensearchdescription+xml`, as the OPDS spec requires. This is
+  the groundwork that the v1.3.2 Moon+ Reader fix builds on.
+
+---
+
 ## v1.3.0 — 2026-06-26
 
 This release makes covers and metadata **lazy**: instead of an eager pass that
