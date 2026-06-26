@@ -292,6 +292,23 @@ advertises standard Atom navigation links so readers can walk the catalog:
 `next`/`previous` hrefs preserve the other query parameters (e.g.
 `/opds/search?author=Asimov&page=2`), so filtered feeds page correctly.
 
+#### Offline metadata enrichment
+
+The acquisition feed (`/opds/search` and the browse feeds that drill into it)
+backfills **offline** metadata — annotation and identifiers parsed from each
+book's own source file — for the books on the requested page that have not been
+checked yet (`metadata_checked = 0`). This runs in `internal/opds/enrich.go`
+before the entries are rendered, so an OPDS-first reader sees a book's summary
+without ever opening it in the web UI. It is bounded so a feed never hangs: a
+fan-out of `opdsBackfillWorkers` (6) goroutines under a `opdsBackfillBudget`
+(5s) deadline, after which any unfinished books simply render from the current
+DB and enrich on a later load. The fill is best-effort and at most once per book
+(single-flight, gated by `metadata_checked`). The injected `MetadataFiller`
+interface keeps `opds` a leaf package — it imports neither `ingest` nor the
+online enrichment tier, so **OPDS never makes an online (Google Books) request**;
+covers remain lazy on the separate public cover endpoint. Navigation/index feeds
+(`authors`/`series`/`genres`/root) render from the DB only and trigger no fill.
+
 #### Annotation sanitization
 
 `<content type="html">` annotations are sanitized with `bluemonday.UGCPolicy()`
@@ -342,7 +359,7 @@ To optimize performance and security when loading cover images for the Web UI or
 3. **Directory Traversal Prevention**: The `{id}` parameter is strictly validated before any filesystem interaction:
    - The string `{id}` is converted to a positive integer in Go. If conversion fails, the backend immediately returns a `400 Bad Request` or `404 Not Found`.
    - File lookups are sharded and constrained within `/data/covers/` using the integer `{id}` (e.g. `/data/covers/0/42.jpeg`), entirely eliminating path traversal vectors (e.g., `../../etc/passwd`).
-4. **Lazy Extraction**: On a cache miss, `covers/store.go:ServeCover` attempts a one-time extraction of the cover directly from the book's source file (via the ingest `CoverExtractor`), normalizing and caching the result for subsequent requests. A book with no extractable cover caches the placeholder instead, so a cover-dominant grid does not re-parse the source file on every render. `covers/store.go:ServeThumbnail` self-heals a missing thumbnail on serve (regenerates from the cached cover) and falls back to the full cover with `no-cache` until a thumbnail is available.
+4. **Lazy Extraction**: On a cache miss, `covers/store.go:ServeCover` attempts a one-time extraction of the cover directly from the book's source file (via the ingest `CoverExtractor`), normalizing and caching the result for subsequent requests. The outcome is recorded in the `books.cover_state` column (`unknown`/`has`/`none`) via the injected `CoverState` adapter (`internal/ingest/coverstate.go`): a book with no extractable cover is marked `none` and **no placeholder file is written to disk** — subsequent requests serve the in-memory placeholder straight from the marker without re-parsing the source. This replaces the former on-disk placeholder negative cache, which cost ~40 KB per cover-less book. `covers/store.go:ServeThumbnail` self-heals a missing thumbnail on serve (regenerates from the cached cover) and falls back to the full cover with `no-cache` until a thumbnail is available.
 5. **Graceful Fallback**: If no cached cover exists and no extractor can produce one, the server responds with a placeholder image embedded in the Go binary (`internal/covers/`), rather than throwing an error.
-6. **Thumbnail generation**: Thumbnails are generated eagerly in the cover write path (`writeFile`) — at ingest, INPX warm, and lazy extraction — so the thumbnail is ready immediately after the cover is first stored. Thumbnails preserve aspect ratio, never upscale, longest side ≤400px, JPEG quality 85.
+6. **Thumbnail generation**: Thumbnails are generated eagerly in the cover write path (`writeFile`) — at ingest and on lazy extraction — so the thumbnail is ready immediately after the cover is first stored. Thumbnails preserve aspect ratio, never upscale, longest side ≤400px, JPEG quality 85.
 7. **Cache policy (`?v=` buster)**: cover URLs carry `?v=<content_hash>-<cover file mtime>` (`covers.Store.Version`), so the URL changes when the cover *selection* changes (metadata hash) **or** when the cover *bytes* change without a metadata change (a placeholder later upgraded to a real cover, a better edition's cover saved by a later sync). Thumbnail URLs add a third component: `?v=<content_hash>-<cover_version>-<thumb_token>` (e.g. `t400q85`), where the token encodes the rendering spec and changes when thumbnail generation parameters are updated. Real covers and thumbnails are served `Cache-Control: public, max-age=31536000, immutable`; placeholder and fallback responses are served `no-cache` so clients revalidate and pick up a real cover that appears later.

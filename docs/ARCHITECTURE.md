@@ -103,7 +103,7 @@ folio/
 │   ├── libtype/            # Library-type constants (calibre/inpx/folder); dependency-free leaf shared across layers
 │   ├── htmltext/           # HTML annotation → plain text / entity tables
 │   ├── covers/             # Cover store + HTTP serving + embedded placeholder
-│   ├── sync/               # Background sync engine (scheduler, fsnotify watcher, cover warming, purge teardown)
+│   ├── sync/               # Background sync engine (scheduler, fsnotify watcher, purge teardown)
 │   ├── bookfile/           # Shared file-format helpers (content types, extensions)
 │   ├── config/             # Env-var config parsing
 │   ├── logging/            # slog logger construction

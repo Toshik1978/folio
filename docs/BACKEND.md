@@ -193,9 +193,9 @@ This groups `go test` output by suite, isolates fixtures per concern, and gives 
 | `internal/ebook`  | `TestEbook`  | Per-format parsers (`epub`/`fb2`/`mobi`/`pdf`) + dispatcher, against `testdata/` fixtures |
 | `internal/ingest` | `TestIngest` | Source parsers (`folder`/`calibre`/`inpx`) against a temp folio DB + generated fixtures |
 | `internal/api` | `TestAPI` | REST handlers over a temp DB: `booksSuite`, `librariesSuite`, `listsSuite`, `metaSuite` |
-| `internal/opds` | `TestOPDS` | Catalog handlers: `authSuite` (Basic Auth), `downloadSuite`, `feedsSuite` (golden-file feed XML) |
+| `internal/opds` | `TestOPDS` | Catalog handlers: `authSuite` (Basic Auth), `downloadSuite`, `feedsSuite` (golden-file feed XML), `enrichSuite` (offline metadata backfill on the acquisition feed) |
 | `internal/db` | `TestDB` | `booksFilterSuite` — the Bob dynamic book filter + `scanBook`/`GetBook` column-drift guard |
-| `internal/sync` | `TestSync` | Sync engine: `engineSuite`, `schedulerSuite`, `warmSuite` (cover warming), `watcherSuite` (fsnotify debounce) |
+| `internal/sync` | `TestSync` | Sync engine: `engineSuite`, `schedulerSuite`, `watcherSuite` (fsnotify debounce) |
 
 ### Fixtures & hermeticity
 
@@ -257,7 +257,6 @@ internal/
 │   ├── parser.go          #   Parser/Checkpointer interfaces (defined at the consumer)
 │   ├── scheduler.go       #   per-library tickers + purge-deadline sweep
 │   ├── purge.go           #   deadline sweep + RequestPurge teardown
-│   ├── warmer.go          #   cover warming
 │   ├── reporter.go        #   indexing-progress reporter → events broker
 │   └── watcher.go         #   fsnotify + debounce
 ├── ingest/                # Source parsers + reconciliation
