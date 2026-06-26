@@ -116,8 +116,6 @@ func run() int { //revive:disable:function-length
 			libtype.Folder:  ingest.NewFolderParser(log, parser),
 		},
 		coverStore,
-		extractor,
-		backfiller,
 		sync.WithEvents(broker),
 		sync.WithStatsObserver(catalogHandler),
 	)

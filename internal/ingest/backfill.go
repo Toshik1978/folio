@@ -33,9 +33,9 @@ type FileExtractor interface {
 
 // LocalBackfiller recovers a book's offline metadata (annotation + identifiers)
 // from its own file and persists the gaps, at most once per book. It is the
-// shared tier behind both the REST first-view path and the sync warmer, so an
-// INPX book's FB2 annotation lands in the DB for every reader (REST and OPDS),
-// not only after a web-UI view. Best-effort throughout.
+// shared tier behind the REST first-view path, so an INPX book's FB2 annotation
+// lands in the DB for every reader (REST and OPDS), not only after a web-UI view.
+// Best-effort throughout.
 type LocalBackfiller struct {
 	log       *slog.Logger
 	q         *dbq.Queries
@@ -58,7 +58,7 @@ func NewLocalBackfiller(
 
 // Fill recovers and persists one book's offline metadata, at most once
 // (metadata_checked gated). Concurrent calls for the same book id collapse via
-// single-flight, so REST and the warmer never double-parse the same file.
+// single-flight so the same file is never parsed twice concurrently.
 func (b *LocalBackfiller) Fill(ctx context.Context, bookID int64) error {
 	// ctx is captured from the caller; safe because fill always returns nil (never propagates ctx errors).
 	_, err, _ := b.sf.Do(strconv.FormatInt(bookID, 10), func() (any, error) {

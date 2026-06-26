@@ -18,7 +18,6 @@ import (
 	"github.com/Toshik1978/folio/internal/db/dbq"
 	"github.com/Toshik1978/folio/internal/events"
 	"github.com/Toshik1978/folio/internal/ingest"
-	"github.com/Toshik1978/folio/internal/libtype"
 )
 
 // Library status values. A healthy library is "active"; "syncing" is reported
@@ -29,7 +28,6 @@ const (
 	statusPurged            = "purged"
 	purgeCheckInterval      = time.Minute
 	defaultWatchDebounce    = 10 * time.Second
-	defaultWarmDelay        = 50 * time.Millisecond
 	defaultProgressInterval = 250 * time.Millisecond
 )
 
@@ -96,14 +94,11 @@ type Engine struct {
 	scheduler *scheduler
 	watcher   *watcher
 
-	warmer *warmer // optional; nil disables INPX cover-warming
-
 	statsObserver StatsObserver
 }
 
 // New builds an engine over the given database, parser registry, and cover
 // store. parsers is keyed by library type (built by the composition root).
-// extractor enables the INPX cover-warming pass; pass nil to disable warming.
 // writeGuard is the process-wide single-writer guard, shared with the API write
 // handlers so an indexing run serializes against concurrent API writes.
 func New(
@@ -112,8 +107,6 @@ func New(
 	writeGuard *db.WriteGuard,
 	parsers map[string]Parser,
 	covers ingest.CoverStore,
-	extractor CoverExtractor,
-	backfiller MetadataBackfiller,
 	opts ...Option,
 ) (*Engine, error) {
 	e := &Engine{
@@ -136,9 +129,6 @@ func New(
 	}
 	e.scheduler = sched
 
-	if extractor != nil {
-		e.warmer = newWarmer(log, database, covers, extractor, backfiller, e.stop, defaultWarmDelay)
-	}
 	for _, opt := range opts {
 		opt(e)
 	}
@@ -163,9 +153,6 @@ func WithStatsObserver(obs StatsObserver) Option {
 // initial sync of every library and an immediate purge sweep. It never blocks.
 func (e *Engine) Start() {
 	go e.worker()
-	if e.warmer != nil {
-		go e.warmer.run()
-	}
 	e.scheduler.start()
 
 	ctx := context.Background()
@@ -203,9 +190,6 @@ func (e *Engine) Stop() {
 	close(e.stop)              // cancel in-flight work FIRST
 	_ = e.scheduler.shutdown() // now a guard-blocked sweep can drain and return
 	<-e.done
-	if e.warmer != nil {
-		<-e.warmer.done
-	}
 	e.bg.Wait()
 }
 
@@ -483,10 +467,6 @@ func (e *Engine) runSync(ctx context.Context, parser Parser, src dbq.Library, re
 	e.storeCheckpoint(persistCtx, src.ID, fp)
 	e.log.Info("sync done",
 		slog.Int64("library", req.id), slog.Int("added", res.Added), slog.Int("removed", res.Removed))
-
-	if src.Type == libtype.INPX && e.warmer != nil {
-		e.warmer.enqueue(req.id) // low-priority background cover extraction
-	}
 }
 
 // shouldSkip reports whether a sync pass can be skipped because the artifact

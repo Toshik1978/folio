@@ -26,7 +26,6 @@ func TestSync(t *testing.T) {
 	suite.Run(t, new(engineSuite))
 	suite.Run(t, new(schedulerSuite))
 	suite.Run(t, new(watcherSuite))
-	suite.Run(t, new(warmSuite))
 	suite.Run(t, new(reporterSuite))
 	suite.Run(t, new(engineEventsSuite))
 }
@@ -36,12 +35,10 @@ func TestSync(t *testing.T) {
 type baseSuite struct {
 	suite.Suite
 
-	db         *sql.DB
-	store      *covers.Store
-	parser     *stubParser
-	engine     *Engine
-	extractor  CoverExtractor     // nil unless a suite opts into cover-warming
-	backfiller MetadataBackfiller // nil unless a suite opts into metadata backfill
+	db     *sql.DB
+	store  *covers.Store
+	parser *stubParser
+	engine *Engine
 }
 
 func (s *baseSuite) SetupTest() {
@@ -58,7 +55,7 @@ func (s *baseSuite) SetupTest() {
 		"stub":         parser,
 		libtype.Folder: parser,
 		libtype.INPX:   parser,
-	}, store, s.extractor, s.backfiller)
+	}, store)
 	s.Require().NoError(err)
 	engine.debounce = 20 * time.Millisecond // keep watcher tests fast
 

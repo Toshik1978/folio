@@ -75,19 +75,6 @@ func (s *Store) Save(bookID int64, data []byte) error {
 	return nil
 }
 
-// CacheMiss records that bookID has no extractable cover by marking its
-// cover_state StateNone — the in-memory equivalent of the former on-disk
-// placeholder negative cache, writing NOTHING to disk. The serve path then reads
-// the marker and returns the memory placeholder without re-parsing the source.
-// The warm pass uses it to pre-absorb the first-view parse for cover-less books.
-func (s *Store) CacheMiss(bookID int64) error {
-	if err := s.state.Set(context.Background(), bookID, StateNone); err != nil {
-		return fmt.Errorf("mark cover state none %d: %w", bookID, err)
-	}
-
-	return nil
-}
-
 func (s *Store) Delete(bookID int64) error {
 	if err := os.Remove(s.Path(bookID)); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("remove cover %d: %w", bookID, err)
