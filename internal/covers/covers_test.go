@@ -271,6 +271,21 @@ func (s *coversTestSuite) TestServeKnownNoneServesPlaceholderWithoutParsing() {
 	s.Equal(0, ext.calls) // known-none must not parse the source
 }
 
+func (s *coversTestSuite) TestServeThumbnailKnownNoneServesPlaceholderWithoutParsing() {
+	st := newFakeState()
+	s.Require().NoError(st.Set(context.Background(), 7, StateNone))
+	ext := &fakeExtractor{}
+	store, err := NewStore(s.dataDir, ext, st)
+	s.Require().NoError(err)
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/thumbnail", http.NoBody)
+	store.ServeThumbnail(rr, req, 7)
+
+	s.Equal(placeholderJPEG, rr.Body.Bytes())
+	s.Equal(0, ext.calls) // known-none must not parse the source
+}
+
 func (s *coversTestSuite) TestServeRealCoverMarksHasAndCachesFile() {
 	st := newFakeState()
 	store, err := NewStore(s.dataDir, &fakeExtractor{data: s.jpegBytes()}, st)
@@ -358,8 +373,9 @@ func (s *coversTestSuite) TestServePlaceholderIsNotImmutable() {
 }
 
 func (s *coversTestSuite) TestServeCachedPlaceholderIsNotImmutable() {
-	// A coverless extractor makes lazyExtract cache the placeholder file; the
-	// second request reads that cached file and must still avoid immutable.
+	// A coverless extractor causes lazyExtract to persist a StateNone marker;
+	// the second request serves the placeholder via that marker — no file is
+	// ever cached and no re-parse occurs — but must still avoid immutable.
 	ext := &fakeExtractor{} // no cover available
 	store, err := NewStore(s.dataDir, ext, newFakeState())
 	s.Require().NoError(err)

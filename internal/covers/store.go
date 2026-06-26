@@ -205,6 +205,9 @@ func (s *Store) coverBytesForThumb(ctx context.Context, bookID int64) ([]byte, b
 		s.writeThumbnail(bookID, data, nil)
 		return data, true
 	}
+	if st, err := s.state.Get(ctx, bookID); err == nil && st == StateNone {
+		return nil, false
+	}
 	data, ok := s.lazyExtract(ctx, bookID)
 	if !ok || bytes.Equal(data, placeholderJPEG) {
 		return nil, false
