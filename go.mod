@@ -14,7 +14,7 @@ require (
 	github.com/pdfcpu/pdfcpu v0.13.0
 	github.com/pressly/goose/v3 v3.27.1
 	github.com/samber/lo v1.53.0
-	github.com/stephenafamo/bob v0.46.0
+	github.com/stephenafamo/bob v0.47.0
 	github.com/stretchr/testify v1.11.1
 	golang.org/x/crypto v0.53.0
 	golang.org/x/image v0.42.0
