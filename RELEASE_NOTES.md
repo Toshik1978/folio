@@ -6,6 +6,27 @@ people running the app. For the full commit-level technical log, see
 
 ---
 
+## v1.3.0 — 2026-06-26
+
+This release makes covers and metadata **lazy**: instead of an eager pass that
+hammered providers after every sync, Folio now fetches art and metadata on
+demand and remembers what it has already resolved.
+
+### Highlights
+
+- **Lazy covers and metadata.** The eager cover warmer is gone. Syncs finish
+  faster and stay quiet, and covers/metadata are resolved when they're actually
+  needed rather than all at once after an INPX sync.
+- **Cover serving driven by tracked state.** Folio now records each book's cover
+  status (`cover_state`) and serves from it, dropping the on-disk placeholder
+  file. Books known to have no cover short-circuit immediately instead of
+  re-attempting work on every request.
+- **Offline metadata backfill in OPDS feeds.** The acquisition feed now fills in
+  missing metadata from sources you already have — bounded and with no online
+  trip — so OPDS clients see richer entries without slowing the feed down.
+
+---
+
 ## v1.2.1 — 2026-06-25
 
 A small follow-up to v1.2.0.
