@@ -1,3 +1,9 @@
+## v1.3.2 (2026-06-26)
+
+### Fix
+
+- **opds**: emit inline templated search link for Moon+ Reader
+
 ## v1.3.1 (2026-06-26)
 
 ### Fix
