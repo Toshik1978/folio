@@ -21,6 +21,11 @@ const (
 	typeNavigation  = "application/atom+xml;profile=opds-catalog;kind=navigation"
 	typeAcquisition = "application/atom+xml;profile=opds-catalog;kind=acquisition"
 	typeOpenSearch  = "application/opensearchdescription+xml"
+	// typeSearchInline is the media type of the inline templated search link.
+	// Moon+ Reader, Librera, and Stanza do not fetch the OpenSearch description
+	// document; they scan the feed for a rel="search" link whose href literally
+	// contains {searchTerms}. This link carries that template directly.
+	typeSearchInline = "application/atom+xml"
 
 	relSelf        = "self"
 	relStart       = "start"
@@ -98,6 +103,10 @@ func newFeed(id, title, self, mediaType string) feed {
 			{Rel: relSelf, Href: self, Type: mediaType},
 			{Rel: relStart, Href: opdsPrefix + "/", Type: typeNavigation},
 			{Rel: relSearch, Href: opdsPrefix + "/opensearch.xml", Type: typeOpenSearch},
+			// Inline templated link for readers that don't dereference the
+			// OpenSearch description document (Moon+ Reader, Librera, Stanza).
+			// {searchTerms} must stay literal — do not URL-encode it.
+			{Rel: relSearch, Href: opdsPrefix + "/search?q={searchTerms}", Type: typeSearchInline},
 		},
 	}
 }

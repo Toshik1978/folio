@@ -34,14 +34,24 @@ func (s *feedsSuite) TestRootNavigationFeed() {
 	s.True(hrefs[opdsPrefix+"/genres"], "root links to genres")
 	s.True(hrefs[opdsPrefix+"/search"], "root links to all books")
 
-	// Feed-level search link points at the OpenSearch description.
-	var hasSearch bool
+	// Feed advertises search two ways: the spec-compliant OpenSearch
+	// description link (for strict clients) and an inline templated link
+	// carrying {searchTerms} (for Moon+ Reader, Librera, Stanza, which do not
+	// dereference the description document).
+	var hasOpenSearch, hasInline bool
 	for _, l := range f.Links {
-		if l.Rel == relSearch && l.Href == opdsPrefix+"/opensearch.xml" {
-			hasSearch = true
+		if l.Rel != relSearch {
+			continue
+		}
+		switch {
+		case l.Href == opdsPrefix+"/opensearch.xml" && l.Type == typeOpenSearch:
+			hasOpenSearch = true
+		case l.Href == opdsPrefix+"/search?q={searchTerms}" && l.Type == typeSearchInline:
+			hasInline = true
 		}
 	}
-	s.True(hasSearch, "feed advertises opensearch")
+	s.True(hasOpenSearch, "feed advertises OpenSearch description")
+	s.True(hasInline, "feed advertises inline templated search link")
 }
 
 func (s *feedsSuite) TestAuthorsFeed() {
