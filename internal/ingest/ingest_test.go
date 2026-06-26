@@ -46,6 +46,7 @@ func TestIngest(t *testing.T) {
 	suite.Run(t, new(reconcileReportSuite))
 	suite.Run(t, new(idMatchSuite))
 	suite.Run(t, new(identifierLookupSuite))
+	suite.Run(t, new(coverStateSuite))
 }
 
 // nopReporter discards progress. The tests use it to drive a Sync without caring
