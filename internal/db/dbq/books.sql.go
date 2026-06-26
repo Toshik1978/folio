@@ -58,7 +58,7 @@ func (q *Queries) DeleteBooksByLibrary(ctx context.Context, libraryID int64) err
 }
 
 const findBookByLibraryKey = `-- name: FindBookByLibraryKey :one
-SELECT b.id, b.library_id, b.library_key, b.title, b.series_id, b.series_number, b.language, b.annotation, b.metadata_checked, b.enrichment_checked, b.publisher, b.publisher_fold, b.year, b.rating, b.content_hash, b.metadata_format, b.added_at, b.imported_at, b.manually_matched, b.cover_prio, COALESCE(s.name, '') AS series_name
+SELECT b.id, b.library_id, b.library_key, b.title, b.series_id, b.series_number, b.language, b.annotation, b.metadata_checked, b.enrichment_checked, b.publisher, b.publisher_fold, b.year, b.rating, b.content_hash, b.metadata_format, b.added_at, b.imported_at, b.manually_matched, b.cover_prio, b.cover_state, COALESCE(s.name, '') AS series_name
 FROM books b
          LEFT JOIN series s ON s.id = b.series_id
 WHERE b.library_id = ?
@@ -91,6 +91,7 @@ type FindBookByLibraryKeyRow struct {
 	ImportedAt        int64
 	ManuallyMatched   int64
 	CoverPrio         int64
+	CoverState        int64
 	SeriesName        string
 }
 
@@ -118,13 +119,14 @@ func (q *Queries) FindBookByLibraryKey(ctx context.Context, arg FindBookByLibrar
 		&i.ImportedAt,
 		&i.ManuallyMatched,
 		&i.CoverPrio,
+		&i.CoverState,
 		&i.SeriesName,
 	)
 	return i, err
 }
 
 const getBook = `-- name: GetBook :one
-SELECT id, library_id, library_key, title, series_id, series_number, language, annotation, metadata_checked, enrichment_checked, publisher, publisher_fold, year, rating, content_hash, metadata_format, added_at, imported_at, manually_matched, cover_prio
+SELECT id, library_id, library_key, title, series_id, series_number, language, annotation, metadata_checked, enrichment_checked, publisher, publisher_fold, year, rating, content_hash, metadata_format, added_at, imported_at, manually_matched, cover_prio, cover_state
 FROM books
 WHERE id = ?
 `
@@ -153,6 +155,7 @@ func (q *Queries) GetBook(ctx context.Context, id int64) (Book, error) {
 		&i.ImportedAt,
 		&i.ManuallyMatched,
 		&i.CoverPrio,
+		&i.CoverState,
 	)
 	return i, err
 }
@@ -176,6 +179,21 @@ func (q *Queries) GetBookFile(ctx context.Context, id int64) (BookFile, error) {
 		&i.Mtime,
 	)
 	return i, err
+}
+
+const getCoverState = `-- name: GetCoverState :one
+SELECT cover_state
+FROM books
+WHERE id = ?
+`
+
+// GetCoverState returns the lazy cover-extraction marker for a book
+// (0=unknown, 1=has real cover, 2=parsed/none). Drives the cover serve path.
+func (q *Queries) GetCoverState(ctx context.Context, id int64) (int64, error) {
+	row := q.db.QueryRowContext(ctx, getCoverState, id)
+	var cover_state int64
+	err := row.Scan(&cover_state)
+	return cover_state, err
 }
 
 const globalBooksByFormat = `-- name: GlobalBooksByFormat :many
@@ -434,7 +452,7 @@ func (q *Queries) ListBookIDsByLibrary(ctx context.Context, libraryID int64) ([]
 }
 
 const listBooks = `-- name: ListBooks :many
-SELECT id, library_id, library_key, title, series_id, series_number, language, annotation, metadata_checked, enrichment_checked, publisher, publisher_fold, year, rating, content_hash, metadata_format, added_at, imported_at, manually_matched, cover_prio
+SELECT id, library_id, library_key, title, series_id, series_number, language, annotation, metadata_checked, enrichment_checked, publisher, publisher_fold, year, rating, content_hash, metadata_format, added_at, imported_at, manually_matched, cover_prio, cover_state
 FROM books
 ORDER BY added_at DESC, id DESC
 LIMIT ? OFFSET ?
@@ -478,6 +496,7 @@ func (q *Queries) ListBooks(ctx context.Context, arg ListBooksParams) ([]Book, e
 			&i.ImportedAt,
 			&i.ManuallyMatched,
 			&i.CoverPrio,
+			&i.CoverState,
 		); err != nil {
 			return nil, err
 		}
@@ -739,6 +758,8 @@ SELECT COALESCE(publisher, '') AS name, COUNT(*) AS book_count
 FROM books
 WHERE publisher_fold IS NOT NULL
   AND publisher_fold != ''
+  -- char() bounds mirror cyrLo/cyrHi/latLo/latHi in internal/api/letters.go;
+  -- drift guard: internal/api/letters_bounds_test.go TestSQLBucketBoundsMatchGoConstants
   AND NOT ((publisher_fold >= char(1040) AND publisher_fold < char(1072)) OR
            (publisher_fold >= char(65) AND publisher_fold < char(91)))
   AND (CAST(?1 AS INTEGER) = 0 OR library_id = ?1)
@@ -857,6 +878,24 @@ func (q *Queries) PublisherFirstChars(ctx context.Context, libraryID int64) ([]s
 		return nil, err
 	}
 	return items, nil
+}
+
+const setCoverState = `-- name: SetCoverState :exec
+UPDATE books
+SET cover_state = ?
+WHERE id = ?
+`
+
+type SetCoverStateParams struct {
+	CoverState int64
+	ID         int64
+}
+
+// SetCoverState records the result of a cover-extraction attempt so the serve
+// path never re-parses a known book (real cover cached, or known cover-less).
+func (q *Queries) SetCoverState(ctx context.Context, arg SetCoverStateParams) error {
+	_, err := q.db.ExecContext(ctx, setCoverState, arg.CoverState, arg.ID)
+	return err
 }
 
 const updateBook = `-- name: UpdateBook :exec

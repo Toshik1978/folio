@@ -263,3 +263,17 @@ SELECT DISTINCT b.language
 FROM books b
 WHERE (CAST(@library_id AS INTEGER) = 0 OR b.library_id = @library_id)
 ORDER BY b.language;
+
+-- GetCoverState returns the lazy cover-extraction marker for a book
+-- (0=unknown, 1=has real cover, 2=parsed/none). Drives the cover serve path.
+-- name: GetCoverState :one
+SELECT cover_state
+FROM books
+WHERE id = ?;
+
+-- SetCoverState records the result of a cover-extraction attempt so the serve
+-- path never re-parses a known book (real cover cached, or known cover-less).
+-- name: SetCoverState :exec
+UPDATE books
+SET cover_state = ?
+WHERE id = ?;

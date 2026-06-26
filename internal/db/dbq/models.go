@@ -35,6 +35,7 @@ type Book struct {
 	ImportedAt        int64
 	ManuallyMatched   int64
 	CoverPrio         int64
+	CoverState        int64
 }
 
 type BookAuthor struct {

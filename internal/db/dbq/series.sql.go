@@ -188,6 +188,8 @@ type ListSeriesNonLetterRow struct {
 }
 
 // ListSeriesNonLetter is the '#' bucket (see ListAuthorsNonLetter).
+// char() bounds mirror cyrLo/cyrHi/latLo/latHi in internal/api/letters.go;
+// drift guard: internal/api/letters_bounds_test.go TestSQLBucketBoundsMatchGoConstants
 func (q *Queries) ListSeriesNonLetter(ctx context.Context, arg ListSeriesNonLetterParams) ([]ListSeriesNonLetterRow, error) {
 	rows, err := q.db.QueryContext(ctx, listSeriesNonLetter, arg.LibraryID, arg.Off, arg.Lim)
 	if err != nil {

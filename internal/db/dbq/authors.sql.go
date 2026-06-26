@@ -332,6 +332,8 @@ type ListAuthorsNonLetterRow struct {
 // ListAuthorsNonLetter is the '#' bucket: authors whose name starts outside the
 // Cyrillic (char 1040..1071) and Latin A-Z (char 65..90) ranges: digits,
 // punctuation, lowercase, and other scripts. See bucketOf in letters.go.
+// char() bounds mirror cyrLo/cyrHi/latLo/latHi in internal/api/letters.go;
+// drift guard: internal/api/letters_bounds_test.go TestSQLBucketBoundsMatchGoConstants
 func (q *Queries) ListAuthorsNonLetter(ctx context.Context, arg ListAuthorsNonLetterParams) ([]ListAuthorsNonLetterRow, error) {
 	rows, err := q.db.QueryContext(ctx, listAuthorsNonLetter, arg.LibraryID, arg.Off, arg.Lim)
 	if err != nil {

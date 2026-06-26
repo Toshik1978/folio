@@ -333,6 +333,8 @@ type ListGenresNonLetterRow struct {
 }
 
 // ListGenresNonLetter is the '#' bucket (see ListAuthorsNonLetter).
+// char() bounds mirror cyrLo/cyrHi/latLo/latHi in internal/api/letters.go;
+// drift guard: internal/api/letters_bounds_test.go TestSQLBucketBoundsMatchGoConstants
 func (q *Queries) ListGenresNonLetter(ctx context.Context, arg ListGenresNonLetterParams) ([]ListGenresNonLetterRow, error) {
 	rows, err := q.db.QueryContext(ctx, listGenresNonLetter, arg.LibraryID, arg.Off, arg.Lim)
 	if err != nil {
