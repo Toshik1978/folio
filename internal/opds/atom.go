@@ -20,7 +20,7 @@ const maxPage = 1_000_000_000
 const (
 	typeNavigation  = "application/atom+xml;profile=opds-catalog;kind=navigation"
 	typeAcquisition = "application/atom+xml;profile=opds-catalog;kind=acquisition"
-	typeOpenSearch  = "application/atom+xml"
+	typeOpenSearch  = "application/opensearchdescription+xml"
 
 	relSelf        = "self"
 	relStart       = "start"
