@@ -150,6 +150,8 @@ func (h *Handler) search(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	h.backfillPage(r.Context(), books) // offline-only, bounded and budgeted
+
 	path := opdsPrefix + "/search"
 	f := newFeed("urn:folio:opds:search", searchTitle(filter), selfHref(r, path), typeAcquisition)
 	rel := h.fetchEntryRelations(r.Context(), books)

@@ -280,7 +280,7 @@ func (s *feedsSuite) TestOpenSearchDescription() {
 func (s *feedsSuite) TestOpenSearchPublicURL() {
 	s.setCreds()
 	router := chi.NewRouter()
-	New(slog.New(slog.DiscardHandler), s.db, s.covers, s.authn, "https://folio.example.com/").Register(router)
+	New(slog.New(slog.DiscardHandler), s.db, s.covers, nil, s.authn, "https://folio.example.com/").Register(router)
 
 	r := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/opensearch.xml", http.NoBody)
 	r.Header.Set("X-Forwarded-Host", "evil.example.org")

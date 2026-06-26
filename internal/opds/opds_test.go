@@ -26,6 +26,7 @@ import (
 // TestOPDS is the package's single entry point; every suite is registered here.
 func TestOPDS(t *testing.T) {
 	suite.Run(t, new(feedsSuite))
+	suite.Run(t, new(enrichSuite))
 	suite.Run(t, new(authSuite))
 	suite.Run(t, new(downloadSuite))
 }
@@ -60,7 +61,7 @@ func (s *baseSuite) SetupTest() {
 	s.q = dbq.New(database)
 	s.covers = store
 	s.authn = auth.New(slog.New(slog.DiscardHandler), database)
-	s.handler = New(slog.New(slog.DiscardHandler), database, store, s.authn, "")
+	s.handler = New(slog.New(slog.DiscardHandler), database, store, nil, s.authn, "")
 
 	r := chi.NewRouter()
 	s.handler.Register(r)

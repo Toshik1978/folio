@@ -9,6 +9,7 @@
 package opds
 
 import (
+	"context"
 	"database/sql"
 	"log/slog"
 	"net/http"
@@ -37,12 +38,21 @@ type Authenticator interface {
 	Middleware(next http.Handler) http.Handler
 }
 
+// MetadataFiller recovers a book's offline metadata (annotation + identifiers)
+// from its own file, best-effort and at most once per book. *ingest.LocalBackfiller
+// satisfies it; nil disables OPDS feed backfill (entries render from the DB only).
+// The online enrichment tier is intentionally NOT reachable from OPDS.
+type MetadataFiller interface {
+	Fill(ctx context.Context, bookID int64) error
+}
+
 // Handler holds the dependencies shared by every /opds endpoint.
 type Handler struct {
 	log       *slog.Logger
 	db        *sql.DB
 	q         *dbq.Queries
 	covers    CoverServer
+	filler    MetadataFiller
 	authn     Authenticator
 	publicURL string
 	// annotationPolicy sanitizes stored annotation HTML before it reaches reader
@@ -56,12 +66,16 @@ type Handler struct {
 // is the canonical external base URL used to build absolute feed URLs; when
 // empty the (trusted) request host is used instead. authn guards the protected
 // routes with Basic Auth.
-func New(log *slog.Logger, database *sql.DB, covers CoverServer, authn Authenticator, publicURL string) *Handler {
+func New(
+	log *slog.Logger, database *sql.DB, covers CoverServer,
+	filler MetadataFiller, authn Authenticator, publicURL string,
+) *Handler {
 	return &Handler{
 		log:              log,
 		db:               database,
 		q:                dbq.New(database),
 		covers:           covers,
+		filler:           filler,
 		authn:            authn,
 		publicURL:        publicURL,
 		annotationPolicy: bluemonday.UGCPolicy(),
