@@ -43,11 +43,23 @@
 ## Quick Start
 
 ```bash
+docker run -p 8080:8080 \
+  -v /path/to/library:/library:ro \
+  -v folio-data:/data \
+  ghcr.io/toshik1978/folio:latest
+```
+
+Open `http://localhost:8080`. Mount your book sources read-only at `/library`; Folio indexes them into its own SQLite database at `/data`.
+
+<details>
+<summary>Build from source instead</summary>
+
+```bash
 docker build -t folio .
 docker run -p 8080:8080 -v /path/to/library:/library:ro -v folio-data:/data folio
 ```
 
-Open `http://localhost:8080`. Mount your book sources read-only at `/library`; Folio indexes them into its own SQLite database at `/data`.
+</details>
 
 ---
 
