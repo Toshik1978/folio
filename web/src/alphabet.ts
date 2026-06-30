@@ -5,12 +5,16 @@
 // internal/api/letters.go — keep the two in sync.
 export const HASH_BUCKET = '#';
 
-function buildAlphabet(): string[] {
+function range(from: number, to: number): string[] {
   const out: string[] = [];
-  for (let c = 0x0410; c <= 0x042f; c++) out.push(String.fromCharCode(c)); // А..Я
-  for (let c = 0x41; c <= 0x5a; c++) out.push(String.fromCharCode(c)); // A..Z
-  out.push(HASH_BUCKET);
+  for (let c = from; c <= to; c++) out.push(String.fromCharCode(c));
   return out;
 }
 
-export const ALPHABET: string[] = buildAlphabet();
+// The script blocks the selector groups by. The selector hides a whole block
+// when none of its buckets have entries (see AlphabetSelector.vue), so a
+// Latin-only library shows no Cyrillic buttons and vice versa.
+export const CYRILLIC: string[] = range(0x0410, 0x042f); // А..Я
+export const LATIN: string[] = range(0x41, 0x5a); // A..Z
+
+export const ALPHABET: string[] = [...CYRILLIC, ...LATIN, HASH_BUCKET];

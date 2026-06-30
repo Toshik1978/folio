@@ -15,12 +15,28 @@ function button(wrapper: ReturnType<typeof mountSelector>, letter: string) {
 }
 
 describe('AlphabetSelector', () => {
-  it('renders a button for every alphabet bucket (Cyrillic, Latin, #)', () => {
-    const wrapper = mountSelector(null, []);
+  it('renders a button for every alphabet bucket when both scripts have items', () => {
+    const wrapper = mountSelector(null, ['А', 'Z']);
     expect(wrapper.findAll('[data-testid="letter-btn"]')).toHaveLength(ALPHABET.length);
     expect(button(wrapper, 'А')).toBeTruthy(); // Cyrillic
     expect(button(wrapper, 'Z')).toBeTruthy(); // Latin
     expect(button(wrapper, '#')).toBeTruthy(); // catch-all
+  });
+
+  it('hides the Cyrillic block when no Cyrillic bucket has items', () => {
+    const wrapper = mountSelector(null, ['A', 'C']);
+    expect(button(wrapper, 'А')).toBeUndefined(); // Cyrillic А
+    expect(button(wrapper, 'Я')).toBeUndefined();
+    expect(button(wrapper, 'A')).toBeTruthy(); // Latin retained
+    expect(button(wrapper, '#')).toBeTruthy();
+  });
+
+  it('hides the Latin block when no Latin bucket has items', () => {
+    const wrapper = mountSelector(null, ['А', 'Б']);
+    expect(button(wrapper, 'A')).toBeUndefined(); // Latin A
+    expect(button(wrapper, 'Z')).toBeUndefined();
+    expect(button(wrapper, 'А')).toBeTruthy(); // Cyrillic retained
+    expect(button(wrapper, '#')).toBeTruthy();
   });
 
   it('disables letters that have no items', () => {

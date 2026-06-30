@@ -17,14 +17,22 @@
 </template>
 
 <script setup lang="ts">
-import { ALPHABET } from '@/alphabet';
+import { computed } from 'vue';
 
-const letters = ALPHABET;
+import { CYRILLIC, HASH_BUCKET, LATIN } from '@/alphabet';
 
-defineProps<{
+const props = defineProps<{
   activeLetter: string | null;
   availableLetters: Set<string>;
 }>();
 
 defineEmits<{ select: [letter: string] }>();
+
+// Render a script block only when at least one of its buckets has entries, so a
+// purely Latin library hides the Cyrillic row and vice versa. '#' is always
+// shown as the catch-all.
+const letters = computed(() => {
+  const hasAny = (block: string[]) => block.some((l) => props.availableLetters.has(l));
+  return [...(hasAny(CYRILLIC) ? CYRILLIC : []), ...(hasAny(LATIN) ? LATIN : []), HASH_BUCKET];
+});
 </script>
