@@ -1,3 +1,13 @@
+## v1.4.0 (2026-06-30)
+
+### Feat
+
+- **web**: hide alphabet script blocks with no entries
+
+### Fix
+
+- **web**: pluralize the book count on browse list pages
+
 ## v1.3.2 (2026-06-26)
 
 ### Fix
