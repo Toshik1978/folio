@@ -15,7 +15,7 @@
           >
             <span data-testid="item-name" class="font-medium">{{ item.name }}</span>
             <span data-testid="item-count" class="text-base-content/60 text-sm">
-              {{ item.book_count }} books
+              {{ item.book_count }} {{ item.book_count === 1 ? 'book' : 'books' }}
             </span>
           </router-link>
         </li>

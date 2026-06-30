@@ -36,6 +36,14 @@ describe('AlphabetList', () => {
     expect(mountList().findAll('[data-testid="item-count"]')[0].text()).toBe('42 books');
   });
 
+  it('uses the singular noun for a count of one', () => {
+    const wrapper = mount(AlphabetList, {
+      props: { items: [{ name: 'Solo', book_count: 1 }], filterKey: 'author' },
+      global: { stubs: { RouterLink: RouterLinkStub } },
+    });
+    expect(wrapper.find('[data-testid="item-count"]').text()).toBe('1 book');
+  });
+
   it('links each item to a filtered books query', () => {
     const link = mountList().findAllComponents(RouterLinkStub)[0];
     expect(link.props('to')).toEqual({ path: '/', query: { author: '=Asimov' } });
