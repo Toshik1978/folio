@@ -70,6 +70,7 @@ These rules apply to every task. Non-negotiable.
    2. **The entry point only wires suites** — it consists solely of `suite.Run(t, new(...))` calls, one per `suite.Suite`, and contains no test logic itself.
    3. **All real tests are suite methods** — every assertion lives in a method on a `suite.Suite`, using suite assertion methods (`s.Equal`, `s.NoError`, `s.Require().NoError`, `s.Contains`, …). Never write a bare `func TestX(t *testing.T)` with `require.X(t, …)` / `assert.X(t, …)` for an actual test.
 4. **Branch Naming**: Any branch created for feature work **MUST** use the prefix `feature/` (e.g. `feature/sync-events`). Never use `feat/`, `feat-`, or any other variant. Only `feature/` is permitted.
+5. **Commit Messages**: Never add `Co-Authored-By` and/or `Claude-Session` trailers — no AI/agent attribution trailers of any kind. Keep commit messages to the conventional-commit subject and body only.
 
 ---
 
