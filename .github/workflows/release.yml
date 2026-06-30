@@ -13,6 +13,8 @@ jobs:
     permissions:
       contents: write
       packages: write
+      attestations: write
+      id-token: write
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -47,9 +49,18 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Set up Docker Buildx
+        if: steps.check.outputs.release == 'true'
+        uses: docker/setup-buildx-action@v4
+
       - name: Extract metadata (tags, labels) for Docker
         id: meta
         if: steps.check.outputs.release == 'true'
+        env:
+          # Stamp OCI annotations onto the image index (manifest list) so the
+          # description/source show up on the GHCR package page for the
+          # multi-arch image — without this they only attach to child manifests.
+          DOCKER_METADATA_ANNOTATIONS_LEVELS: index
         uses: docker/metadata-action@v6
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
@@ -64,8 +75,18 @@ jobs:
         with:
           context: .
           push: true
+          platforms: linux/amd64,linux/arm64
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          annotations: ${{ steps.meta.outputs.annotations }}
+
+      - name: Generate build provenance attestation
+        if: steps.check.outputs.release == 'true'
+        uses: actions/attest@v4
+        with:
+          subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true
 
       - name: Create GitHub Release
         if: steps.check.outputs.release == 'true'

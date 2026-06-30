@@ -6,8 +6,11 @@ RUN npm install
 COPY web/ ./
 RUN npm run build
 
-# Stage 2: Build the Go backend
-FROM golang:1.26-alpine AS backend-builder
+# Stage 2: Build the Go backend.
+# Pin the builder to the native build host ($BUILDPLATFORM) and cross-compile to
+# the requested target arch. CGO is disabled, so Go cross-compiles trivially and
+# we avoid slow QEMU emulation when producing multi-arch images.
+FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS backend-builder
 WORKDIR /app
 COPY go.mod go.sum ./
 RUN go mod download
@@ -18,10 +21,17 @@ COPY web/embed.go ./web/embed.go
 COPY web/src/test/fixtures/ ./web/src/test/fixtures/
 # Copy built frontend assets from stage 1 into Go web/dist
 COPY --from=frontend-builder /app/web/dist/ ./web/dist/
-# Run unit tests using the same CGO flag used for compiling to guarantee build health
+# Run unit tests using the same CGO flag used for compiling to guarantee build
+# health. Tests are architecture-independent and this layer is kept BEFORE the
+# ARG TARGETARCH below, so buildkit runs it once natively and reuses the cached
+# layer across every target platform.
 RUN CGO_ENABLED=0 go test -v ./...
 # Compile statically linked Go binary (CGO_ENABLED=0 to avoid glibc dependencies)
-RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-w -s" -o /app/bin/folio-idx cmd/folio-idx/main.go
+# for the platform buildx is currently targeting (TARGETOS/TARGETARCH are
+# injected automatically per --platform entry).
+ARG TARGETOS TARGETARCH
+RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
+    go build -ldflags="-w -s" -o /app/bin/folio-idx cmd/folio-idx/main.go
 # Create a dedicated directory for SQLite database files and set owner to nonroot (65532)
 RUN mkdir -p /data && chown -R 65532:65532 /data
 
