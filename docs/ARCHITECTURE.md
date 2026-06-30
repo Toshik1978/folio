@@ -11,11 +11,12 @@
      |                  (Moon+, KyBook)
      |                       |
      v                       |
-[ Cloudflare Tunnel ]        |
+[ Authenticator ]            |
+ (SSO proxy / etc.)          |
      |                       |
-     |-- /api/* ---> SSO/MFA |
-     |-- /*    ---> SSO/MFA  |
-     |-- /opds* --> Bypass --+
+     |-- /api/* ---> auth    |
+     |-- /*    ---> auth     |
+     |-- /opds* --> direct --+
      |                       |
      +----------+------------+
                 |

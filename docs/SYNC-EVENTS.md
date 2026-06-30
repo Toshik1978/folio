@@ -24,7 +24,7 @@ progress bar**, which coarse polling cannot, and removes the idle round-trips.
 
 **Transport — SSE, not WebSockets.** The flow is purely server → client (all
 triggers are already separate `POST` endpoints), so WebSockets would add a
-dependency and a protocol upgrade (which complicates the Cloudflare Tunnel path)
+dependency and a protocol upgrade (which complicates reverse-proxy / tunnel paths)
 for nothing. SSE is plain HTTP, stdlib-only (`http.Flusher` +
 `http.ResponseController`), and the browser's `EventSource` auto-reconnects.
 
@@ -181,8 +181,8 @@ bounded memory. A `maxSubscribers = 128` cap makes the handler answer `503`
 rather than allow unbounded streams. This cap is **global (per process), not per
 client**: each open browser tab holds one subscription, so a single user with many
 tabs across several devices draws on the same 128-stream budget. That is
-acceptable behind Cloudflare Access (a small, trusted user set); a public-facing
-deployment would add a per-remote-addr limit upstream.
+acceptable behind an authenticator that fronts a small, trusted user set; a
+public-facing deployment would add a per-remote-addr limit upstream.
 
 **Concurrency rules:**
 

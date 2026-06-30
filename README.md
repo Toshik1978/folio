@@ -13,6 +13,33 @@
 
 ---
 
+## Screenshots
+
+<p align="center">
+  <img src="docs/screenshots/books-grid.png" alt="Library grid with cover thumbnails" width="800" />
+</p>
+
+<table>
+  <tr>
+    <td width="50%"><img src="docs/screenshots/book-detail.png" alt="Book detail with metadata and annotation" /></td>
+    <td width="50%"><img src="docs/screenshots/search.png" alt="Full-text search results" /></td>
+  </tr>
+  <tr>
+    <td align="center"><em>Book detail — metadata, identifiers, annotation, downloads</em></td>
+    <td align="center"><em>Full-text search across the catalogue</em></td>
+  </tr>
+  <tr>
+    <td colspan="2"><img src="docs/screenshots/authors-list.png" alt="Browse authors by alphabet" /></td>
+  </tr>
+  <tr>
+    <td colspan="2" align="center"><em>Alphabetical browse by author (also series, tags, publishers)</em></td>
+  </tr>
+</table>
+
+> Demo library shown above uses public-domain titles from [Project Gutenberg](https://www.gutenberg.org/).
+
+---
+
 ## Quick Start
 
 ```bash
@@ -49,7 +76,7 @@ Open `http://localhost:8080`. Mount your book sources read-only at `/library`; F
 | [DATABASE.md](docs/DATABASE.md) | SQLite schema, FTS5 search, ingestion sources, sync engine. |
 | [API.md](docs/API.md) | REST API, OPDS catalog, file streaming strategy. |
 | [SYNC-EVENTS.md](docs/SYNC-EVENTS.md) | Real-time sync status via Server-Sent Events (SSE), event broker, progress reporting. |
-| [NETWORKING.md](docs/NETWORKING.md) | Cloudflare Access, OPDS auth bypass, Basic Auth. |
+| [NETWORKING.md](docs/NETWORKING.md) | Security model: OPDS Basic Auth, bring-your-own authenticator for the UI/API, CSRF guard. |
 | [BUILD-AND-DEPLOY.md](docs/BUILD-AND-DEPLOY.md) | Taskfile targets, Docker multi-stage build, local dev workflow. |
 | [RELEASE_NOTES.md](RELEASE_NOTES.md) | Curated, human-readable highlights of each release. |
 | [CHANGELOG.md](CHANGELOG.md) | Dated history of notable changes, with the rationale behind each. |

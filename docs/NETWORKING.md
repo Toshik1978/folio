@@ -1,58 +1,69 @@
 # Networking & Security
 
-> Cloudflare Access, OPDS auth bypass, and the security model.
+> Folio's authentication model, the OPDS auth path, and how to deploy it safely.
 >
-> **Status:** Design — Cloudflare configuration is external to the codebase.
+> **Key point:** Folio authenticates **only the OPDS catalog** at the application
+> layer. The web UI and REST API have **no built-in authentication** — you must
+> place an authenticator in front of them. Cloudflare Access is used below as one
+> worked example; any reverse-proxy SSO, forward-auth, or network-level control
+> works just as well.
 
 ---
 
-## Traffic Flow
+## The Security Model in One Table
+
+| Surface | Paths | Auth provided by Folio | What you must add |
+| :--- | :--- | :--- | :--- |
+| **Web UI + REST API** | `/`, `/api/*`, SPA routes | **None.** Unauthenticated. | **Mandatory** external authenticator (reverse-proxy SSO, forward-auth, VPN/LAN isolation, …). |
+| **OPDS catalog** | `/opds/*` (except cover) | **HTTP Basic Auth** (bcrypt, configured at runtime). | Nothing required; works for mobile reading apps that can't do browser SSO. |
+| **OPDS cover** | `/opds/books/{id}/cover` | None (intentionally public). | Nothing — covers are low-sensitivity and many readers fetch them without forwarding credentials. |
+
+The rest of this document explains each row and the cross-cutting hardening
+(CSRF guard, header handling, outbound connections).
+
+> ⚠️ **Direct/LAN exposure exposes an unauthenticated admin API.** With nothing in
+> front, `/api` lets anyone who can reach the port call `PUT /api/settings`
+> (which sets the OPDS credentials), `POST /api/libraries/{id}/purge`,
+> `POST /api/sync`, etc. The OPDS Basic Auth on `/opds*` does **not** protect
+> `/api`. Treat an external authenticator on `/api` as **required**, not optional.
+
+---
+
+## Why split OPDS off from everything else?
+
+Mobile reading apps (Moon+ Reader, KyBook, KOReader, …) connect to the OPDS feed
+directly and **cannot perform browser-based SSO flows** — they have no way to
+complete an interactive identity-provider redirect. So OPDS needs an
+authentication scheme those clients *can* speak: HTTP Basic Auth, which Folio
+implements itself.
+
+The web UI and API, by contrast, are browser surfaces where a real SSO/proxy
+authenticator is the right tool. Folio deliberately does **not** reimplement
+session management, identity providers, or user databases — that is the job of
+the layer in front.
+
+This leads to a two-tier deployment: route `/opds*` straight to Folio (it
+authenticates itself), and put everything else behind your authenticator.
 
 ```
-                                  ┌──► [ Policy 1: Access Rules ] ──► Requires MFA/SSO
-[ Public Traffic ] ──► [ CF ] ────┤
-                                  └──► [ Policy 2: Bypass /opds* ] ──► Direct to app
-                                                                         (Basic Auth)
+                         ┌──► /opds*            ──► Folio (HTTP Basic Auth)
+[ Public Traffic ] ──────┤
+                         └──► everything else   ──► [ Authenticator ] ──► Folio
+                                                     (SSO / forward-auth / …)
 ```
 
-All public traffic to the application domain routes through a Cloudflare Tunnel.
-
 ---
 
-## Cloudflare Access Policies
+## OPDS Basic Auth & the Cover Exception
 
-### Policy 1: Default (Web UI + API)
-
-| Setting | Value |
-| :--- | :--- |
-| Scope | `*` (all paths) |
-| Action | Require authentication |
-| Provider | SSO / MFA |
-| Protects | `/`, `/api/*`, all SPA routes |
-
-The browser UI and REST API are fully protected. Users must authenticate via Cloudflare's identity provider integration before any request reaches the Go backend.
-
-### Policy 2: OPDS Bypass
-
-| Setting | Value |
-| :--- | :--- |
-| Scope | `/opds*` |
-| Action | Bypass |
-| Effect | Requests skip Cloudflare Access entirely |
-
-Mobile reading apps (Moon+ Reader, KyBook) cannot perform browser-based SSO flows. The `/opds*` path is exempted from Cloudflare Access so that these clients can connect directly.
-
----
-
-## Application-Level Authentication
-
-### OPDS Basic Auth & Cover Bypass
-
-Because `/opds*` bypasses Cloudflare Access, the application enforces its own authentication for feeds and book downloads using the `auth.Authenticator.Middleware` (`internal/auth/auth.go`), injected into the OPDS handler as the `opds.Authenticator` interface. However, the cover image endpoint is routed separately to bypass authentication to accommodate reading client limitations.
+Folio enforces its own authentication for OPDS feeds and book downloads using
+`auth.Authenticator.Middleware` (`internal/auth/auth.go`), injected into the OPDS
+handler as the `opds.Authenticator` interface. The cover endpoint is routed
+separately and left unauthenticated to accommodate reading-client limitations.
 
 ```go
 func (h *Handler) Register(r chi.Router) {
-    // 1. Unauthenticated cover endpoint (supports Moon+ Reader image limitations)
+    // 1. Unauthenticated cover endpoint (supports reader image-loader limitations)
     r.Get("/books/{id}/cover", h.serveCover)
 
     // 2. Protected catalog endpoints
@@ -69,28 +80,85 @@ func (h *Handler) Register(r chi.Router) {
 }
 ```
 
-- **Credentials:** Stored in the `settings` table (password hashed) and configured solely through the admin API (`PUT /api/settings`). There is **no** environment-variable seed (`OPDS_USER`/`OPDS_PASS` do not exist).
-  - **No-credentials behavior**: If no credentials are configured, the middleware **rejects every protected route with `401`** (the unconfigured branch returns a bare `401` without a `WWW-Authenticate` header). The catalog is therefore **closed, not open** — OPDS won't serve feeds or downloads until a credential is set. A **severe startup security warning** (`WarnIfUnprotected`) flags the empty state, but it does *not* fall through to unauthenticated serving. The only always-public route is the cover endpoint.
-- **Verification (`verifyCredentials`):** the username is compared in constant time, and a username mismatch still runs a full bcrypt compare against a process-local dummy hash — so a wrong username costs the same ~100ms as a wrong password and response timing can't be used as a username oracle (both the dummy and all stored hashes use `bcrypt.DefaultCost`).
-- **Success cache:** reading apps fetch feeds, covers metadata, and files in bursts, and bcrypt costs ~100ms per verify by design. The last *successful* `(user, password, stored-hash)` triple is therefore cached as a single SHA-256 key (compared in constant time); repeat requests skip bcrypt entirely. Embedding the stored hash in the key invalidates the cache implicitly on credential rotation, and `SetCredentials` (called by `PUT /api/settings`) also clears it explicitly via the Authenticator's internal `invalidate`, together with the credential cache.
-- **Basic Auth Realm:** The realm string `"OPDS Library Manager"` is sent in the `WWW-Authenticate` header.
-- **OPDS Cover Authentication Exception:** Many popular reading apps (e.g. Moon+ Reader, KyBook) use separate native image loading frameworks to pull cover images asynchronously from the catalog. These sub-frameworks do not forward the HTTP Basic Auth credentials supplied when registering the OPDS repository feed. If the cover endpoint requires auth, covers fail to load (rendering broken image icons).
-- **Security Mitigation:** Excluding `/opds/books/{id}/cover` from Basic Auth allows client apps to render covers cleanly. Since book covers are not highly sensitive metadata, exposing them publicly represents a secure and acceptable trade-off to ensure feed usability.
+- **Credentials:** Stored in the `settings` table (password hashed) and configured
+  solely through the admin API (`PUT /api/settings`). There is **no**
+  environment-variable seed (`OPDS_USER`/`OPDS_PASS` do not exist).
+  - **No-credentials behavior:** If no credentials are configured, the middleware
+    **rejects every protected route with `401`** (the unconfigured branch returns
+    a bare `401` without a `WWW-Authenticate` header). The catalog is therefore
+    **closed, not open** — OPDS won't serve feeds or downloads until a credential
+    is set. A **severe startup security warning** (`WarnIfUnprotected`) flags the
+    empty state, but it does *not* fall through to unauthenticated serving. The
+    only always-public route is the cover endpoint.
+- **Verification (`verifyCredentials`):** the username is compared in constant
+  time, and a username mismatch still runs a full bcrypt compare against a
+  process-local dummy hash — so a wrong username costs the same ~100ms as a wrong
+  password and response timing can't be used as a username oracle (both the dummy
+  and all stored hashes use `bcrypt.DefaultCost`).
+- **Success cache:** reading apps fetch feeds, cover metadata, and files in
+  bursts, and bcrypt costs ~100ms per verify by design. The last *successful*
+  `(user, password, stored-hash)` triple is therefore cached as a single SHA-256
+  key (compared in constant time); repeat requests skip bcrypt entirely.
+  Embedding the stored hash in the key invalidates the cache implicitly on
+  credential rotation, and `SetCredentials` (called by `PUT /api/settings`) also
+  clears it explicitly via the Authenticator's internal `invalidate`, together
+  with the credential cache.
+- **Basic Auth Realm:** The realm string `"OPDS Library Manager"` is sent in the
+  `WWW-Authenticate` header.
+- **Cover authentication exception:** Many popular reading apps (e.g. Moon+
+  Reader, KyBook) use separate native image-loading frameworks to pull cover
+  images asynchronously. These sub-frameworks do not forward the HTTP Basic Auth
+  credentials supplied when registering the OPDS feed. If the cover endpoint
+  required auth, covers would fail to load (broken-image icons). Excluding
+  `/opds/books/{id}/cover` from Basic Auth lets clients render covers cleanly;
+  since covers are not highly sensitive metadata, exposing them is an acceptable
+  trade-off for feed usability.
 
-### Web UI / API
+---
 
-No application-level auth middleware is applied to `/api/*` or SPA routes. Authentication is delegated entirely to Cloudflare Access, which injects authenticated user identity via headers (`CF-Access-JWT-Assertion`).
+## Web UI / API: bring your own authenticator
+
+Folio applies **no** application-level auth middleware to `/api/*` or SPA routes.
+Authentication is delegated entirely to the layer in front of Folio. Common
+options, any of which is sufficient:
+
+- **Reverse-proxy SSO / forward-auth** — Authelia, Authentik, oauth2-proxy,
+  Pomerium, Cloudflare Access, Tailscale Funnel + tsnet, etc. The proxy
+  authenticates the user and only then forwards the request to Folio.
+- **Reverse-proxy Basic Auth** — nginx/Caddy/Traefik `basic_auth` on everything
+  except `/opds*`. Low-tech but effective for a single user.
+- **Network isolation** — bind Folio to localhost or a private interface and
+  reach it over a VPN (WireGuard, Tailscale). No public ingress at all.
+
+Whatever you choose, the contract is the same: **no unauthenticated request
+should ever reach `/api` or the SPA.** Folio assumes this and does not
+second-guess it.
 
 ### Cross-Site Request Protection (CSRF)
 
-The REST API issues no CSRF tokens — and it doesn't need to, but **not for the reason it's tempting to assume.** The folio backend sets no session cookie of its own, so the common shorthand "auth isn't cookie-based, therefore no CSRF" gets cited. That shorthand is wrong for the deployed configuration:
+The REST API issues no CSRF tokens — and it doesn't need to, but **not for the
+reason it's tempting to assume.** Folio sets no session cookie of its own, so the
+shorthand "auth isn't cookie-based, therefore no CSRF" gets cited. That shorthand
+is wrong whenever a **cookie-based authenticator** sits in front (most SSO
+proxies, including Cloudflare Access, set an auth cookie):
 
-- The *effective* auth layer is **Cloudflare Access, which is cookie-based** — after SSO it sets a `CF_Authorization` JWT cookie scoped to the app hostname. That cookie is exactly the ambient credential a CSRF attack relies on: the browser attaches it to cross-site requests automatically.
-- Nothing in folio enforces "same-origin." There is **no CORS configuration and no `Origin` check in the request path** by default; CORS would not prevent a cross-origin request from being *sent*, only from being *read*.
+- A cookie-based authenticator sets an auth cookie scoped to the app hostname.
+  That cookie is exactly the ambient credential a CSRF attack relies on: the
+  browser attaches it to cross-site requests automatically.
+- Nothing in Folio enforces "same-origin" by default. There is **no CORS
+  configuration and no `Origin` check** in the request path by default; CORS
+  would not prevent a cross-origin request from being *sent*, only from being
+  *read*.
 
-So, absent any app-level control, the only thing standing between a logged-in user and a forged state-changing request would be the `CF_Authorization` cookie's `SameSite` attribute (Lax-by-default blocks cross-site `POST`) plus browsers preflighting `PUT`/`DELETE`. That is an **implicit dependency on Cloudflare's cookie policy and on browser defaults** — not something folio controls or that survives a direct deployment.
+So, absent any app-level control, the only thing standing between a logged-in
+user and a forged state-changing request would be the auth cookie's `SameSite`
+attribute plus browsers preflighting `PUT`/`DELETE` — an **implicit dependency on
+the proxy's cookie policy and on browser defaults**, not something Folio controls.
 
-folio therefore enforces its own **token-less, origin-based CSRF guard** on `/api`, independent of the cookie policy and of whether Cloudflare sits in front. Two middlewares are mounted on the `/api` group in `internal/server/` (`server.go` → `middleware.go`), so every current and future handler is covered:
+Folio therefore enforces its own **token-less, origin-based CSRF guard** on
+`/api`, independent of any cookie policy and of whether a proxy sits in front.
+Two middlewares are mounted on the `/api` group in `internal/server/`
+(`server.go` → `middleware.go`), so every current and future handler is covered:
 
 | Middleware | What it does |
 | :--- | :--- |
@@ -99,9 +167,16 @@ folio therefore enforces its own **token-less, origin-based CSRF guard** on `/ap
 
 **Scope and limits — read before relying on this:**
 
-- **It is a CSRF guard, not authentication.** Non-browser clients (curl, scripts, other servers) send neither `Sec-Fetch-Site` nor `Origin` and pass straight through, by design — otherwise the OPDS/CLI/automation paths would break.
-- **It does not protect a direct deployment.** With no Cloudflare Access in front, `/api` has **no authentication at all** — `PUT /api/settings` (which sets the OPDS credentials), `POST /api/libraries/{id}/purge`, `POST /api/sync`, etc. are reachable by anyone who can reach the port, same-origin or not. An external authenticator on `/api` is **mandatory**; direct/LAN exposure means an unauthenticated admin API. CSRF is a footnote next to that.
-- Because the guards key off `PUBLIC_URL` for the `Origin` fallback, set `PUBLIC_URL` on any reverse-proxied/tunneled deployment (it is already recommended for the OpenSearch canonical host, above).
+- **It is a CSRF guard, not authentication.** Non-browser clients (curl, scripts,
+  other servers) send neither `Sec-Fetch-Site` nor `Origin` and pass straight
+  through, by design — otherwise the OPDS/CLI/automation paths would break.
+- **It does not protect a direct deployment.** With no authenticator in front,
+  `/api` has **no authentication at all** (see the warning at the top). An
+  external authenticator on `/api` is **mandatory**; CSRF is a footnote next to
+  that.
+- Because the guards key off `PUBLIC_URL` for the `Origin` fallback, set
+  `PUBLIC_URL` on any reverse-proxied/tunneled deployment (it is also recommended
+  for the OpenSearch canonical host, below).
 
 ---
 
@@ -109,18 +184,19 @@ folio therefore enforces its own **token-less, origin-based CSRF guard** on `/ap
 
 | Header | Source | Usage |
 | :--- | :--- | :--- |
-| `X-Forwarded-Proto` | Cloudflare / proxy | `proxyHeaders` middleware sets `request.URL.Scheme` (used as the scheme fallback when building the absolute OPDS OpenSearch URL). Only the literal values `http`/`https` are honored — on direct connections the header is client-controllable, so anything else falls back to the TLS-derived scheme |
+| `X-Forwarded-Proto` | Reverse proxy | `proxyHeaders` middleware sets `request.URL.Scheme` (used as the scheme fallback when building the absolute OPDS OpenSearch URL). Only the literal values `http`/`https` are honored — on direct connections the header is client-controllable, so anything else falls back to the TLS-derived scheme. |
 | `X-Forwarded-Host` | — | **Not trusted.** Deliberately ignored — see below. |
 
-> The request logger (chi's `middleware.Logger`, dev-only) records `r.RemoteAddr` as-is; there
-> is no `middleware.RealIP` / `CF-Connecting-IP` parsing in the current code.
+> The request logger (chi's `middleware.Logger`, dev-only) records
+> `r.RemoteAddr` as-is; there is no `middleware.RealIP` / `CF-Connecting-IP`
+> parsing in the current code.
 
 ### Canonical host: `PUBLIC_URL` (not `X-Forwarded-Host`)
 
-Because `/opds*` bypasses Cloudflare Access, any caller can set
-`X-Forwarded-Host`. If the app reflected it into the absolute URLs it
-advertises (the OPDS OpenSearch `template`), a caller could poison those URLs.
-So `proxyHeaders` **does not** honor `X-Forwarded-Host`.
+Because `/opds*` is reachable directly, any caller can set `X-Forwarded-Host`. If
+Folio reflected it into the absolute URLs it advertises (the OPDS OpenSearch
+`template`), a caller could poison those URLs. So `proxyHeaders` **does not**
+honor `X-Forwarded-Host`.
 
 The canonical external base URL is configured instead, via the optional
 `PUBLIC_URL` env var (e.g. `https://folio.example.com`):
@@ -171,11 +247,58 @@ the network layer.
 
 ---
 
+## Example: Cloudflare Access
+
+The author runs Folio behind a Cloudflare Tunnel with Cloudflare Access as the
+authenticator. This is **one concrete way** to satisfy the "bring your own
+authenticator" requirement above — not a dependency of the project. Any
+equivalent SSO/forward-auth proxy maps onto the same two policies.
+
+All public traffic routes through a Cloudflare Tunnel to the Folio container,
+with two Access policies:
+
+```
+                                  ┌──► [ Policy 1: Require Auth ] ──► MFA/SSO, then app
+[ Public Traffic ] ──► [ CF ] ────┤
+                                  └──► [ Policy 2: Bypass /opds* ] ──► Direct to app
+                                                                        (HTTP Basic Auth)
+```
+
+| Policy | Scope | Action | Effect |
+| :--- | :--- | :--- | :--- |
+| **1 — Default** | `*` (all paths) | Require authentication (SSO/MFA) | The web UI and `/api/*` are reachable only after the identity provider authenticates the user. |
+| **2 — OPDS Bypass** | `/opds*` | Bypass | Reading apps that can't do browser SSO reach OPDS directly; Folio's own Basic Auth protects it. |
+
+After SSO, Cloudflare Access sets a `CF_Authorization` JWT cookie scoped to the
+app hostname and injects identity via headers (`CF-Access-JWT-Assertion`). Because
+that cookie is the ambient credential, Folio's origin-based CSRF guard (above)
+matters even here — it does not rely on Cloudflare's cookie `SameSite` policy.
+
+To replicate this with another proxy: protect everything by default, exempt
+`/opds*` from the proxy's own auth, and set `PUBLIC_URL` to your external origin.
+
+---
+
 ## Security Considerations
 
-1. **No secrets in source** — Env-injected secrets (e.g. `GOOGLE_KEY`) come from environment variables or Docker secrets, never source. OPDS Basic Auth credentials are not env vars at all — they are set at runtime via `PUT /api/settings` and stored hashed (bcrypt) in the `settings` table.
-2. **Non-root container** — The Docker image runs as `nonroot` (UID/GID 65532, built into Distroless). The binary is owned by `root` (read-only). Only the `/data` directory is writable.
-3. **Static binary** — `CGO_ENABLED=0` produces a statically linked binary with no glibc dependencies. Reduces attack surface in the Distroless runtime image.
-4. **Read-only source access** — The application never writes to mounted library volumes.
-5. **Minimal egress** — The only outbound dependency is the Google Books API (see [Outbound Connections](#outbound-connections)); it carries no catalog contents or credentials and is best-effort.
-6. **CSRF guard on `/api`** — State-changing API calls are protected by an origin-based, token-less CSRF guard (`sameSiteGuard` + `formBodyGuard`) that does not depend on Cloudflare's cookie `SameSite` policy. It is *not* a substitute for authentication — see [Cross-Site Request Protection](#cross-site-request-protection-csrf); `/api` still requires an external authenticator (Cloudflare Access), without which a direct deployment exposes an unauthenticated admin API.
+1. **External authenticator required for `/api`** — Folio provides no auth for the
+   web UI/API; a direct deployment exposes an unauthenticated admin API. Put an
+   authenticator in front (see [Web UI / API](#web-ui--api-bring-your-own-authenticator)).
+2. **No secrets in source** — Env-injected secrets (e.g. `GOOGLE_KEY`) come from
+   environment variables or Docker secrets, never source. OPDS Basic Auth
+   credentials are not env vars at all — they are set at runtime via
+   `PUT /api/settings` and stored hashed (bcrypt) in the `settings` table.
+3. **Non-root container** — The Docker image runs as `nonroot` (UID/GID 65532,
+   built into Distroless). The binary is owned by `root` (read-only). Only the
+   `/data` directory is writable.
+4. **Static binary** — `CGO_ENABLED=0` produces a statically linked binary with no
+   glibc dependencies. Reduces attack surface in the Distroless runtime image.
+5. **Read-only source access** — The application never writes to mounted library
+   volumes.
+6. **Minimal egress** — The only outbound dependency is the Google Books API (see
+   [Outbound Connections](#outbound-connections)); it carries no catalog contents
+   or credentials and is best-effort.
+7. **CSRF guard on `/api`** — State-changing API calls are protected by an
+   origin-based, token-less CSRF guard (`sameSiteGuard` + `formBodyGuard`) that
+   does not depend on any proxy's cookie `SameSite` policy. It is *not* a
+   substitute for authentication.

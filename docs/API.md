@@ -8,7 +8,7 @@
 
 ## REST API (`/api/*`)
 
-All `/api/*` routes are protected externally by Cloudflare Access (browser SSO/MFA). No application-level auth middleware is applied.
+`/api/*` has **no application-level authentication** — it must be protected by an external authenticator in front of Folio (reverse-proxy SSO/forward-auth, or network isolation). See [NETWORKING.md](NETWORKING.md). A token-less, origin-based CSRF guard is applied, but it is not a substitute for authentication.
 
 | Method | Path | Description | Response |
 | :--- | :--- | :--- | :--- |
@@ -213,7 +213,7 @@ enrichment that runs on first view (see
 
 ## OPDS Catalog (`/opds/*`)
 
-OPDS routes are publicly accessible (bypass Cloudflare Access) but protected by application-level HTTP Basic Authentication.
+OPDS routes are reachable directly (so reading apps that can't do browser SSO can connect) but are protected by Folio's own application-level HTTP Basic Authentication.
 
 OPDS feeds are **never library-scoped**: they always span the whole catalog,
 unlike the web UI, which has a per-library selector in its header.
