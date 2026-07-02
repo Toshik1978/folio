@@ -12,7 +12,7 @@ require (
 	github.com/mattn/go-isatty v0.0.22
 	github.com/microcosm-cc/bluemonday v1.0.27
 	github.com/pdfcpu/pdfcpu v0.13.0
-	github.com/pressly/goose/v3 v3.27.1
+	github.com/pressly/goose/v3 v3.27.2
 	github.com/samber/lo v1.53.0
 	github.com/stephenafamo/bob v0.47.0
 	github.com/stretchr/testify v1.11.1
