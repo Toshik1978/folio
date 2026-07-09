@@ -9,6 +9,13 @@ updates:
     commit-message:
       prefix: build
       include: scope
+    groups:
+      gomod:
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch
 
   # Frontend npm packages (Vue SPA lives in web/)
   - package-ecosystem: npm
@@ -19,6 +26,13 @@ updates:
     commit-message:
       prefix: build
       include: scope
+    groups:
+      npm:
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch
 
   # GitHub Actions used by CI and release workflows
   - package-ecosystem: github-actions
@@ -29,3 +43,10 @@ updates:
     commit-message:
       prefix: ci
       include: scope
+    groups:
+      github-actions:
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch
