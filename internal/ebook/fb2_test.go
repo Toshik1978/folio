@@ -12,11 +12,12 @@ type fb2Suite struct {
 }
 
 // TestParseBoundedMemory guards against loading the whole file into memory: a
-// large FB2 (here a ~64 MB body) must be streamed, allocating far less than its
-// size. The body text is not part of the metadata, so a streaming parser
-// discards it as it scans for <description>.
+// large FB2 (here a ~32 MB body, comfortably under the maxArchiveTextBytes read
+// cap) must be streamed, allocating far less than its size. The body text is not
+// part of the metadata, so a streaming parser discards it as it scans for
+// <description>.
 func (s *fb2Suite) TestParseBoundedMemory() {
-	const bodySize = 64 << 20
+	const bodySize = 32 << 20
 
 	var b strings.Builder
 	b.WriteString(`<?xml version="1.0" encoding="UTF-8"?>` + "\n")
@@ -40,6 +41,29 @@ func (s *fb2Suite) TestParseBoundedMemory() {
 	s.Lessf(peak, uint64(bodySize/2),
 		"parsing a ~%d-byte FB2 held %d peak heap bytes; it must stream, not buffer the whole file",
 		bodySize, peak)
+}
+
+// TestParseRejectsOversizedFile guards the maxArchiveTextBytes read cap on the
+// plain .fb2 path: a file larger than the cap (e.g. a pathological embedded
+// base64 cover) is rejected rather than buffered whole, matching the .fb2.zip
+// path. The oversized file is truncated by the LimitReader before its closing
+// tag, so the decode fails.
+func (s *fb2Suite) TestParseRejectsOversizedFile() {
+	var b strings.Builder
+	b.WriteString(`<?xml version="1.0" encoding="UTF-8"?>` + "\n")
+	b.WriteString(`<FictionBook><description><title-info>`)
+	b.WriteString(`<book-title>Oversized</book-title></title-info></description><body>`)
+	const line = "<p>The quick brown fox jumps over the lazy dog.</p>\n"
+	for range int(maxArchiveTextBytes)/len(line) + 1 {
+		b.WriteString(line)
+	}
+	b.WriteString(`</body></FictionBook>`)
+
+	path := filepath.Join(s.T().TempDir(), "oversized.fb2")
+	s.Require().NoError(os.WriteFile(path, []byte(b.String()), 0o600))
+
+	_, err := s.d.Parse(context.Background(), s.log, path)
+	s.Require().Error(err)
 }
 
 func (s *fb2Suite) TestParse() {

@@ -88,7 +88,11 @@ func parseFB2(_ context.Context, path string) (Metadata, error) {
 	// Stream the file through the XML decoder instead of reading it whole: the
 	// metadata lives in the leading <description>, and the (potentially large)
 	// <body> text carries no metadata, so the decoder discards it as it scans.
-	return parseFB2Reader(bufio.NewReader(f))
+	// Cap the stream at the same ceiling as the .fb2.zip path (readZipEntry): an
+	// FB2 embeds its cover as inline base64 in a <binary>, which the decoder
+	// buffers as one large token, so an oversized file is rejected rather than
+	// read wholesale into memory on the low-spec target hosts.
+	return parseFB2Reader(bufio.NewReader(io.LimitReader(f, maxArchiveTextBytes)))
 }
 
 func parseFB2Zip(_ context.Context, path string) (Metadata, error) {
