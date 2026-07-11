@@ -162,26 +162,34 @@ func serve(
 		}
 	}()
 
+	code := 0
 	select {
 	case err := <-serverErr:
 		log.Error("server failed", slog.Any("error", err))
-		syncEngine.Stop()
-		return 4
+		code = 4
 	case <-ctx.Done():
 		log.Info("shutdown signal received")
 	}
 
+	// Both paths run the same teardown so a server failure cleans up exactly like
+	// a signal does; only the exit code differs.
+	shutdown(log, srv, syncEngine, broker)
+
+	return code
+}
+
+// shutdown performs the graceful teardown shared by the signal and
+// server-failure paths: disconnect SSE subscribers, stop accepting requests
+// (draining in-flight ones), then stop the engine (which waits for any in-flight
+// sync and the scheduler to wind down).
+func shutdown(log *slog.Logger, srv *http.Server, syncEngine *sync.Engine, broker *events.Broker) {
 	// Close the event broker to disconnect all long-running SSE subscribers.
 	broker.Close()
 
-	// Stop accepting requests, draining in-flight ones, then stop the engine
-	// (which waits for any in-flight sync and the scheduler to wind down).
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		log.Error("graceful shutdown failed", slog.Any("error", err))
 	}
 	syncEngine.Stop()
-
-	return 0
 }
