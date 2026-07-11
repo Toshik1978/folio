@@ -1,3 +1,22 @@
+## v1.5.0 (2026-07-11)
+
+### Feat
+
+- **config**: validate PORT and PUBLIC_URL at startup
+
+### Fix
+
+- **opds**: trim search filter params to match REST
+- **googlebooks**: don't log cancelled round trips at Error
+- **ebook**: cap the plain .fb2 read at maxArchiveTextBytes
+- **ebook**: honor context cancellation during parsing
+- **api**: cap JSON request bodies
+- **db**: bound the SQLite connection pool
+
+### Refactor
+
+- **main**: unify server-failure and signal shutdown paths
+
 ## v1.4.0 (2026-06-30)
 
 ### Feat
