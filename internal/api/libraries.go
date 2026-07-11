@@ -301,10 +301,12 @@ func (h *LibrariesHandler) requireLibrary(w http.ResponseWriter, r *http.Request
 		h.writeError(w, http.StatusBadRequest, "invalid library id")
 		return 0, false
 	}
-	if _, err := h.q.GetLibrary(r.Context(), id); errors.Is(err, sql.ErrNoRows) {
+	_, err := h.q.GetLibrary(r.Context(), id)
+	if errors.Is(err, sql.ErrNoRows) {
 		h.writeError(w, http.StatusNotFound, "library not found")
 		return 0, false
-	} else if err != nil {
+	}
+	if err != nil {
 		h.log.Error("get library", slog.Int64("library", id), slog.Any("error", err))
 		h.writeError(w, http.StatusInternalServerError, "failed to load library")
 

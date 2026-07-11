@@ -35,10 +35,12 @@ func (h *BooksHandler) searchMatch(w http.ResponseWriter, r *http.Request) {
 		h.writeError(w, http.StatusBadRequest, "invalid book id")
 		return
 	}
-	if _, err := h.q.GetBook(r.Context(), id); errors.Is(err, sql.ErrNoRows) {
+	_, err := h.q.GetBook(r.Context(), id)
+	if errors.Is(err, sql.ErrNoRows) {
 		h.writeError(w, http.StatusNotFound, "book not found")
 		return
-	} else if err != nil {
+	}
+	if err != nil {
 		h.log.Error("get book", slog.Int64("book", id), slog.Any("error", err))
 		h.writeError(w, http.StatusInternalServerError, "failed to load book")
 		return
