@@ -3,7 +3,6 @@ package api
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -163,7 +162,7 @@ func (h *BooksHandler) decodeMatch(w http.ResponseWriter, r *http.Request) (sour
 		Source   string `json:"source"`
 		VolumeID string `json:"volume_id"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || strings.TrimSpace(body.VolumeID) == "" {
+	if err := decodeJSON(w, r, &body); err != nil || strings.TrimSpace(body.VolumeID) == "" {
 		h.writeError(w, http.StatusBadRequest, "missing volume_id")
 		return "", "", false
 	}

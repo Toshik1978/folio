@@ -3,7 +3,6 @@ package api
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -177,7 +176,7 @@ func (h *BooksHandler) parseCoverURL(w http.ResponseWriter, r *http.Request) (st
 	var body struct {
 		URL string `json:"url"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || strings.TrimSpace(body.URL) == "" {
+	if err := decodeJSON(w, r, &body); err != nil || strings.TrimSpace(body.URL) == "" {
 		h.writeError(w, http.StatusBadRequest, "missing url")
 		return "", false
 	}
@@ -266,7 +265,7 @@ func (h *BooksHandler) updateBook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req editRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeJSON(w, r, &req); err != nil {
 		h.writeError(w, http.StatusBadRequest, "invalid body")
 		return
 	}

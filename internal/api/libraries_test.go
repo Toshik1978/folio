@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/http/httptest"
+	"strings"
 	"time"
 
 	"github.com/Toshik1978/folio/internal/libtype"
@@ -14,6 +16,24 @@ import (
 
 type librariesSuite struct {
 	baseSuite
+}
+
+// TestCreateLibraryRejectsOversizedBody guards the maxJSONBody cap. The body is
+// valid JSON but larger than the cap, so decodeJSON's http.MaxBytesReader makes
+// Decode fail before the body is read into memory — the request is rejected at
+// decode ("invalid JSON body") rather than reaching any field validation.
+func (s *librariesSuite) TestCreateLibraryRejectsOversizedBody() {
+	huge := strings.Repeat("a", int(maxJSONBody)+1)
+	body := `{"type":"folder","path":"/x","name":"` + huge + `"}`
+
+	r := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/libraries", strings.NewReader(body))
+	w := httptest.NewRecorder()
+	s.router.ServeHTTP(w, r)
+
+	s.Require().Equal(http.StatusBadRequest, w.Code)
+	var resp map[string]string
+	s.decode(w, &resp)
+	s.Equal("invalid JSON body", resp["error"])
 }
 
 func (s *librariesSuite) TestListLibrariesWithBookCount() {

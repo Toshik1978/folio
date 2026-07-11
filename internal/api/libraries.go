@@ -2,7 +2,6 @@ package api
 
 import (
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -156,7 +155,7 @@ func (h *LibrariesHandler) decodeCreateLibraryRequest(
 	r *http.Request,
 ) (createLibraryRequest, bool) {
 	var req createLibraryRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeJSON(w, r, &req); err != nil {
 		h.writeError(w, http.StatusBadRequest, "invalid JSON body")
 		return req, false
 	}
@@ -270,7 +269,7 @@ func (h *LibrariesHandler) decodeUpdateLibraryRequest(
 	r *http.Request,
 ) (updateLibraryRequest, bool) {
 	var req updateLibraryRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeJSON(w, r, &req); err != nil {
 		h.writeError(w, http.StatusBadRequest, "invalid JSON body")
 		return req, false
 	}
