@@ -62,6 +62,13 @@ func (s *connSuite) TestPragmasHoldOnEveryConnection() {
 	}
 }
 
+// TestConnectionPoolIsBounded guards the explicit pool cap in Open. An uncapped
+// pool (database/sql's default) would let read concurrency grow the number of
+// open SQLite handles without limit on the low-spec target hosts.
+func (s *connSuite) TestConnectionPoolIsBounded() {
+	s.Equal(maxOpenConns, s.db.Stats().MaxOpenConnections)
+}
+
 // TestForeignKeyCascadeDeletesChildren confirms ON DELETE CASCADE actually fires:
 // deleting a book removes its book_files and book_authors rows. This is the
 // behaviour that breaks when foreign_keys is off on the serving connection.

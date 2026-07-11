@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/pressly/goose/v3"
 	_ "modernc.org/sqlite" // Support SQLite database
@@ -32,6 +33,19 @@ const pragmaDSN = "_pragma=busy_timeout(5000)" +
 	"&_pragma=foreign_keys(1)" +
 	"&_txlock=immediate"
 
+const (
+	// maxOpenConns bounds the connection pool. Each modernc/sqlite connection is a
+	// distinct handle on the DB + WAL, so an uncapped pool (database/sql's default)
+	// grows with read concurrency until it exhausts file descriptors/memory on the
+	// low-spec target hosts. Reads run concurrently on WAL and writes are already
+	// serialized by WriteGuard + busy_timeout, so a modest cap costs nothing but
+	// keeps the pool bounded.
+	maxOpenConns = 8
+	// connMaxIdleTime releases connections that have sat idle so a burst of reads
+	// does not pin handles/memory for the whole process lifetime.
+	connMaxIdleTime = 5 * time.Minute
+)
+
 func Open(log *slog.Logger, dataDir string) (*sql.DB, error) {
 	dbPath := filepath.Join(dataDir, "folio.db")
 
@@ -39,6 +53,10 @@ func Open(log *slog.Logger, dataDir string) (*sql.DB, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open database: %w", err)
 	}
+
+	db.SetMaxOpenConns(maxOpenConns)
+	db.SetMaxIdleConns(maxOpenConns)
+	db.SetConnMaxIdleTime(connMaxIdleTime)
 
 	if err := migrate(log, db); err != nil {
 		_ = db.Close()
