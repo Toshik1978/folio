@@ -64,6 +64,14 @@ These rules apply to every task. Non-negotiable.
      cover scraper (`internal/metasearch/providers/amazon`). The standard library
      has no HTML parser; this is the canonical x/ package and was already in the
      module graph as an indirect dependency. Approved 2026-06-25.
+   * `github.com/stephenafamo/bob` — SQL query builder used to assemble the one
+     dynamic query in the codebase, the faceted/full-text book filter
+     (`internal/db/booksfilter.go`). sqlc (the primary query layer) generates code
+     only for statically known SQL, so the runtime-composed WHERE/ORDER BY of the
+     filter — optional facets, FTS match, sort — cannot be expressed as a sqlc
+     query; hand-concatenating SQL there would risk injection. bob keeps every
+     value parameterized. All other queries remain sqlc-generated. Approved
+     2026-07-11.
 
 3. **Testing with testify suites**: All Go tests use `github.com/stretchr/testify`, organised as suites. Three non-negotiable rules:
    1. **One entry point per package** — exactly one top-level `func Test<Package>(t *testing.T)`. No other top-level `Test*` function may exist in the package.
