@@ -14,34 +14,40 @@ import (
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/types"
 )
 
-func parsePDF(_ context.Context, path string) (Metadata, error) {
+func parsePDF(ctx context.Context, path string) (Metadata, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return Metadata{}, fmt.Errorf("open pdf: %w", err)
 	}
 	defer f.Close()
 
-	ctx, err := pdfcpuapi.ReadContext(f, model.NewDefaultConfiguration())
+	// pdfcpu's ReadContext has no context hook and can be slow on a large or
+	// hostile file, so guard the two heavy phases (this read and the cover
+	// extraction below) with a cancellation check on either side.
+	if err = ctx.Err(); err != nil {
+		return Metadata{}, fmt.Errorf("read pdf: %w", err)
+	}
+	doc, err := pdfcpuapi.ReadContext(f, model.NewDefaultConfiguration())
 	if err != nil {
 		return Metadata{}, fmt.Errorf("read pdf: %w", err)
 	}
 
-	m := Metadata{Pages: ctx.PageCount}
+	m := Metadata{Pages: doc.PageCount}
 
-	if ctx.Info == nil {
+	if doc.Info == nil {
 		return m, nil
 	}
-	infoDict, err := ctx.DereferenceDict(*ctx.Info)
+	infoDict, err := doc.DereferenceDict(*doc.Info)
 	if err != nil {
 		return m, nil // missing info dict is not fatal
 	}
 
-	m.Title = pdfString(ctx.XRefTable, infoDict, "Title")
-	m.Authors = pdfAuthors(ctx.XRefTable, infoDict)
-	m.Annotation = pdfString(ctx.XRefTable, infoDict, "Subject")
-	m.Year = ParseYear(pdfString(ctx.XRefTable, infoDict, "CreationDate"))
+	m.Title = pdfString(doc.XRefTable, infoDict, "Title")
+	m.Authors = pdfAuthors(doc.XRefTable, infoDict)
+	m.Annotation = pdfString(doc.XRefTable, infoDict, "Subject")
+	m.Year = ParseYear(pdfString(doc.XRefTable, infoDict, "CreationDate"))
 
-	m.Cover = coverFromContext(ctx)
+	m.Cover = coverFromContext(ctx, doc)
 
 	return m, nil
 }
@@ -56,24 +62,36 @@ func parsePDF(_ context.Context, path string) (Metadata, error) {
 // pdfcpu 0.12.1 reports Width/Height as 0 on extracted images, so a
 // declared-dimension floor isn't usable here; a real filter would have to
 // decode and measure the image.
-func coverFromContext(ctx *model.Context) []byte {
+func coverFromContext(ctx context.Context, doc *model.Context) []byte {
+	// Validate+Optimize+ExtractPageImages is the second heavy pdfcpu phase; skip
+	// it when the caller has already been cancelled.
+	if ctx.Err() != nil {
+		return nil
+	}
+
 	// ExtractPageImages needs a validated, optimized cross-reference table.
 	// We run those passes on the context we already read (rather than re-parsing
 	// the file): if either fails we simply return no cover, while the text
 	// metadata pulled from the lenient read above is preserved by the caller.
-	if err := pdfcpuapi.ValidateContext(ctx); err != nil {
+	if err := pdfcpuapi.ValidateContext(doc); err != nil {
 		return nil
 	}
-	if err := pdfcpuapi.OptimizeContext(ctx); err != nil {
+	if err := pdfcpuapi.OptimizeContext(doc); err != nil {
 		return nil
 	}
-	imgs, err := pdfcpucore.ExtractPageImages(ctx, 1, false)
+	imgs, err := pdfcpucore.ExtractPageImages(doc, 1, false)
 	if err != nil {
 		return nil
 	}
 
-	// Map iteration order is randomized; pick deterministically by ascending
-	// object number (earlier-defined objects first).
+	return firstUsableCover(imgs)
+}
+
+// firstUsableCover returns the bytes of the first page-1 image that is a real
+// cover candidate (skipping stencil masks and page thumbnails), chosen
+// deterministically by ascending object number so a randomized map iteration
+// order cannot pick a different image run to run.
+func firstUsableCover(imgs map[int]model.Image) []byte {
 	objNrs := make([]int, 0, len(imgs))
 	for objNr := range imgs {
 		objNrs = append(objNrs, objNr)

@@ -38,6 +38,13 @@ func NewDispatcher(parsers ...Parser) *Dispatcher {
 // sync/warm goroutines (HTTP handlers are already shielded by net/http's
 // per-request recover).
 func (d *Dispatcher) Parse(ctx context.Context, log *slog.Logger, path string) (meta Metadata, err error) {
+	// Bail before touching the file when the caller (a background sync/warm
+	// goroutine) is already cancelled, so a shutdown drains the parse queue
+	// promptly instead of parsing every remaining file first.
+	if err = ctx.Err(); err != nil {
+		return Metadata{}, fmt.Errorf("parse %s: %w", path, err)
+	}
+
 	ext := d.fileExt(path)
 	p, ok := d.parsers[ext]
 	if !ok {

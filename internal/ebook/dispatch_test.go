@@ -28,6 +28,18 @@ func (s *dispatchSuite) TestNewDispatcherPanicsOnDuplicateExtension() {
 	})
 }
 
+// TestParseHonorsCancelledContext proves the dispatcher bails before parsing
+// when the caller's context is already cancelled, so a shutdown drains the
+// parse queue instead of parsing every remaining file.
+func (s *dispatchSuite) TestParseHonorsCancelledContext() {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := s.d.Parse(ctx, s.log, s.fixture("test.epub"))
+	s.Require().Error(err)
+	s.ErrorIs(err, context.Canceled)
+}
+
 func (s *dispatchSuite) TestUnsupportedFormat() {
 	_, err := s.d.Parse(context.Background(), s.log, "test.xyz")
 	s.ErrorContains(err, "unsupported format")

@@ -47,7 +47,7 @@ type mobiFile struct {
 	firstImageIndex int // MOBI header "First Image Index" record; base for EXTH 201
 }
 
-func parseMOBI(_ context.Context, path string) (Metadata, error) {
+func parseMOBI(ctx context.Context, path string) (Metadata, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return Metadata{}, fmt.Errorf("open mobi: %w", err)
@@ -67,7 +67,7 @@ func parseMOBI(_ context.Context, path string) (Metadata, error) {
 	m := mf.readTitle()
 	// A missing/short EXTH is not fatal: the record-0 header title already read
 	// stands. The title is entity-decoded below either way.
-	mf.readEXTH(&m)
+	mf.readEXTH(ctx, &m)
 
 	// MOBI/AZW3 titles (record-0 header or EXTH 503) can carry HTML/numeric
 	// entities (e.g. retail Kindle "Death&#x2019;s End"). Decode after EXTH so
@@ -207,7 +207,7 @@ func (mf *mobiFile) readTitle() Metadata {
 // formed. It is best-effort: a missing/short/!magic EXTH simply leaves m with
 // the record-0 header title already read, so the caller never has to special-case
 // the failure (it just decodes entities on whatever title stands).
-func (mf *mobiFile) readEXTH(m *Metadata) {
+func (mf *mobiFile) readEXTH(ctx context.Context, m *Metadata) {
 	exthFlag := binary.BigEndian.Uint32(mf.rec0[128:132])
 	if exthFlag&mobiExthFlag == 0 {
 		return
@@ -229,7 +229,7 @@ func (mf *mobiFile) readEXTH(m *Metadata) {
 
 	coverOffset := mf.parseEXTHRecords(exth, m)
 	if coverOffset >= 0 {
-		m.Cover = mf.extractCover(coverOffset)
+		m.Cover = mf.extractCover(ctx, coverOffset)
 	}
 }
 
@@ -296,7 +296,7 @@ func applyEXTHPublishing(recType int, val string, m *Metadata) {
 	}
 }
 
-func (mf *mobiFile) extractCover(coverOffset int) []byte {
+func (mf *mobiFile) extractCover(ctx context.Context, coverOffset int) []byte {
 	// EXTH 201 (CoverOffset) is relative to the MOBI header's FirstImageIndex.
 	// This is the standard base for both MOBI6 and KF8 — confirmed by the
 	// leotaku/mobi writer which sets:
@@ -311,7 +311,7 @@ func (mf *mobiFile) extractCover(coverOffset int) []byte {
 
 	// Fallback: FirstImageIndex missing or resolved record not an image.
 	// Scan for the first record with an image signature.
-	firstImage := mf.findFirstImageRecord()
+	firstImage := mf.findFirstImageRecord(ctx)
 	if firstImage < 0 {
 		return nil
 	}
@@ -319,11 +319,15 @@ func (mf *mobiFile) extractCover(coverOffset int) []byte {
 	return mf.readRecordImage(firstImage)
 }
 
-func (mf *mobiFile) findFirstImageRecord() int {
+func (mf *mobiFile) findFirstImageRecord(ctx context.Context) int {
 	// Read only each record's leading bytes — enough to match an image signature
 	// — instead of whole records, so the scan stays cheap on large files.
 	head := make([]byte, 4)
 	for i := range mf.numRecords {
+		// The scan can touch up to 65535 records; abandon it if the caller cancels.
+		if ctx.Err() != nil {
+			return -1
+		}
 		recStart := mf.recOffsets[i]
 		if recStart < 0 || recStart+4 > mf.size {
 			continue
