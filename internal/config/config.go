@@ -1,6 +1,13 @@
 package config
 
-import "github.com/caarlos0/env/v11"
+import (
+	"fmt"
+	"net/url"
+	"strconv"
+	"strings"
+
+	"github.com/caarlos0/env/v11"
+)
 
 type Config struct {
 	Env string `env:"APP_ENV" envDefault:"development"`
@@ -31,7 +38,35 @@ func MustParse() Config {
 	if err != nil {
 		panic(err)
 	}
+	if err := cfg.Validate(); err != nil {
+		panic(err)
+	}
+
 	return cfg
+}
+
+// Validate checks config values that would otherwise fail late or silently
+// degrade at runtime, so misconfiguration is rejected at startup with a clear
+// message instead. MustParse calls it and panics on failure.
+func (c Config) Validate() error {
+	if port, err := strconv.Atoi(c.Port); err != nil || port < 1 || port > 65535 {
+		return fmt.Errorf("invalid PORT %q: must be a number in 1..65535", c.Port)
+	}
+
+	// PublicURL is optional, but when set it must parse to an absolute URL. An
+	// unparsable value would otherwise degrade silently to "" in originOf, quietly
+	// disabling the CORS/OPDS origin it was meant to pin.
+	if c.PublicURL != "" {
+		u, err := url.Parse(strings.TrimSpace(c.PublicURL))
+		if err != nil || u.Scheme == "" || u.Host == "" {
+			return fmt.Errorf(
+				"invalid PUBLIC_URL %q: must be an absolute URL like https://folio.example.com",
+				c.PublicURL,
+			)
+		}
+	}
+
+	return nil
 }
 
 // NoColorEnabled reports whether colored log output should be suppressed. Any
