@@ -160,6 +160,19 @@ func (s *feedsSuite) TestSearchFiltersByAuthorAndQuery() {
 	s.Equal("Childhoods End", byQuery.Entries[0].Title)
 }
 
+// TestSearchTrimsWhitespaceQuery verifies a whitespace-only q is treated as
+// empty (listing every book) rather than run as an FTS query, matching the REST
+// list handler.
+func (s *feedsSuite) TestSearchTrimsWhitespaceQuery() {
+	s.setCreds()
+	src := s.seedSource("folder", "/lib")
+	s.seedBook(src, bookSeed{Title: "Foundation", Authors: []string{"Asimov"}})
+	s.seedBook(src, bookSeed{Title: "Childhoods End", Authors: []string{"Clarke"}})
+
+	f := s.parseFeed(s.getAuth("/search?q=%20%20", testUser, testPass))
+	s.Len(f.Entries, 2, "whitespace-only q must list all books, not run an FTS query")
+}
+
 func (s *feedsSuite) TestSearchAnnotationSanitized() {
 	s.setCreds()
 	src := s.seedSource("folder", "/lib")

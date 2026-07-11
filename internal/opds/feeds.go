@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/Toshik1978/folio/internal/bookfile"
@@ -131,14 +132,21 @@ func (h *Handler) writeIndexFeed(
 func (h *Handler) search(w http.ResponseWriter, r *http.Request) {
 	qp := r.URL.Query()
 	page := pageParam(r)
+	// Trim the filter params so a whitespace-only value is treated as empty,
+	// matching the REST list handler (internal/api/books.go) — otherwise "?q=%20"
+	// would run a non-empty FTS query on the OPDS side only.
+	q := strings.TrimSpace(qp.Get("q"))
+	author := strings.TrimSpace(qp.Get("author"))
+	series := strings.TrimSpace(qp.Get("series"))
+	tag := strings.TrimSpace(qp.Get("tag"))
 	// OPDS author/series feeds are exact browse navigation (the hrefs carry full
 	// names), so they map to exact FieldFilters; q stays free-text FTS.
 	filter := db.BookFilter{
-		Query:  qp.Get("q"),
-		Author: db.FieldFilter{Value: qp.Get("author"), Exact: qp.Get("author") != ""},
-		Series: db.FieldFilter{Value: qp.Get("series"), Exact: qp.Get("series") != ""},
-		Genre:  qp.Get("tag"), // exact tag/genre name (matches REST's ?tag=)
-		Sort:   "source",      // OPDS "newest first" = source chronology, not Folio import order
+		Query:  q,
+		Author: db.FieldFilter{Value: author, Exact: author != ""},
+		Series: db.FieldFilter{Value: series, Exact: series != ""},
+		Genre:  tag,      // exact tag/genre name (matches REST's ?tag=)
+		Sort:   "source", // OPDS "newest first" = source chronology, not Folio import order
 		Limit:  defaultLimit,
 		Offset: (page - 1) * defaultLimit,
 	}
