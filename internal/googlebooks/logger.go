@@ -1,6 +1,8 @@
 package googlebooks
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -54,10 +56,17 @@ func (t *loggingTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 	duration := time.Since(start)
 
 	if err != nil {
-		t.log.Error(
-			fmt.Sprintf(failureFormat, req.Method, req.URL.String(), duration),
-			"error", err,
-		)
+		msg := fmt.Sprintf(failureFormat, req.Method, req.URL.String(), duration)
+		// A cancelled or timed-out round trip is expected, not a fault: the
+		// metadata/cover aggregator wraps each source in its own per-source
+		// deadline and cancels the losers, so logging those at Error would flood
+		// the logs with spurious noise. Keep genuine transport failures at Error.
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			t.log.Debug(msg, "error", err)
+		} else {
+			t.log.Error(msg, "error", err)
+		}
+
 		return nil, fmt.Errorf("google books failed: %w", err)
 	}
 

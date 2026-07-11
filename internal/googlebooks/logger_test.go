@@ -1,6 +1,7 @@
 package googlebooks
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -18,6 +19,59 @@ type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 	return f(req)
+}
+
+// levelCapture is a minimal slog.Handler that records the level of every emitted
+// record, so a test can assert which severity a round-trip outcome logged at.
+type levelCapture struct {
+	levels []slog.Level
+}
+
+func (h *levelCapture) Enabled(context.Context, slog.Level) bool { return true }
+
+func (h *levelCapture) Handle(_ context.Context, r slog.Record) error {
+	h.levels = append(h.levels, r.Level)
+	return nil
+}
+func (h *levelCapture) WithAttrs([]slog.Attr) slog.Handler { return h }
+func (h *levelCapture) WithGroup(string) slog.Handler      { return h }
+
+// roundTripLoggingAt drives one failing round trip whose underlying transport
+// returns underErr, and returns the levels the transport logged at.
+func (s *transportSuite) roundTripLoggingAt(underErr error) []slog.Level {
+	h := &levelCapture{}
+	tr := newLoggingTransport(slog.New(h), roundTripFunc(
+		func(*http.Request) (*http.Response, error) {
+			return nil, underErr
+		},
+	))
+
+	req, err := http.NewRequestWithContext(s.T().Context(), http.MethodGet, "https://example.test/v1", http.NoBody)
+	s.Require().NoError(err)
+
+	_, err = tr.RoundTrip(req) //nolint:bodyclose // always a nil body on error
+	s.Require().Error(err)
+
+	return h.levels
+}
+
+// TestCancelledRoundTripLogsAtDebug verifies an expected cancellation/timeout —
+// routine when the aggregator cancels the losing per-source requests — is logged
+// at Debug, not Error, so it does not flood the logs.
+func (s *transportSuite) TestCancelledRoundTripLogsAtDebug() {
+	for _, underErr := range []error{context.Canceled, context.DeadlineExceeded} {
+		levels := s.roundTripLoggingAt(underErr)
+		s.Require().Len(levels, 1)
+		s.Equalf(slog.LevelDebug, levels[0], "%v must log at Debug", underErr)
+	}
+}
+
+// TestFailedRoundTripLogsAtError verifies a genuine transport failure still logs
+// at Error.
+func (s *transportSuite) TestFailedRoundTripLogsAtError() {
+	levels := s.roundTripLoggingAt(errors.New("dial tcp: connection refused"))
+	s.Require().Len(levels, 1)
+	s.Equal(slog.LevelError, levels[0])
 }
 
 // TestRoundTripWrapsUnderlyingError verifies a transport-level failure surfaces
