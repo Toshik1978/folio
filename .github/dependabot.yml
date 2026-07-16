@@ -26,6 +26,11 @@ updates:
     commit-message:
       prefix: build
       include: scope
+    ignore:
+      # Pinned to 7.x: the 8.0 release changed the license.
+      - dependency-name: "primeicons"
+        update-types:
+          - version-update:semver-major
     groups:
       npm:
         patterns:
@@ -48,5 +53,6 @@ updates:
         patterns:
           - "*"
         update-types:
+          - major
           - minor
           - patch
