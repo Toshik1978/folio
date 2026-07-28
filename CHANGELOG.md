@@ -9,6 +9,63 @@ Versions follow [semver](https://semver.org). Commits follow
 
 ---
 
+## v1.6.0 — 2026-07-28
+
+Nothing here changes how Folio runs. The binary and the published image behave
+exactly as v1.5.0 did, and there is nothing to do when you upgrade. What changed
+is how releases get made and how they get written down.
+
+Folio used to cut a release by clicking a button in GitHub Actions, which ran
+Commitizen inside CI to pick a version, regenerate the changelog, and push a
+commit and a tag back to `main`. Releases are now cut by pushing a tag, and no
+workflow writes to the repository at all. The practical effect is that release
+notes are written by hand before the tag exists — so what you are reading is a
+deliberate summary rather than a dump of commit subjects.
+
+### Highlights
+
+- **Releases are cut by pushing a tag.** `git tag v1.6.0 && git push origin
+  v1.6.0` builds the multi-arch image, attests its provenance, and opens the
+  GitHub release using this changelog section as the body. If the pushed tag has
+  no section, the job fails before anything is published rather than shipping an
+  empty release.
+- **One changelog instead of two files.** `RELEASE_NOTES.md` is gone and its
+  prose moved here. Every release now carries hand-written highlights on top of
+  the generated commit list, so there is one place to look instead of two that
+  had to be kept in step with each other.
+- **The tag is the version.** The `VERSION` file is gone — nothing ever read it —
+  and Commitizen is no longer used for anything. Commits are still
+  [Conventional Commits](https://www.conventionalcommits.org), enforced by a
+  `commit-msg` hook that does not drag a Python runtime along with it.
+- **Clearer expectations for contributors.** `AGENTS.md` was merged into
+  `CLAUDE.md` so there is a single set of instructions, and `CONTRIBUTING.md` now
+  says plainly what a personal project can offer: pull requests and issues may
+  not get a response, and forking is a first-class outcome rather than a
+  consolation prize.
+
+### Features
+
+- [9211c28](https://github.com/Toshik1978/folio/commit/9211c281f07236daefd19fdf83d1b0fb3db1b64d) feat(taskfile): make TAG optional in the changelog task
+
+### Bug Fixes
+
+- [8d652a0](https://github.com/Toshik1978/folio/commit/8d652a0e5c9908a0326d49e1433b0e7eacd5a8ca) fix(changelog): order commit groups and drop bump commits
+- [52a0aa7](https://github.com/Toshik1978/folio/commit/52a0aa7e5836053eb1202b0b0a7466e26bb0914e) fix: avoid bash 3.2 pattern-substitution hang in changelog extractor
+- [a1dcb30](https://github.com/Toshik1978/folio/commit/a1dcb30af74079d9352ea5e33932ce6872658831) fix(release): repair changelog prepend and correct release docs
+- [2d86355](https://github.com/Toshik1978/folio/commit/2d86355d142f86868160400df344c2c01c6adb13) fix(changelog): append trailing separator to generated sections
+
+### Others
+
+- [db55072](https://github.com/Toshik1978/folio/commit/db55072553f893f4a6a8edb3f13aed3f160b4d20) build: replace commitizen with conventional-pre-commit
+- [d48ab38](https://github.com/Toshik1978/folio/commit/d48ab38a889b2df076cf9838124831e448b9fc7d) build: add git-cliff config and changelog task
+- [bf86883](https://github.com/Toshik1978/folio/commit/bf86883ccf7f6f6c8516856cdbf9049be035c180) docs: fold release notes into a hand-written changelog
+- [eef0461](https://github.com/Toshik1978/folio/commit/eef0461466eed29dc33ab26bcd1979166cba6376) ci: add changelog section extractor for release bodies
+- [a0025f2](https://github.com/Toshik1978/folio/commit/a0025f21c317c4b5ed5de3f0b079db5ba0b8023a) ci: trigger releases from pushed tags
+- [7af0ba2](https://github.com/Toshik1978/folio/commit/7af0ba2e9dbea03cb26f9c53819fd458472e5875) docs: merge AGENTS.md into CLAUDE.md and document the tag flow
+- [1643516](https://github.com/Toshik1978/folio/commit/16435167f05db1165177387a6b14daadc2f105aa) docs: set contribution expectations and document releases
+
+---
+
 ## v1.5.0 — 2026-07-11
 
 This release is about **limits**. Anywhere Folio reads something it does not
