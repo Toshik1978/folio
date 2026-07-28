@@ -37,7 +37,11 @@ body = """
 {% for commit in commits %}
 - [{{ commit.id | truncate(length=7, end="") }}](https://github.com/Toshik1978/folio/commit/{{ commit.id }}) {{ commit.raw_message | split(pat="\\n") | first | trim }}
 {%- endfor %}
-{% endfor %}"""
+{% endfor %}
+---
+
+
+"""
 footer = ""
 trim = true
 

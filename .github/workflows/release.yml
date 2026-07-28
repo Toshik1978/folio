@@ -37,9 +37,9 @@ jobs:
           bash .github/scripts/extract-changelog.sh "$GITHUB_REF_NAME" > release-body.md
           {
             echo
-            # No '---' here: every changelog section but the last already ends
-            # with the separator that precedes the next release, so emitting
-            # one would render two rules in a row.
+            # No '---' here: the extracted section already ends with the
+            # separator rule (the .cliff.toml body template appends it), so
+            # emitting one would render two rules in a row.
             echo
             echo '### Docker'
             echo
