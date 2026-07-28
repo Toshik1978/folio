@@ -35,7 +35,13 @@ section=$(awk -v tag="$tag" '
   found { print }
 ' "$changelog")
 
-if [ -z "${section//[[:space:]]/}" ]; then
+# Avoid `${section//[[:space:]]/}` here: bash 3.2 (still the default
+# /bin/bash on macOS) has a catastrophic-slowdown bug in its pattern-
+# substitution engine on strings of this size, so this check would hang
+# for several minutes on the author's own machine for real release
+# sections. `tr -d` is POSIX and linear-time on every bash this script
+# runs under, so do not "simplify" this back to a parameter expansion.
+if [ -z "$(printf '%s' "$section" | tr -d '[:space:]')" ]; then
   echo "error: no '## $tag' section found in $changelog" >&2
   echo "hint: write the release notes before tagging" >&2
   exit 1
