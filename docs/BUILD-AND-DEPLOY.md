@@ -61,7 +61,7 @@ The output binary is `./bin/folio-idx`.
 | :--- | :--- | :--- |
 | `setup` | see above | Install deps, create dirs (`setup:ci` uses `npm ci` + `go mod download`) |
 | `generate` | `sqlc generate` | Regenerate `internal/db/dbq/` from SQL (needs `sqlc`) |
-| `changelog` | `git-cliff --unreleased --tag $TAG --prepend CHANGELOG.md` | Prepend the next release's commit list to `CHANGELOG.md`; requires `TAG` (e.g. `TAG=v1.6.0 task changelog`) and `git-cliff` |
+| `changelog` | `git-cliff --unreleased --bump --prepend CHANGELOG.md` (or `--tag $TAG` if `TAG` is set) | Prepend the next release's commit list to `CHANGELOG.md`, computing the version via git-cliff's `--bump`; override with `TAG=v1.6.0 task changelog` (needs `git-cliff`) |
 | `dev:backend` | `go run cmd/folio-idx/main.go` | Run Go server locally |
 | `dev:frontend` | `npm run dev` (in `web/`) | Run Vite dev server |
 | `build:frontend` | `npm run build` (in `web/`) | Type-check + bundle frontend |

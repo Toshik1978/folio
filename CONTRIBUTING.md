@@ -69,8 +69,10 @@ task build    # type-check SPA, embed assets, compile the binary
 Releases are cut by hand, by the maintainer. `CHANGELOG.md` is the single
 release document — `RELEASE_NOTES.md` no longer exists.
 
-1. `TAG=v1.6.0 task changelog` — prepends the generated commit list for
-   everything since the last tag.
+1. `task changelog` — prepends the generated commit list for everything since
+   the last tag, computing the next version with git-cliff's `--bump`.
+   Override with `TAG=v1.6.0 task changelog` when the computed bump is wrong,
+   or for a pre-release tag like `v1.6.0-rc.1`.
 2. Write the prose highlights into that new section by hand. This is the part
    that matters; the generated list is supporting detail.
 3. Preview the release body: `.github/scripts/extract-changelog.sh v1.6.0`.

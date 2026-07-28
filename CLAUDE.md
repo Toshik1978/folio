@@ -19,8 +19,11 @@ All automation is managed via `go-task` (`Taskfile.yml`).
   ```
 * Prepend the generated commit list for the next release to `CHANGELOG.md`
   (requires [git-cliff](https://git-cliff.org) ≥ 2.13.0, installed globally with
-  `mise use -g git-cliff@latest`):
+  `mise use -g git-cliff@latest`). With no `TAG`, git-cliff computes the next
+  version itself from the conventional commit types (`--bump`); pass `TAG` to
+  override it, e.g. for a version bump `--bump` can't judge or a pre-release tag:
   ```bash
+  task changelog
   TAG=v1.6.0 task changelog
   ```
 
@@ -111,8 +114,11 @@ release body. Do not change its shape.
 
 ### Cutting a release
 
-1. `TAG=v1.6.0 task changelog` — prepends the generated section for everything
-   since the last tag.
+1. `task changelog` — prepends the generated section for everything since the
+   last tag, computing the next version with git-cliff's `--bump`. Override
+   with `TAG=v1.6.0 task changelog` when the computed bump is wrong (e.g. this
+   repo's own release-process overhaul) or for a pre-release tag like
+   `v1.6.0-rc.1`, which `--bump` cannot produce.
 2. Write the prose into that new section by hand.
 3. Preview the release body: `.github/scripts/extract-changelog.sh v1.6.0`.
 4. Commit the changelog.
