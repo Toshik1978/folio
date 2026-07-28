@@ -14,7 +14,7 @@ body = """
 ## Unreleased
 {% endif %}
 {% for group, commits in commits | group_by(attribute="group") %}
-### {{ group }}
+### {{ group | striptags | trim }}
 {% for commit in commits %}
 - [{{ commit.id | truncate(length=7, end="") }}](https://github.com/Toshik1978/folio/commit/{{ commit.id }}) {{ commit.raw_message | split(pat="\\n") | first | trim }}
 {%- endfor %}
@@ -43,7 +43,10 @@ commit_parsers = [
   # reaches the regex engine as-is. Do not double it.
   { message = '^build\(deps', skip = true },
   { message = '^ci\(deps', skip = true },
-  { message = '^feat', group = "Features" },
-  { message = '^fix', group = "Bug Fixes" },
-  { message = '.*', group = "Others" },
+  # 'bump: version X -> Y' commits came from the retired 'cz bump' flow.
+  # Pure release mechanics, and no new ones will ever be created.
+  { message = '^bump', skip = true },
+  { message = '^feat', group = "<!-- 0 -->Features" },
+  { message = '^fix', group = "<!-- 1 -->Bug Fixes" },
+  { message = '.*', group = "<!-- 2 -->Others" },
 ]
