@@ -12,7 +12,7 @@
 - Node.js ≥ 20
 - npm (bundled with Node)
 - [Task](https://taskfile.dev) (`brew install go-task`)
-- Optional: `golangci-lint` (for `task lint:backend`) and `sqlc` (for `task generate`)
+- Optional: `golangci-lint` (for `task lint:backend`), `sqlc` (for `task generate`), and [git-cliff](https://git-cliff.org) ≥ 2.13.0 (for `task changelog`, only needed to cut a release — `mise use -g git-cliff@latest`)
 
 ### First-Time Setup
 
@@ -61,6 +61,7 @@ The output binary is `./bin/folio-idx`.
 | :--- | :--- | :--- |
 | `setup` | see above | Install deps, create dirs (`setup:ci` uses `npm ci` + `go mod download`) |
 | `generate` | `sqlc generate` | Regenerate `internal/db/dbq/` from SQL (needs `sqlc`) |
+| `changelog` | `git-cliff --unreleased --tag $TAG --prepend CHANGELOG.md` | Prepend the next release's commit list to `CHANGELOG.md`; requires `TAG` (e.g. `TAG=v1.6.0 task changelog`) and `git-cliff` |
 | `dev:backend` | `go run cmd/folio-idx/main.go` | Run Go server locally |
 | `dev:frontend` | `npm run dev` (in `web/`) | Run Vite dev server |
 | `build:frontend` | `npm run build` (in `web/`) | Type-check + bundle frontend |

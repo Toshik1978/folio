@@ -120,8 +120,14 @@ release body. Do not change its shape.
 
 The tag push is what triggers `release.yml` — it builds and pushes the
 multi-arch image and opens the GitHub release using that changelog section as
-the body. No workflow writes back to the repository; if step 2 was skipped the
-job fails before anything is published.
+the body. No workflow writes back to the repository; if the committed
+`CHANGELOG.md` has no `## v1.6.0` section at all — you tagged before step 1, or
+before step 4 — the job fails before anything is published. It cannot tell
+whether the prose in that section was written, only that the section exists.
+
+Retrying after a failed release means deleting the tag first — `git tag -d
+v1.6.0 && git push --delete origin v1.6.0` — because re-pushing an existing tag
+does not re-trigger the workflow.
 
 ---
 

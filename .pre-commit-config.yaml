@@ -1,3 +1,8 @@
+# Plain `pre-commit install` only wires the pre-commit stage, which would leave
+# the conventional-commit check below dormant. Declaring both hook types here
+# means every contributor gets commit-msg enforcement from the same one command.
+default_install_hook_types: [pre-commit, commit-msg]
+
 repos:
 - repo: https://github.com/compilerla/conventional-pre-commit
   rev: v4.4.0

@@ -25,15 +25,18 @@ genuinely useful even when they go unanswered for a while.
 - **Go 1.26+** (the project compiles with `CGO_ENABLED=0`)
 - **Node.js** (for the Vue 3 SPA in `web/`)
 - **[go-task](https://taskfile.dev)** — all automation is driven through `Taskfile.yml`
+- **[pre-commit](https://pre-commit.com)** — runs the lint, test, and
+  commit-message hooks in `.pre-commit-config.yaml`
 - **[git-cliff](https://git-cliff.org) 2.13.0+** — only needed to cut a release;
   install with `mise use -g git-cliff@latest`
 
 ## Getting started
 
 ```bash
-task setup        # install Go modules + npm packages, create build dirs
-task dev:backend  # run the Go server (default :8080)
-task dev:frontend # run the Vite dev server with HMR
+task setup         # install Go modules + npm packages, create build dirs
+pre-commit install # wire up the pre-commit and commit-msg hooks
+task dev:backend   # run the Go server (default :8080)
+task dev:frontend  # run the Vite dev server with HMR
 ```
 
 ## Before you open a pull request
@@ -76,7 +79,9 @@ release document — `RELEASE_NOTES.md` no longer exists.
 
 Pushing the tag triggers `release.yml`, which builds and pushes the multi-arch
 image to GHCR and opens the GitHub release using that changelog section as the
-body. It fails if the tag has no section, so step 2 cannot be skipped.
+body. It fails if the committed `CHANGELOG.md` has no `## v1.6.0` section at
+all — i.e. if the tag was pushed before step 1 or before step 4. It cannot
+check whether the prose in that section was actually written.
 
 ## Core constraints
 

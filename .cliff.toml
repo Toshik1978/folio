@@ -6,7 +6,26 @@
 # prose into it before tagging.
 
 [changelog]
-header = ""
+# MUST stay byte-identical to the top of CHANGELOG.md (its title, the two
+# framing paragraphs, the `---` and the blank line after it). `--prepend`
+# strips this string from the existing file and re-emits it above the new
+# section; if it does not match, the strip silently no-ops and the new release
+# section lands *above* the file title — which also makes
+# .github/scripts/extract-changelog.sh swallow the preamble into the release
+# body. Edit one, edit the other.
+header = """
+# Changelog
+
+What changed in each Folio release and why. Highlights are written by hand; the
+commit lists under them are generated with [git-cliff](https://git-cliff.org)
+via `TAG=vX.Y.Z task changelog`.
+
+Versions follow [semver](https://semver.org). Commits follow
+[Conventional Commits](https://www.conventionalcommits.org).
+
+---
+
+"""
 body = """
 {% if version %}\
 ## {{ version }} — {{ timestamp | date(format="%Y-%m-%d") }}
