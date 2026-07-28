@@ -1,0 +1,49 @@
+# git-cliff configuration for Folio.
+#
+# git-cliff generates only the grouped commit list under each release heading.
+# The prose above it — the framing paragraphs and the Highlights list — is
+# hand-written. `task changelog` prepends a new section; you then write the
+# prose into it before tagging.
+
+[changelog]
+header = ""
+body = """
+{% if version %}\
+## {{ version }} — {{ timestamp | date(format="%Y-%m-%d") }}
+{% else %}\
+## Unreleased
+{% endif %}
+{% for group, commits in commits | group_by(attribute="group") %}
+### {{ group }}
+{% for commit in commits %}
+- [{{ commit.id | truncate(length=7, end="") }}](https://github.com/Toshik1978/folio/commit/{{ commit.id }}) {{ commit.raw_message | split(pat="\\n") | first | trim }}
+{%- endfor %}
+{% endfor %}"""
+footer = ""
+trim = true
+
+[git]
+conventional_commits = true
+# Keep non-conventional commits — they land in "Others" rather than vanishing.
+filter_unconventional = false
+filter_commits = false
+tag_pattern = "v[0-9]*"
+sort_commits = "oldest"
+topo_order = false
+
+# Order matters: the first matching parser wins. Skips come first so that,
+# for example, `chore(release):` never reaches the catch-all Others rule.
+commit_parsers = [
+  { message = '^Merge ', skip = true },
+  { message = '^chore', skip = true },
+  { message = '^test', skip = true },
+  { message = '^style', skip = true },
+  # Dependabot noise: without these two the changelog is mostly version bumps.
+  # Single-quoted TOML literal strings, so the backslash is NOT an escape and
+  # reaches the regex engine as-is. Do not double it.
+  { message = '^build\(deps', skip = true },
+  { message = '^ci\(deps', skip = true },
+  { message = '^feat', group = "Features" },
+  { message = '^fix', group = "Bug Fixes" },
+  { message = '.*', group = "Others" },
+]

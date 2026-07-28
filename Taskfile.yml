@@ -19,6 +19,12 @@ tasks:
     desc: Run sqlc code generation
     cmd: sqlc generate
 
+  changelog:
+    desc: "Prepend the next release's commit list to CHANGELOG.md (usage: TAG=v1.6.0 task changelog)"
+    requires:
+      vars: [TAG]
+    cmd: git-cliff --unreleased --tag {{.TAG}} --prepend CHANGELOG.md
+
   dev:backend:
     desc: Run Go backend server
     cmd: go run cmd/folio-idx/main.go
