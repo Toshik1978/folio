@@ -1,14 +1,22 @@
-name: Create release and publish a Docker image
+name: Release
 
+# Releases are cut by pushing a tag:
+#
+#   git tag v1.6.0 && git push origin v1.6.0
+#
+# The tag is the version. This workflow only reads the repository — it never
+# commits, bumps, or pushes anything back.
 on:
-  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
 
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
 
 jobs:
-  release-and-build:
+  release:
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -18,31 +26,28 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
-
-      - name: Create bump and changelog
-        uses: commitizen-tools/commitizen-action@master
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          changelog_increment_filename: release.md
-
-      - name: Did a bump happen?
-        id: check
-        run: |
-          if [ -n "$(git tag --points-at HEAD)" ]; then
-            echo "release=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "release=false" >> "$GITHUB_OUTPUT"
-            echo "No version bump — skipping image build and release."
-          fi
 
       - name: Lowercase image name
-        if: steps.check.outputs.release == 'true'
         run: echo "IMAGE_NAME=${IMAGE_NAME,,}" >> "$GITHUB_ENV"
 
+      # Runs before anything is pushed, so a tag without release notes fails
+      # the job while it is still a no-op.
+      - name: Build release body from CHANGELOG
+        run: |
+          bash .github/scripts/extract-changelog.sh "$GITHUB_REF_NAME" > release-body.md
+          {
+            echo
+            echo '---'
+            echo
+            echo '### Docker'
+            echo
+            echo '```bash'
+            echo "docker pull ${REGISTRY}/${IMAGE_NAME}:${GITHUB_REF_NAME#v}"
+            echo '```'
+          } >> release-body.md
+          cat release-body.md
+
       - name: Log in to the Container registry
-        if: steps.check.outputs.release == 'true'
         uses: docker/login-action@v4
         with:
           registry: ${{ env.REGISTRY }}
@@ -50,12 +55,10 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Set up Docker Buildx
-        if: steps.check.outputs.release == 'true'
         uses: docker/setup-buildx-action@v4
 
       - name: Extract metadata (tags, labels) for Docker
         id: meta
-        if: steps.check.outputs.release == 'true'
         env:
           # Stamp OCI annotations onto the image index (manifest list) so the
           # description/source show up on the GHCR package page for the
@@ -65,12 +68,11 @@ jobs:
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
-            type=semver,pattern={{version}},value=${{ env.REVISION }}
+            type=semver,pattern={{version}}
             type=raw,value=latest
 
       - name: Build and push Docker image
         id: push
-        if: steps.check.outputs.release == 'true'
         uses: docker/build-push-action@v7
         with:
           context: .
@@ -81,7 +83,6 @@ jobs:
           annotations: ${{ steps.meta.outputs.annotations }}
 
       - name: Generate build provenance attestation
-        if: steps.check.outputs.release == 'true'
         uses: actions/attest@v4
         with:
           subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
@@ -89,9 +90,8 @@ jobs:
           push-to-registry: true
 
       - name: Create GitHub Release
-        if: steps.check.outputs.release == 'true'
         uses: softprops/action-gh-release@v3
         with:
-          tag_name: v${{ env.REVISION }}
-          body_path: release.md
+          tag_name: ${{ github.ref_name }}
+          body_path: release-body.md
           token: ${{ secrets.GITHUB_TOKEN }}
