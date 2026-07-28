@@ -136,14 +136,22 @@ Runs on every push to `main` and on every pull request. Three jobs:
 | `test` | Both test suites with coverage (commands above). Test/coverage results are parsed into shields.io badge JSON and pushed to a Gist (`GIST_ID`/`GIST_SECRET_TOKEN` secrets) — **badges update only on push to `main`**. The final gate step fails the workflow on any test failure or a <80% coverage stack, *after* the (red) badges have published |
 | `build` | `needs: [lint, test]`; runs `task build` to prove the full frontend-embed-backend production build compiles |
 
-### `release.yml` — "Create and publish a Docker image"
+### `release.yml` — "Release"
 
-Runs when a GitHub **release is published**. It builds the production image
-from the repo `Dockerfile` and pushes it to **GitHub Container Registry**
-(`ghcr.io/<owner>/<repo>`), tagged/labelled via `docker/metadata-action` (so a
-release tag becomes the image tag), authenticated with the workflow's
-`GITHUB_TOKEN`. After the push it generates a **build provenance attestation**
-(`actions/attest`) for the image digest and pushes that to the registry too.
+Runs on a pushed tag matching `v*`. It extracts that version's section from
+`CHANGELOG.md` via `.github/scripts/extract-changelog.sh` — **failing the job
+if the tag has no section**, before anything is published — then builds the
+production image from the repo `Dockerfile` and pushes it multi-arch
+(`linux/amd64,linux/arm64`) to **GitHub Container Registry**
+(`ghcr.io/<owner>/<repo>`), tagged/labelled via `docker/metadata-action` and
+authenticated with the workflow's `GITHUB_TOKEN`. After the push it generates a
+**build provenance attestation** (`actions/attest`) for the image digest and
+pushes that to the registry too, then opens the GitHub release with the
+extracted changelog section as its body.
+
+The workflow only reads the repository — it never commits, bumps a version, or
+pushes a tag. Cutting a release means writing the changelog entry and pushing a
+tag; see [CLAUDE.md](../CLAUDE.md#cutting-a-release).
 
 There is no other deployment automation — deploying a release means pulling the
 published image (see [Build & Run](#build--run)).

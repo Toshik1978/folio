@@ -90,10 +90,9 @@ docker run -p 8080:8080 -v /path/to/library:/library:ro -v folio-data:/data foli
 | [SYNC-EVENTS.md](docs/SYNC-EVENTS.md) | Real-time sync status via Server-Sent Events (SSE), event broker, progress reporting. |
 | [NETWORKING.md](docs/NETWORKING.md) | Security model: OPDS Basic Auth, bring-your-own authenticator for the UI/API, CSRF guard. |
 | [BUILD-AND-DEPLOY.md](docs/BUILD-AND-DEPLOY.md) | Taskfile targets, Docker multi-stage build, local dev workflow. |
-| [RELEASE_NOTES.md](RELEASE_NOTES.md) | Curated, human-readable highlights of each release. |
-| [CHANGELOG.md](CHANGELOG.md) | Dated history of notable changes, with the rationale behind each. |
+| [CHANGELOG.md](CHANGELOG.md) | What changed in each release and why, with the commit list behind it. |
 
-> **Contributing with an AI agent?** Start with [AGENTS.md](AGENTS.md) — setup commands, task rules, and a task-to-doc map. Claude Code loads it automatically via [CLAUDE.md](CLAUDE.md), which simply imports `AGENTS.md`.
+> **Contributing with an AI agent?** Start with [CLAUDE.md](CLAUDE.md) — setup commands, task rules, and a task-to-doc map.
 
 ---
 
