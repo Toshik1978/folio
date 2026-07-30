@@ -31,6 +31,12 @@ updates:
       - dependency-name: "primeicons"
         update-types:
           - version-update:semver-major
+      # Pinned to 6.x: nothing here invokes tsc — vue-tsc and typescript-eslint
+      # consume the TypeScript programmatic API, which 7.0 dropped and 7.1 is
+      # expected to restore. Revisit once Volar and typescript-eslint support it.
+      - dependency-name: "typescript"
+        update-types:
+          - version-update:semver-major
     groups:
       npm:
         patterns:
