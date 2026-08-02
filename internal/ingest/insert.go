@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"fmt"
 	"slices"
-	"strconv"
 	"strings"
 
 	"github.com/samber/lo"
@@ -26,7 +25,9 @@ func resolveAddedAt(rec bookRecord, runTime int64) int64 {
 	return runTime
 }
 
-func insertBook(ctx context.Context, q *dbq.Queries, rec bookRecord, addedAt, importedAt int64) (int64, error) {
+func insertBook(
+	ctx context.Context, q *dbq.Queries, x dbq.DBTX, rec bookRecord, addedAt, importedAt int64,
+) (int64, error) {
 	var seriesID sql.NullInt64
 	if rec.Series != "" {
 		id, err := q.InsertSeries(ctx, dbq.InsertSeriesParams{Name: rec.Series, NameFold: dbf.Fold(rec.Series)})
@@ -75,8 +76,8 @@ func insertBook(ctx context.Context, q *dbq.Queries, rec bookRecord, addedAt, im
 		return 0, err
 	}
 
-	if err := q.InsertBookFTS(ctx, dbq.InsertBookFTSParams{
-		BookID:     strconv.FormatInt(bookID, 10),
+	if err := dbf.InsertBookFTS(ctx, x, dbf.BookFTSRow{
+		BookID:     bookID,
 		Title:      rec.Title,
 		Authors:    strings.Join(authors, " "),
 		Series:     rec.Series,

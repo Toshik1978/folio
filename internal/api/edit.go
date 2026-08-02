@@ -341,7 +341,7 @@ func (h *BooksHandler) saveManualEdit(
 	defer cancel()
 	if err := h.writeGuard.WithTx(ctx, h.db, func(tx *sql.Tx) error {
 		q := dbq.New(tx)
-		c, aErr := h.applyEnrichmentTx(ctx, q, &b, meta, true, false)
+		c, aErr := h.applyEnrichmentTx(ctx, q, tx, &b, meta, true, false)
 		if aErr != nil {
 			return aErr
 		}

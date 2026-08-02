@@ -163,7 +163,7 @@ func (im *importer) add(ctx context.Context, rec bookRecord, addedAt int64) (int
 	)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
-		bookID, err = insertBook(ctx, q, rec, resolveAddedAt(rec, addedAt), addedAt)
+		bookID, err = insertBook(ctx, q, im.tx, rec, resolveAddedAt(rec, addedAt), addedAt)
 		if err != nil {
 			return 0, err
 		}
@@ -172,7 +172,7 @@ func (im *importer) add(ctx context.Context, rec bookRecord, addedAt int64) (int
 	default:
 		bookID = existing.ID
 		coverPrio = existing.CoverPrio
-		if err := mergeExisting(ctx, q, existing, rec); err != nil {
+		if err := mergeExisting(ctx, q, im.tx, existing, rec); err != nil {
 			return 0, err
 		}
 	}

@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"log/slog"
-	"strconv"
 	"time"
 
 	"github.com/samber/lo"
@@ -87,8 +86,8 @@ func (s *booksFilterSuite) seed(srcID int64, bs bookSeed) int64 {
 		s.Require().NoError(aerr)
 		s.Require().NoError(s.q.InsertBookAuthor(ctx, dbq.InsertBookAuthorParams{BookID: id, AuthorID: aid}))
 	}
-	s.Require().NoError(s.q.InsertBookFTS(ctx, dbq.InsertBookFTSParams{
-		BookID: strconv.FormatInt(id, 10), Title: bs.title, Authors: bs.author, Series: bs.series,
+	s.Require().NoError(InsertBookFTS(ctx, s.db, BookFTSRow{
+		BookID: id, Title: bs.title, Authors: bs.author, Series: bs.series,
 	}))
 
 	return id

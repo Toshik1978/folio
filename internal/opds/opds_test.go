@@ -7,7 +7,6 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -161,8 +160,8 @@ func (s *baseSuite) seedBook(libraryID int64, sd bookSeed) int64 {
 		s.Require().NoError(s.q.InsertBookGenre(ctx, dbq.InsertBookGenreParams{BookID: bookID, GenreID: gid}))
 	}
 
-	s.Require().NoError(s.q.InsertBookFTS(ctx, dbq.InsertBookFTSParams{
-		BookID: strconv.FormatInt(bookID, 10), Title: sd.Title,
+	s.Require().NoError(db.InsertBookFTS(ctx, s.db, db.BookFTSRow{
+		BookID: bookID, Title: sd.Title,
 		Authors: strings.Join(sd.Authors, " "), Series: sd.Series, Annotation: sd.Annotation,
 	}))
 

@@ -110,7 +110,7 @@ func (h *BooksHandler) applyEnrichment(
 	// download never serializes behind it).
 	persisted := false
 	err := h.writeGuard.WithTx(ctx, h.db, func(tx *sql.Tx) error {
-		changed, aErr := h.applyEnrichmentTx(ctx, dbq.New(tx), &b, meta, overwrite, coverSaved)
+		changed, aErr := h.applyEnrichmentTx(ctx, dbq.New(tx), tx, &b, meta, overwrite, coverSaved)
 		if aErr != nil {
 			return aErr
 		}
@@ -136,6 +136,7 @@ func (h *BooksHandler) applyEnrichment(
 func (h *BooksHandler) applyEnrichmentTx(
 	ctx context.Context,
 	q *dbq.Queries,
+	x dbq.DBTX,
 	b *dbq.Book,
 	meta ebook.Metadata,
 	overwrite bool,
@@ -164,7 +165,7 @@ func (h *BooksHandler) applyEnrichmentTx(
 	}
 
 	b.ContentHash = newEnrichmentHash(b.ContentHash)
-	if pErr := h.persistEnrichedScalars(ctx, q, b, meta, overwrite); pErr != nil {
+	if pErr := h.persistEnrichedScalars(ctx, q, x, b, meta, overwrite); pErr != nil {
 		return false, pErr
 	}
 
@@ -331,12 +332,13 @@ func (h *BooksHandler) applyGenres(
 func (h *BooksHandler) persistEnrichedScalars(
 	ctx context.Context,
 	q *dbq.Queries,
+	x dbq.DBTX,
 	book *dbq.Book,
 	meta ebook.Metadata,
 	overwrite bool,
 ) error {
 	if overwrite {
-		if err := h.persistMatchScalars(ctx, q, book, meta); err != nil {
+		if err := h.persistMatchScalars(ctx, q, x, book, meta); err != nil {
 			return err
 		}
 	} else if err := q.UpdateBookEnrichment(ctx, dbq.UpdateBookEnrichmentParams{
@@ -347,9 +349,9 @@ func (h *BooksHandler) persistEnrichedScalars(
 	}
 
 	if book.Annotation.Valid {
-		if err := q.UpdateBookFTSAnnotation(ctx, dbq.UpdateBookFTSAnnotationParams{
-			Annotation: htmltext.StripMarkup(book.Annotation.String), BookID: itoa(book.ID),
-		}); err != nil {
+		if err := dbf.UpdateBookFTSAnnotation(
+			ctx, x, book.ID, htmltext.StripMarkup(book.Annotation.String),
+		); err != nil {
 			return fmt.Errorf("enrichment fts: %w", err)
 		}
 	}
@@ -363,6 +365,7 @@ func (h *BooksHandler) persistEnrichedScalars(
 func (h *BooksHandler) persistMatchScalars(
 	ctx context.Context,
 	q *dbq.Queries,
+	x dbq.DBTX,
 	book *dbq.Book,
 	meta ebook.Metadata,
 ) error {
@@ -374,24 +377,16 @@ func (h *BooksHandler) persistMatchScalars(
 	}); err != nil {
 		return fmt.Errorf("persist match: %w", err)
 	}
-	if err := q.UpdateBookFTSTitle(
-		ctx,
-		dbq.UpdateBookFTSTitleParams{Title: book.Title, BookID: itoa(book.ID)},
-	); err != nil {
+	if err := dbf.UpdateBookFTSTitle(ctx, x, book.ID, book.Title); err != nil {
 		return fmt.Errorf("match fts title: %w", err)
 	}
 	if len(meta.Authors) > 0 {
-		if err := q.UpdateBookFTSAuthors(ctx, dbq.UpdateBookFTSAuthorsParams{
-			Authors: strings.Join(meta.Authors, " "), BookID: itoa(book.ID),
-		}); err != nil {
+		if err := dbf.UpdateBookFTSAuthors(ctx, x, book.ID, strings.Join(meta.Authors, " ")); err != nil {
 			return fmt.Errorf("match fts authors: %w", err)
 		}
 	}
 	if strings.TrimSpace(meta.Series) != "" {
-		if err := q.UpdateBookFTSSeries(
-			ctx,
-			dbq.UpdateBookFTSSeriesParams{Series: meta.Series, BookID: itoa(book.ID)},
-		); err != nil {
+		if err := dbf.UpdateBookFTSSeries(ctx, x, book.ID, meta.Series); err != nil {
 			return fmt.Errorf("match fts series: %w", err)
 		}
 	}

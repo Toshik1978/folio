@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"strconv"
 	"strings"
 
 	dbf "github.com/Toshik1978/folio/internal/db"
@@ -22,7 +21,7 @@ type bookView = dbq.FindBookByLibraryKeyRow
 // files once, ensures rec's file row exists/updates, then merges rec's metadata
 // onto the book (gap-fill or, for the owning edition, overwrite). The preloaded
 // file list also tells the merge whether a same-format sibling exists (M8).
-func mergeExisting(ctx context.Context, q *dbq.Queries, existing bookView, rec bookRecord) error {
+func mergeExisting(ctx context.Context, q *dbq.Queries, x dbq.DBTX, existing bookView, rec bookRecord) error {
 	files, err := q.ListFilesForBook(ctx, existing.ID)
 	if err != nil {
 		return fmt.Errorf("list files: %w", err)
@@ -31,7 +30,7 @@ func mergeExisting(ctx context.Context, q *dbq.Queries, existing bookView, rec b
 		return err
 	}
 
-	return gapFill(ctx, q, existing, rec, files)
+	return gapFill(ctx, q, x, existing, rec, files)
 }
 
 // ensureFile makes the book's preloaded set of files contain rec's file: it
@@ -199,14 +198,18 @@ func fillSeriesPlan(book bookView, rec bookRecord, plan *mergePlan) bool {
 
 // gapFill reconciles a grouped book against one of its editions by computing a
 // pure plan and applying it.
-func gapFill(ctx context.Context, q *dbq.Queries, book bookView, rec bookRecord, files []dbq.BookFile) error {
-	return applyPlan(ctx, q, book, rec, planMerge(book, rec, files))
+func gapFill(
+	ctx context.Context, q *dbq.Queries, x dbq.DBTX, book bookView, rec bookRecord, files []dbq.BookFile,
+) error {
+	return applyPlan(ctx, q, x, book, rec, planMerge(book, rec, files))
 }
 
 // applyPlan turns a mergePlan into writes: upsert the staged series to an id,
 // update the books row (with the maintained publisher fold), mirror changed
 // scalars into books_fts, and relink authors/genres/identifiers on the owner path.
-func applyPlan(ctx context.Context, q *dbq.Queries, book bookView, rec bookRecord, plan mergePlan) error {
+func applyPlan(
+	ctx context.Context, q *dbq.Queries, x dbq.DBTX, book bookView, rec bookRecord, plan mergePlan,
+) error {
 	upd := plan.upd
 	if plan.seriesName != "" {
 		sid, err := q.InsertSeries(ctx, dbq.InsertSeriesParams{
@@ -224,11 +227,11 @@ func applyPlan(ctx context.Context, q *dbq.Queries, book bookView, rec bookRecor
 			return fmt.Errorf("update book: %w", err)
 		}
 	}
-	if err := applyFTS(ctx, q, book.ID, upd, rec, plan); err != nil {
+	if err := applyFTS(ctx, x, book.ID, upd, rec, plan); err != nil {
 		return err
 	}
 	if plan.relations {
-		if err := relinkAuthors(ctx, q, book.ID, rec); err != nil {
+		if err := relinkAuthors(ctx, q, x, book.ID, rec); err != nil {
 			return err
 		}
 		if err := relinkGenres(ctx, q, book.ID, rec); err != nil {
@@ -243,26 +246,20 @@ func applyPlan(ctx context.Context, q *dbq.Queries, book bookView, rec bookRecor
 // applyFTS mirrors the changed scalar fields into the book's books_fts row so
 // search matches what was just written.
 func applyFTS(
-	ctx context.Context, q *dbq.Queries, bookID int64, upd dbq.UpdateBookParams, rec bookRecord, plan mergePlan,
+	ctx context.Context, x dbq.DBTX, bookID int64, upd dbq.UpdateBookParams, rec bookRecord, plan mergePlan,
 ) error {
-	id := strconv.FormatInt(bookID, 10)
 	if plan.titleFTS {
-		if err := q.UpdateBookFTSTitle(ctx, dbq.UpdateBookFTSTitleParams{Title: upd.Title, BookID: id}); err != nil {
+		if err := dbf.UpdateBookFTSTitle(ctx, x, bookID, upd.Title); err != nil {
 			return fmt.Errorf("update fts title: %w", err)
 		}
 	}
 	if plan.seriesFTS {
-		if err := q.UpdateBookFTSSeries(
-			ctx,
-			dbq.UpdateBookFTSSeriesParams{Series: rec.Series, BookID: id},
-		); err != nil {
+		if err := dbf.UpdateBookFTSSeries(ctx, x, bookID, rec.Series); err != nil {
 			return fmt.Errorf("update fts series: %w", err)
 		}
 	}
 	if plan.annFTS {
-		if err := q.UpdateBookFTSAnnotation(ctx, dbq.UpdateBookFTSAnnotationParams{
-			Annotation: htmltext.StripMarkup(rec.Annotation), BookID: id,
-		}); err != nil {
+		if err := dbf.UpdateBookFTSAnnotation(ctx, x, bookID, htmltext.StripMarkup(rec.Annotation)); err != nil {
 			return fmt.Errorf("gap-fill annotation fts: %w", err)
 		}
 	}
@@ -353,7 +350,7 @@ func gapFillScalarFields(book bookView, rec bookRecord, upd *dbq.UpdateBookParam
 // relinkAuthors replaces the book's author links with rec's authors and mirrors
 // them into books_fts. It is a no-op when rec carries no authors, so a
 // higher-priority edition that simply omits authors never erases the existing set.
-func relinkAuthors(ctx context.Context, q *dbq.Queries, bookID int64, rec bookRecord) error {
+func relinkAuthors(ctx context.Context, q *dbq.Queries, x dbq.DBTX, bookID int64, rec bookRecord) error {
 	authors := deduplicate(rec.Authors)
 	if len(authors) == 0 {
 		return nil
@@ -364,9 +361,7 @@ func relinkAuthors(ctx context.Context, q *dbq.Queries, bookID int64, rec bookRe
 	if err := linkAuthors(ctx, q, bookID, authors); err != nil {
 		return err
 	}
-	if err := q.UpdateBookFTSAuthors(ctx, dbq.UpdateBookFTSAuthorsParams{
-		Authors: strings.Join(authors, " "), BookID: strconv.FormatInt(bookID, 10),
-	}); err != nil {
+	if err := dbf.UpdateBookFTSAuthors(ctx, x, bookID, strings.Join(authors, " ")); err != nil {
 		return fmt.Errorf("update fts authors: %w", err)
 	}
 

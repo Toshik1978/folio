@@ -10,7 +10,6 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"strconv"
 	"testing"
 	"time"
 
@@ -186,8 +185,8 @@ func (s *baseSuite) authorsForBook(bookID int64) []string {
 func (s *baseSuite) ftsRow(bookID int64) (title, authors string) {
 	err := s.db.QueryRowContext(
 		context.Background(),
-		"SELECT title, authors FROM books_fts WHERE book_id = ?",
-		strconv.FormatInt(bookID, 10),
+		"SELECT title, authors FROM books_fts WHERE rowid = ?",
+		bookID,
 	).Scan(&title, &authors)
 	s.Require().NoError(err)
 

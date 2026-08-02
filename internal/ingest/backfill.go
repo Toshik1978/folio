@@ -38,6 +38,7 @@ type FileExtractor interface {
 // Best-effort throughout.
 type LocalBackfiller struct {
 	log       *slog.Logger
+	db        *sql.DB
 	q         *dbq.Queries
 	guard     *db.WriteGuard
 	extractor FileExtractor
@@ -50,6 +51,7 @@ func NewLocalBackfiller(
 ) *LocalBackfiller {
 	return &LocalBackfiller{
 		log:       log,
+		db:        database,
 		q:         dbq.New(database),
 		guard:     guard,
 		extractor: extractor,
@@ -119,9 +121,7 @@ func (b *LocalBackfiller) persistAnnotation(ctx context.Context, bookID int64, a
 		b.log.Warn("backfill: persist annotation", slog.Int64("book", bookID), slog.Any("error", err))
 		return
 	}
-	if err := b.q.UpdateBookFTSAnnotation(ctx, dbq.UpdateBookFTSAnnotationParams{
-		Annotation: htmltext.StripMarkup(annotation), BookID: strconv.FormatInt(bookID, 10),
-	}); err != nil {
+	if err := db.UpdateBookFTSAnnotation(ctx, b.db, bookID, htmltext.StripMarkup(annotation)); err != nil {
 		b.log.Warn("backfill: persist annotation fts", slog.Int64("book", bookID), slog.Any("error", err))
 	}
 }

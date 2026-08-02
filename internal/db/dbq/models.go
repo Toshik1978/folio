@@ -65,7 +65,6 @@ type BookIdentifier struct {
 }
 
 type BooksFt struct {
-	BookID     string
 	Title      string
 	Authors    string
 	Series     string

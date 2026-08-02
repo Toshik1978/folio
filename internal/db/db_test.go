@@ -9,6 +9,7 @@ import (
 // TestDB is the package's single entry point; every suite is registered here.
 func TestDB(t *testing.T) {
 	suite.Run(t, new(booksFilterSuite))
+	suite.Run(t, new(ftsMigrationSuite))
 	suite.Run(t, new(connSuite))
 	suite.Run(t, new(writeGuardSuite))
 }

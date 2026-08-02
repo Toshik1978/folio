@@ -200,7 +200,9 @@ func (f BookFilter) filterMods() []bob.Mod[*dialect.SelectQuery] {
 		// (FTS5 forbids multiple MATCH constraints against the same table).
 		mods = append(
 			mods,
-			sm.InnerJoin("books_fts").On(sqlite.Raw("b.id = CAST(books_fts.book_id AS INTEGER)")),
+			// books_fts is keyed by rowid = books.id (migration 005), so this joins
+			// on an integer key with no per-row CAST.
+			sm.InnerJoin("books_fts").On(sqlite.Raw("b.id = books_fts.rowid")),
 			sm.Where(sqlite.Raw("books_fts MATCH ?", m)),
 		)
 	}
