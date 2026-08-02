@@ -9,6 +9,56 @@ Versions follow [semver](https://semver.org). Commits follow
 
 ---
 
+## v1.6.1 — 2026-08-02
+
+This release is about **how much of a sync is spent maintaining the search
+index**, and it matters in proportion to how many books you have. Nothing else
+about Folio changes: same features, same API, same search results.
+
+Folio's full-text index is an SQLite FTS5 table, and FTS5 can look up a row only
+by its rowid or by a text match — a condition on any other column has no index to
+use. The index was keyed by an ordinary column, so writing one book's title,
+authors, series, or annotation into it, or removing a deleted book from it, meant
+scanning the whole index to find that single row. The cost of touching one book
+therefore grew with the size of the entire catalog. On a small library this was
+invisible; on a large one it quietly got worse as the library grew. On a
+573,000-book INPX catalog, one index write measured 281ms and one book deletion
+335ms, and a re-sync that pruned around 2,000 books spent 11 of its 31 minutes
+inside the delete trigger alone.
+
+### Highlights
+
+- **Large catalogs sync substantially faster.** The index is now keyed by rowid,
+  so every write seeks straight to its row instead of scanning. The same
+  operations that took 281ms and 335ms now take 0.23ms and 0.37ms — roughly
+  1,200x and 900x. The re-sync above gets about 11 minutes shorter, and the
+  saving grows with the catalog rather than shrinking.
+- **The problem was compounding.** Because each index write scanned the whole
+  index, the per-book cost rose as books were added. That scaling is gone, not
+  merely reduced, so this is worth more on the library you will have in a year
+  than on the one you have today.
+- **Search is unchanged.** Same queries, same BM25 ranking, same results. The
+  full-text join also sheds a per-row type conversion it no longer needs.
+- **Small libraries will not notice.** If your catalog is in the hundreds or low
+  thousands, the old scan was already cheap. Nothing here regresses that case.
+
+### Upgrading
+
+- **The first start after upgrading pauses to rebuild the search index.** This
+  runs once, as a schema migration, before Folio begins serving. Expect roughly
+  9 seconds for 573,000 books, proportionally less for smaller catalogs.
+- **Back up `/data` first.** The rebuild replaces the index in place. A snapshot
+  taken with `sqlite3 /data/folio.db "VACUUM INTO '/backup/folio.db'"` is the
+  fastest way back if the migration surprises you on your data.
+- **Leave some disk headroom.** The old and new index both exist for the duration
+  of the rebuild, so the database and its WAL grow temporarily.
+
+### Others
+
+- [6678833](https://github.com/Toshik1978/folio/commit/6678833094a456746fe5f3eb7ceedaf04435dfe1) perf(db): key books_fts by rowid instead of book_id
+
+---
+
 ## v1.6.0 — 2026-07-28
 
 Nothing here changes how Folio runs. The binary and the published image behave
