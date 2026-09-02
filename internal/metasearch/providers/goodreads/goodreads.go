@@ -92,7 +92,8 @@ func (s *Source) fetchOnce(ctx context.Context, q metasearch.Query) ([]metasearc
 	params.Set("format", "json")
 	params.Set("q", q.SearchTerm())
 	req, err := http.NewRequestWithContext(
-		ctx, http.MethodGet, s.baseURL+"/book/auto_complete?"+params.Encode(), http.NoBody)
+		ctx, http.MethodGet, s.baseURL+"/book/auto_complete?"+params.Encode(), http.NoBody,
+	)
 	if err != nil {
 		return nil, fmt.Errorf("build request: %w", err)
 	}

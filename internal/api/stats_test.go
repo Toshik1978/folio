@@ -48,7 +48,8 @@ func (s *statsSuite) TestStatsConcurrentColdCache() {
 			<-gate // wait for the starting gun
 
 			req := httptest.NewRequestWithContext(
-				context.Background(), http.MethodGet, "/stats", http.NoBody)
+				context.Background(), http.MethodGet, "/stats", http.NoBody,
+			)
 			w := httptest.NewRecorder()
 			s.router.ServeHTTP(w, req)
 			results[idx] = result{code: w.Code}

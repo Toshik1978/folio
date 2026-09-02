@@ -123,7 +123,7 @@ func NewBooks(
 	coverSearch CoverSearcher,
 ) *BooksHandler {
 	h := &BooksHandler{
-		base:             base{log: log},
+		log:              log,
 		db:               database,
 		q:                dbq.New(database),
 		writeGuard:       writeGuard,

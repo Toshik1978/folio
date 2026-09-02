@@ -22,10 +22,10 @@ genuinely useful even when they go unanswered for a while.
 
 ## Prerequisites
 
-- **Go 1.26+** (the project compiles with `CGO_ENABLED=0`)
+- **Go 1.27+** (the project compiles with `CGO_ENABLED=0`)
 - **Node.js** (for the Vue 3 SPA in `web/`)
 - **[go-task](https://taskfile.dev)** — all automation is driven through `Taskfile.yml`
-- **[pre-commit](https://pre-commit.com)** — runs the lint, test, and
+- **[pre-commit](https://pre-commit.com)** — runs the format, lint, test, and
   commit-message hooks in `.pre-commit-config.yaml`
 - **[git-cliff](https://git-cliff.org) 2.13.0+** — only needed to cut a release;
   install with `mise use -g git-cliff@latest`
@@ -34,7 +34,7 @@ genuinely useful even when they go unanswered for a while.
 
 ```bash
 task setup         # install Go modules + npm packages, create build dirs
-pre-commit install # wire up the pre-commit and commit-msg hooks
+pre-commit install # wire up the pre-commit, commit-msg and pre-push hooks
 task dev:backend   # run the Go server (default :8080)
 task dev:frontend  # run the Vite dev server with HMR
 ```
@@ -49,6 +49,12 @@ task lint     # all Go + frontend linters
 task test     # unit + integration suites
 task build    # type-check SPA, embed assets, compile the binary
 ```
+
+The hooks run these for you, each at the cheapest stage that still catches the
+problem: `commit-msg` checks the subject line, `pre-commit` runs the seconds-long
+gates (`golangci-lint fmt --diff` and the SQL ASCII check), and `pre-push` runs
+the full `task lint` and `task test`. Nothing that takes minutes sits on
+`git commit` — a hook slow enough to invite `--no-verify` stops being a gate.
 
 ## Conventions
 

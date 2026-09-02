@@ -1,6 +1,6 @@
 version: "2"
 run:
-  go: "1.26"
+  go: "1.27"
 issues:
   max-issues-per-linter: 0
   max-same-issues: 0
@@ -238,7 +238,15 @@ formatters:
         - prefix(github.com/Toshik1978/folio)
     gofumpt:
       module-path: github.com/Toshik1978/folio
-      extra-rules: true
+      # Named individually, not `extra-rules: true`. That flag is deprecated in
+      # golangci-lint 2.13, and its meaning widened underneath this config on
+      # the way there: it used to mean group-params alone, and now enables every
+      # extra rule gofumpt has. A key that lists what it wants cannot silently
+      # acquire a fourth rule the same way.
+      extra:
+        group-params: true
+        clothe-returns: true
+        balance-calls: true
     golines:
       max-len: 120
       shorten-comments: true

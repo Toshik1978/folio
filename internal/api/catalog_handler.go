@@ -35,7 +35,7 @@ type CatalogHandler struct {
 // NewCatalog builds the catalog handler over the folio database.
 func NewCatalog(log *slog.Logger, database *sql.DB, genres []string) *CatalogHandler {
 	return &CatalogHandler{
-		base:     base{log: log},
+		log:      log,
 		q:        dbq.New(database),
 		alphabet: buildAlphabet(),
 		genres:   genres,

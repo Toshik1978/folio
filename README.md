@@ -68,7 +68,7 @@ docker run -p 8080:8080 -v /path/to/library:/library:ro -v folio-data:/data foli
 | Aspect | Value |
 | :--- | :--- |
 | **Module** | `github.com/Toshik1978/folio` |
-| **Go version** | 1.26 |
+| **Go version** | 1.27 |
 | **Binary** | `folio-idx` |
 | **Default port** | `8080` (env `PORT`) |
 | **Database** | SQLite 3 + FTS5 |

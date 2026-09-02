@@ -33,7 +33,7 @@ func NewLibraries(
 	libraryRoot string,
 ) *LibrariesHandler {
 	return &LibrariesHandler{
-		base:        base{log: log},
+		log:         log,
 		q:           dbq.New(database),
 		writeGuard:  writeGuard,
 		sync:        syncEngine,

@@ -94,7 +94,8 @@ func (s *ftsMigrationSuite) TestRebuildPreservesRowsAndRekeysByRowid() {
 	// The index itself must still be searchable, not merely present.
 	var n int
 	s.Require().NoError(
-		s.db.QueryRowContext(ctx, `SELECT count(*) FROM books_fts WHERE books_fts MATCH ?`, "Petrov").Scan(&n))
+		s.db.QueryRowContext(ctx, `SELECT count(*) FROM books_fts WHERE books_fts MATCH ?`, "Petrov").Scan(&n),
+	)
 	s.Equal(1, n, "tokens must survive the rebuild")
 }
 

@@ -53,7 +53,8 @@ func (s *Source) fetchProductCover(ctx context.Context, asin string) ([]metasear
 	}
 
 	req, err := http.NewRequestWithContext(
-		ctx, http.MethodGet, s.baseURL+"/dp/"+url.PathEscape(asin), http.NoBody)
+		ctx, http.MethodGet, s.baseURL+"/dp/"+url.PathEscape(asin), http.NoBody,
+	)
 	if err != nil {
 		return nil, fmt.Errorf("build product request: %w", err)
 	}

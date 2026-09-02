@@ -39,7 +39,7 @@ type SyncHandler struct {
 
 // NewSync builds the sync handler; broker may be nil to disable the SSE stream.
 func NewSync(log *slog.Logger, syncEngine SyncEngine, broker EventBroker) *SyncHandler {
-	return &SyncHandler{base: base{log: log}, sync: syncEngine, events: broker}
+	return &SyncHandler{log: log, sync: syncEngine, events: broker}
 }
 
 func (h *SyncHandler) Register(r chi.Router) {

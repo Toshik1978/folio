@@ -9,8 +9,9 @@ import (
 // coverOnly advertises only CapCover.
 type coverOnly struct{ name string }
 
-func (c coverOnly) Name() string                                                  { return c.name }
-func (c coverOnly) Capabilities() []Capability                                    { return []Capability{CapCover} }
+func (c coverOnly) Name() string               { return c.name }
+func (c coverOnly) Capabilities() []Capability { return []Capability{CapCover} }
+
 func (c coverOnly) SearchCovers(context.Context, Query) ([]CoverCandidate, error) { return nil, nil }
 
 // dual advertises both but, when its caps say cover-only, must not surface as a
@@ -25,6 +26,7 @@ func (d dual) Capabilities() []Capability                                    { r
 func (d dual) SearchCovers(context.Context, Query) ([]CoverCandidate, error) { return nil, nil }
 func (d dual) Search(context.Context, Query) ([]Volume, error)               { return nil, nil }
 func (d dual) Get(context.Context, string) (ebook.Metadata, error)           { return ebook.Metadata{}, nil }
+
 func (d dual) Resolve(context.Context, Query) (ebook.Metadata, bool, error) {
 	return ebook.Metadata{}, false, nil
 }

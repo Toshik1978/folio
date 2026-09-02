@@ -8,7 +8,7 @@
 
 ### Prerequisites
 
-- Go ≥ 1.26
+- Go ≥ 1.27
 - Node.js ≥ 20
 - npm (bundled with Node)
 - [Task](https://taskfile.dev) (`brew install go-task`)
@@ -71,8 +71,8 @@ The output binary is `./bin/folio-idx`.
 | `test:frontend` | `npm run test` (in `web/`) | Run Vitest unit/component tests (`test:frontend:ci` adds coverage + JSON) |
 | `test` | `test:backend` + `test:frontend` | Run all tests |
 | `lint:backend` | `golangci-lint run` | Run Go linters |
-| `lint:frontend` | `npm run lint` (in `web/`) | Run ESLint |
-| `lint` | backend + frontend + `check:frontend` | Lint everything (incl. Prettier `format:check`) |
+| `lint:frontend` | `npm run typecheck`, `npm run lint`, `npm run format:check` (in `web/`) | Type-check, ESLint, Prettier check |
+| `lint` | `lint:frontend` + `lint:sql` + `lint:backend` | Lint everything |
 | `format:backend` | `golangci-lint fmt` | Run gofumpt via golangci-lint |
 | `format:frontend` | `npm run format` (in `web/`) | Prettier write |
 | `format` | backend + frontend | Run all formatters |
@@ -133,9 +133,15 @@ Runs on every push to `main` and on every pull request. Three jobs:
 
 | Job | Steps |
 | :--- | :--- |
-| `lint` | `task setup:ci`, then golangci-lint (via `golangci/golangci-lint-action`, pinned version), ESLint (`task lint:frontend`), and Prettier check (`task check:frontend`) |
+| `lint` | `task setup:ci`, then golangci-lint (via `golangci/golangci-lint-action` at `latest`, matching `.mise.toml`), and the frontend gates (`task lint:frontend`: type-check, ESLint, Prettier check) |
 | `test` | Both test suites with coverage (commands above). Test/coverage results are parsed into shields.io badge JSON and pushed to a Gist (`GIST_ID`/`GIST_SECRET_TOKEN` secrets) — **badges update only on push to `main`**. The final gate step fails the workflow on any test failure or a <80% coverage stack, *after* the (red) badges have published |
 | `build` | `needs: [lint, test]`; runs `task build` to prove the full frontend-embed-backend production build compiles |
+
+Every job takes its toolchain from `go-version-file: go.mod` with
+`check-latest: true`, so `go.mod` is the single place the Go version is
+declared — the jobs cannot disagree with each other or with the module — and
+each run picks up the newest patch release rather than whatever the runner
+image last baked into its tool cache.
 
 ### `release.yml` — "Release"
 
@@ -170,7 +176,7 @@ Stage 1: frontend-builder (node:24-alpine)
   ├── npm install
   └── npm run build → /app/web/dist/
 
-Stage 2: backend-builder (golang:1.26-alpine)
+Stage 2: backend-builder (golang:1.27-alpine)
   ├── go mod download
   ├── COPY Go sources (cmd/, internal/, web/embed.go)
   ├── COPY --from=frontend-builder dist/ → web/dist/

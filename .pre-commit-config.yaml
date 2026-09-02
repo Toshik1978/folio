@@ -1,32 +1,64 @@
-# Plain `pre-commit install` only wires the pre-commit stage, which would leave
-# the conventional-commit check below dormant. Declaring both hook types here
-# means every contributor gets commit-msg enforcement from the same one command.
-default_install_hook_types: [pre-commit, commit-msg]
+# Install with `pre-commit install`. That alone only wires the pre-commit
+# stage, which would leave the commit-msg and pre-push hooks dormant —
+# declaring the hook types here is what makes one command enough.
+default_install_hook_types: [pre-commit, pre-push, commit-msg]
 
 repos:
 - repo: https://github.com/compilerla/conventional-pre-commit
   rev: v4.4.0
   hooks:
+    # Not decoration: `.cliff.toml` groups the CHANGELOG by these prefixes and
+    # that file becomes the release notes.
     - id: conventional-pre-commit
       stages:
         - commit-msg
 
 - repo: local
   hooks:
-    - id: linters
-      name: Run linters
-      types_or: [go, javascript, jsx, ts, tsx, vue, html]
-      pass_filenames: false
+    # Each gate at the cheapest stage that still catches it. The full lint and
+    # test run used to sit on pre-commit, where it cost a frontend type-check,
+    # a Vitest run and the whole Go suite on every commit — the surest way to
+    # breed the `--no-verify` habit that makes the hooks worthless. What stays
+    # here is only what runs in about a second and is a nuisance to discover
+    # later.
+    - id: golangci-lint-fmt
+      name: golangci-lint fmt --diff
+      entry: golangci-lint fmt --diff
       language: system
-      entry: task lint
+      types: [go]
+      pass_filenames: false
       stages:
         - pre-commit
 
-    - id: tests
-      name: Run tests
-      types_or: [go, javascript, jsx, ts, tsx, vue, html]
-      pass_filenames: false
+    # Cheap (a grep over two directories) and worth catching early: a non-ASCII
+    # byte here makes sqlc emit a silently truncated query, so the generated Go
+    # compiles and the bug only surfaces at runtime.
+    - id: lint-sql
+      name: task lint:sql
+      entry: task lint:sql
       language: system
-      entry: task test
+      files: ^internal/db/(queries|migrations)/.*\.sql$
+      pass_filenames: false
       stages:
         - pre-commit
+
+    # Pre-push, not earlier: these are the full CI gates, minutes rather than
+    # seconds, and pushing is the first point at which anyone else can see the
+    # commits. Not filtered by file type — `task lint` covers the frontend,
+    # the SQL and Go, and a type-filtered hook would skip exactly the mixed
+    # commits likeliest to break the build.
+    - id: lint
+      name: task lint (frontend + sql + backend)
+      entry: task lint
+      language: system
+      pass_filenames: false
+      stages:
+        - pre-push
+
+    - id: tests
+      name: task test (frontend + backend)
+      entry: task test
+      language: system
+      pass_filenames: false
+      stages:
+        - pre-push
