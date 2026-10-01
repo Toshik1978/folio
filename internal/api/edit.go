@@ -339,7 +339,7 @@ func (h *BooksHandler) saveManualEdit(
 	// instead of blocking past the WriteTimeout.
 	ctx, cancel := context.WithTimeout(ctx, writeAcquireBudget)
 	defer cancel()
-	if err := h.writeGuard.WithTx(ctx, h.db, func(tx *sql.Tx) error {
+	err := h.writeGuard.WithTx(ctx, h.db, func(tx *sql.Tx) error {
 		q := dbq.New(tx)
 		c, aErr := h.applyEnrichmentTx(ctx, q, tx, &b, meta, true, false)
 		if aErr != nil {
@@ -356,7 +356,8 @@ func (h *BooksHandler) saveManualEdit(
 		}
 
 		return nil
-	}); err != nil {
+	})
+	if err != nil {
 		return book, fmt.Errorf("save manual edit: %w", err)
 	}
 	if changed {
@@ -385,9 +386,10 @@ func reconcileIdentifiersTx(ctx context.Context, q *dbq.Queries, bookID int64, i
 		return fmt.Errorf("clear identifiers: %w", err)
 	}
 	for _, id := range cleaned {
-		if err := q.InsertBookIdentifier(ctx, dbq.InsertBookIdentifierParams{
+		err := q.InsertBookIdentifier(ctx, dbq.InsertBookIdentifierParams{
 			BookID: bookID, Type: id.Type, Value: id.Value,
-		}); err != nil {
+		})
+		if err != nil {
 			return fmt.Errorf("insert identifier %s: %w", id.Type, err)
 		}
 	}

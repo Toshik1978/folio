@@ -255,9 +255,10 @@ func (h *LibrariesHandler) clearStaleCheckpoint(r *http.Request, id int64) {
 	}
 	defer release()
 
-	if err := h.q.UpdateLibraryCheckpoint(r.Context(), dbq.UpdateLibraryCheckpointParams{
+	err := h.q.UpdateLibraryCheckpoint(r.Context(), dbq.UpdateLibraryCheckpointParams{
 		Checkpoint: sql.NullString{}, ID: id,
-	}); err != nil {
+	})
+	if err != nil {
 		h.log.Error("clear library checkpoint", slog.Int64("library", id), slog.Any("error", err))
 	}
 }

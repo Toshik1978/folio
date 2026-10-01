@@ -38,12 +38,13 @@ func (f *FolderParser) Sync(
 ) (Result, error) {
 	return runReconcile(ctx, db, covers, library, r, f.log, func(ctx context.Context, rc *reconciler) error {
 		w := &folderWalk{log: f.log, parser: f.parser, rc: rc, root: library.Path, libraryID: library.ID}
-		if err := filepath.WalkDir(library.Path, func(path string, d fs.DirEntry, err error) error {
+		err := filepath.WalkDir(library.Path, func(path string, d fs.DirEntry, err error) error {
 			if ctxErr := ctx.Err(); ctxErr != nil {
 				return fmt.Errorf("folder walk canceled: %w", ctxErr)
 			}
 			return w.visit(ctx, path, d, err)
-		}); err != nil {
+		})
+		if err != nil {
 			return fmt.Errorf("walk library %s: %w", library.Path, err)
 		}
 

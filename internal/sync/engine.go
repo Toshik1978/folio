@@ -497,9 +497,10 @@ func (e *Engine) fingerprint(parser Parser, src dbq.Library) string {
 // change notification. Used on a no-op checkpoint skip, where the run touched
 // nothing in the catalog and only the "last checked" timestamp advances.
 func (e *Engine) stampLastSync(ctx context.Context, id int64) {
-	if err := dbq.New(e.db).UpdateLibraryLastSync(ctx, dbq.UpdateLibraryLastSyncParams{
+	err := dbq.New(e.db).UpdateLibraryLastSync(ctx, dbq.UpdateLibraryLastSyncParams{
 		LastSyncAt: sql.NullInt64{Int64: e.now().Unix(), Valid: true}, ID: id,
-	}); err != nil {
+	})
+	if err != nil {
 		e.log.Error("record last sync", slog.Int64("library", id), slog.Any("error", err))
 	}
 }
@@ -524,19 +525,21 @@ func (e *Engine) storeCheckpoint(ctx context.Context, id int64, fp string) {
 	if fp == "" {
 		return
 	}
-	if err := dbq.New(e.db).UpdateLibraryCheckpoint(ctx, dbq.UpdateLibraryCheckpointParams{
+	err := dbq.New(e.db).UpdateLibraryCheckpoint(ctx, dbq.UpdateLibraryCheckpointParams{
 		Checkpoint: sql.NullString{String: fp, Valid: true}, ID: id,
-	}); err != nil {
+	})
+	if err != nil {
 		e.log.Error("record checkpoint", slog.Int64("library", id), slog.Any("error", err))
 	}
 }
 
 // markError flags a library as failed with the given cause.
 func (e *Engine) markError(ctx context.Context, id int64, cause error) {
-	if err := dbq.New(e.db).UpdateLibrarySyncError(ctx, dbq.UpdateLibrarySyncErrorParams{
+	err := dbq.New(e.db).UpdateLibrarySyncError(ctx, dbq.UpdateLibrarySyncErrorParams{
 		LastSyncError: sql.NullString{String: cause.Error(), Valid: true},
 		ID:            id,
-	}); err != nil {
+	})
+	if err != nil {
 		e.log.Error("record sync error", slog.Int64("library", id), slog.Any("error", err))
 	}
 	e.emitLibrary(id, "error")

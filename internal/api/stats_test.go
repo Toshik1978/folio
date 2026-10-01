@@ -41,10 +41,8 @@ func (s *statsSuite) TestStatsConcurrentColdCache() {
 	results := make([]result, n)
 
 	var wg sync.WaitGroup
-	wg.Add(n)
 	for i := range n {
-		go func(idx int) {
-			defer wg.Done()
+		wg.Go(func() {
 			<-gate // wait for the starting gun
 
 			req := httptest.NewRequestWithContext(
@@ -52,8 +50,8 @@ func (s *statsSuite) TestStatsConcurrentColdCache() {
 			)
 			w := httptest.NewRecorder()
 			s.router.ServeHTTP(w, req)
-			results[idx] = result{code: w.Code}
-		}(i)
+			results[i] = result{code: w.Code}
+		})
 	}
 
 	close(gate) // release all goroutines simultaneously

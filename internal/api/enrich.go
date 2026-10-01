@@ -341,17 +341,21 @@ func (h *BooksHandler) persistEnrichedScalars(
 		if err := h.persistMatchScalars(ctx, q, x, book, meta); err != nil {
 			return err
 		}
-	} else if err := q.UpdateBookEnrichment(ctx, dbq.UpdateBookEnrichmentParams{
-		Annotation: book.Annotation, Publisher: book.Publisher, PublisherFold: dbf.FoldNull(book.Publisher),
-		Year: book.Year, ContentHash: book.ContentHash, ID: book.ID,
-	}); err != nil {
-		return fmt.Errorf("persist enrichment: %w", err)
+	} else {
+		err := q.UpdateBookEnrichment(ctx, dbq.UpdateBookEnrichmentParams{
+			Annotation: book.Annotation, Publisher: book.Publisher, PublisherFold: dbf.FoldNull(book.Publisher),
+			Year: book.Year, ContentHash: book.ContentHash, ID: book.ID,
+		})
+		if err != nil {
+			return fmt.Errorf("persist enrichment: %w", err)
+		}
 	}
 
 	if book.Annotation.Valid {
-		if err := dbf.UpdateBookFTSAnnotation(
+		err := dbf.UpdateBookFTSAnnotation(
 			ctx, x, book.ID, htmltext.StripMarkup(book.Annotation.String),
-		); err != nil {
+		)
+		if err != nil {
 			return fmt.Errorf("enrichment fts: %w", err)
 		}
 	}
@@ -369,12 +373,13 @@ func (h *BooksHandler) persistMatchScalars(
 	book *dbq.Book,
 	meta ebook.Metadata,
 ) error {
-	if err := q.UpdateBookMatch(ctx, dbq.UpdateBookMatchParams{
+	err := q.UpdateBookMatch(ctx, dbq.UpdateBookMatchParams{
 		Title: book.Title, SeriesID: book.SeriesID, SeriesNumber: book.SeriesNumber,
 		Language:   book.Language,
 		Annotation: book.Annotation, Publisher: book.Publisher, PublisherFold: dbf.FoldNull(book.Publisher),
 		Year: book.Year, ContentHash: book.ContentHash, ID: book.ID,
-	}); err != nil {
+	})
+	if err != nil {
 		return fmt.Errorf("persist match: %w", err)
 	}
 	if err := dbf.UpdateBookFTSTitle(ctx, x, book.ID, book.Title); err != nil {

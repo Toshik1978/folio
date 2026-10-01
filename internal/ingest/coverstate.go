@@ -32,10 +32,11 @@ func (c *CoverState) Get(ctx context.Context, bookID int64) (int8, error) {
 
 // Set records the result of a cover-extraction attempt for the book.
 func (c *CoverState) Set(ctx context.Context, bookID int64, state int8) error {
-	if err := c.q.SetCoverState(ctx, dbq.SetCoverStateParams{
+	err := c.q.SetCoverState(ctx, dbq.SetCoverStateParams{
 		CoverState: int64(state),
 		ID:         bookID,
-	}); err != nil {
+	})
+	if err != nil {
 		return fmt.Errorf("set cover state %d: %w", bookID, err)
 	}
 

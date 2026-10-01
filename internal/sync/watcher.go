@@ -128,7 +128,7 @@ func (w *watcher) reconcile(want map[int64]string) {
 // watch registers every directory under root for libraryID (fsnotify is not
 // recursive) and records the root so reconcile can detect a later path change.
 func (w *watcher) watch(libraryID int64, root string) error {
-	if err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -137,7 +137,8 @@ func (w *watcher) watch(libraryID int64, root string) error {
 		}
 
 		return nil
-	}); err != nil {
+	})
+	if err != nil {
 		// Drop the partially-registered directory set: roots was never recorded,
 		// so a later reconcile would re-add the same dirs without ever removing
 		// these (a bounded but pointless leak).

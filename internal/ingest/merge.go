@@ -47,9 +47,10 @@ func ensureFile(ctx context.Context, q *dbq.Queries, bookID int64, rec bookRecor
 			return nil // unchanged
 		}
 
-		if err := q.UpdateBookFile(ctx, dbq.UpdateBookFileParams{
+		err := q.UpdateBookFile(ctx, dbq.UpdateBookFileParams{
 			FileSize: rec.FileSize, Pages: nullInt(rec.Pages), Mtime: rec.Mtime, ID: files[i].ID,
-		}); err != nil {
+		})
+		if err != nil {
 			return fmt.Errorf("update book file: %w", err)
 		}
 

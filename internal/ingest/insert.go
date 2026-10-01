@@ -76,13 +76,14 @@ func insertBook(
 		return 0, err
 	}
 
-	if err := dbf.InsertBookFTS(ctx, x, dbf.BookFTSRow{
+	fts := dbf.BookFTSRow{
 		BookID:     bookID,
 		Title:      rec.Title,
 		Authors:    strings.Join(authors, " "),
 		Series:     rec.Series,
 		Annotation: htmltext.StripMarkup(rec.Annotation),
-	}); err != nil {
+	}
+	if err := dbf.InsertBookFTS(ctx, x, fts); err != nil {
 		return 0, fmt.Errorf("insert fts: %w", err)
 	}
 
@@ -91,14 +92,15 @@ func insertBook(
 
 // insertFileRow persists one physical file for a book.
 func insertFileRow(ctx context.Context, q *dbq.Queries, bookID int64, rec bookRecord) error {
-	if _, err := q.InsertBookFile(ctx, dbq.InsertBookFileParams{
+	_, err := q.InsertBookFile(ctx, dbq.InsertBookFileParams{
 		BookID:     bookID,
 		FileFormat: rec.FileFormat,
 		FileSize:   rec.FileSize,
 		SourcePath: rec.SourcePath,
 		Pages:      nullInt(rec.Pages),
 		Mtime:      rec.Mtime,
-	}); err != nil {
+	})
+	if err != nil {
 		return fmt.Errorf("insert book file: %w", err)
 	}
 

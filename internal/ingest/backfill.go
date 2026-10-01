@@ -115,9 +115,10 @@ func (b *LocalBackfiller) persistAnnotation(ctx context.Context, bookID int64, a
 	if strings.TrimSpace(annotation) == "" {
 		return
 	}
-	if err := b.q.UpdateBookAnnotation(ctx, dbq.UpdateBookAnnotationParams{
+	err := b.q.UpdateBookAnnotation(ctx, dbq.UpdateBookAnnotationParams{
 		Annotation: sql.NullString{String: annotation, Valid: true}, ID: bookID,
-	}); err != nil {
+	})
+	if err != nil {
 		b.log.Warn("backfill: persist annotation", slog.Int64("book", bookID), slog.Any("error", err))
 		return
 	}
@@ -130,9 +131,10 @@ func (b *LocalBackfiller) persistAnnotation(ctx context.Context, bookID int64, a
 // file-recovered id never downgrades a sync-stored one. Best-effort.
 func (b *LocalBackfiller) persistIdentifiers(ctx context.Context, bookID int64, ids []ebook.Identifier) {
 	for _, id := range ids {
-		if err := b.q.InsertBookIdentifierIfAbsent(ctx, dbq.InsertBookIdentifierIfAbsentParams{
+		err := b.q.InsertBookIdentifierIfAbsent(ctx, dbq.InsertBookIdentifierIfAbsentParams{
 			BookID: bookID, Type: id.Type, Value: id.Value,
-		}); err != nil {
+		})
+		if err != nil {
 			b.log.Warn("backfill: persist identifier", slog.Int64("book", bookID), slog.Any("error", err))
 		}
 	}

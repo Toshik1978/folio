@@ -298,8 +298,9 @@ func scanCalibreRow(rows *sql.Rows, libraryID int64, links calibreLinkSet, cr *c
 		comments    sql.NullString
 		lang        sql.NullString
 	)
-	if err := rows.Scan(&bookID, &title, &bookPath, &seriesIndex, &hasCover, &pubdate, &timestamp,
-		&format, &name, &size, &seriesName, &comments, &lang); err != nil {
+	err := rows.Scan(&bookID, &title, &bookPath, &seriesIndex, &hasCover, &pubdate, &timestamp,
+		&format, &name, &size, &seriesName, &comments, &lang)
+	if err != nil {
 		return bookRecord{}, fmt.Errorf("scan book: %w", err)
 	}
 

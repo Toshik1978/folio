@@ -142,9 +142,10 @@ func (s *baseSuite) seedBook(libraryID int64, sd bookSeed) int64 {
 		Year:          nullInt(sd.Year), ContentHash: key, AddedAt: time.Now().UnixNano(),
 	})
 	s.Require().NoError(err)
-	if _, err := s.q.InsertBookFile(ctx, dbq.InsertBookFileParams{
+	_, err = s.q.InsertBookFile(ctx, dbq.InsertBookFileParams{
 		BookID: bookID, FileFormat: sd.Format, FileSize: 1, SourcePath: key,
-	}); err != nil {
+	})
+	if err != nil {
 		s.Require().NoError(err)
 	}
 

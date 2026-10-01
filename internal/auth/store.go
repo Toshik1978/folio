@@ -90,10 +90,11 @@ func (a *Authenticator) writeCredentials(ctx context.Context, user *string, pass
 		}
 	}
 	if passHash != "" {
-		if err := q.UpsertSetting(
+		err := q.UpsertSetting(
 			ctx,
 			dbq.UpsertSettingParams{Key: db.SettingOPDSPassHash, Value: passHash},
-		); err != nil {
+		)
+		if err != nil {
 			return fmt.Errorf("upsert opds pass: %w", err)
 		}
 	}

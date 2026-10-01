@@ -260,13 +260,14 @@ func (s *baseSuite) seedBook(libraryID int64, sd bookSeed) int64 {
 	})
 	s.Require().NoError(err)
 
-	if _, err := s.q.InsertBookFile(ctx, dbq.InsertBookFileParams{
+	_, err = s.q.InsertBookFile(ctx, dbq.InsertBookFileParams{
 		BookID:     bookID,
 		FileFormat: sd.Format,
 		FileSize:   sd.Size,
 		SourcePath: sd.SourcePath,
 		Pages:      toNullInt(sd.Pages),
-	}); err != nil {
+	})
+	if err != nil {
 		s.Require().NoError(err)
 	}
 

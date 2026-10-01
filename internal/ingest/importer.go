@@ -111,8 +111,9 @@ func (im *importer) flushPendingCovers() {
 			continue
 		}
 		if op.prio > 0 {
-			if err := dbq.New(im.db).UpdateBookCoverPrio(context.Background(),
-				dbq.UpdateBookCoverPrioParams{CoverPrio: op.prio, ID: op.bookID}); err != nil {
+			err := dbq.New(im.db).UpdateBookCoverPrio(context.Background(),
+				dbq.UpdateBookCoverPrioParams{CoverPrio: op.prio, ID: op.bookID})
+			if err != nil {
 				im.log.Warn("persist cover prio", slog.Int64("book", op.bookID), slog.Any("error", err))
 			}
 		}

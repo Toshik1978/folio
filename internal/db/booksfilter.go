@@ -176,13 +176,14 @@ func CountFilteredBooks(ctx context.Context, db *sql.DB, f BookFilter) (int64, e
 // scanBook reads one books row in bookColumns order into a dbq.Book.
 func scanBook(rows *sql.Rows) (dbq.Book, error) {
 	var b dbq.Book
-	if err := rows.Scan(
+	err := rows.Scan(
 		&b.ID, &b.LibraryID, &b.LibraryKey, &b.Title, &b.SeriesID, &b.SeriesNumber,
 		&b.Language, &b.Annotation, &b.MetadataChecked, &b.EnrichmentChecked,
 		&b.Publisher, &b.PublisherFold, &b.Year, &b.Rating,
 		&b.ContentHash, &b.MetadataFormat, &b.AddedAt, &b.ImportedAt,
 		&b.ManuallyMatched, &b.CoverPrio,
-	); err != nil {
+	)
+	if err != nil {
 		return dbq.Book{}, fmt.Errorf("scan book: %w", err)
 	}
 
