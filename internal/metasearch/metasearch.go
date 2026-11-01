@@ -3,7 +3,7 @@
 // metadata, supply covers); the Registry fans a query out to the sources that
 // can serve it. This package owns no provider logic — adapters live under
 // providers/ and are wired together in cmd.
-package metasearch //nolint:revive // max-public-structs: all types are intentional public API
+package metasearch
 
 import (
 	"context"
