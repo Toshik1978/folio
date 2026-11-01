@@ -1,7 +1,7 @@
 # Install with `pre-commit install`. That alone only wires the pre-commit
 # stage, which would leave the commit-msg and pre-push hooks dormant —
 # declaring the hook types here is what makes one command enough.
-default_install_hook_types: [pre-commit, pre-push, commit-msg]
+default_install_hook_types: [pre-commit, pre-push, commit-msg, post-checkout, post-merge, post-rewrite]
 
 repos:
 - repo: https://github.com/compilerla/conventional-pre-commit
@@ -62,3 +62,29 @@ repos:
       pass_filenames: false
       stages:
         - pre-push
+
+    # Stops a push from a clone that would line-merge the beads tracker: git
+    # falls back silently when the `beads` driver in .gitattributes is not
+    # configured. Local by design — CI has no br.
+    - id: beads-setup
+      name: beads merge driver configured
+      entry: ./tools/beads/check-setup.sh
+      language: system
+      pass_filenames: false
+      always_run: true
+      stages:
+        - pre-push
+
+    # The beads DB follows the checked-out branch: one DB per clone, while
+    # issues.jsonl is per branch. Warns and skips when the DB holds unflushed
+    # changes, which --rebuild would drop.
+    - id: beads-follow-branch
+      name: beads DB follows the branch
+      entry: ./tools/beads/follow-branch.sh
+      language: system
+      pass_filenames: false
+      always_run: true
+      stages:
+        - post-checkout
+        - post-merge
+        - post-rewrite

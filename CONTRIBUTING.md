@@ -27,6 +27,10 @@ genuinely useful even when they go unanswered for a while.
 - **[go-task](https://taskfile.dev)** — all automation is driven through `Taskfile.yml`
 - **[pre-commit](https://pre-commit.com)** — runs the format, lint, test, and
   commit-message hooks in `.pre-commit-config.yaml`
+- **[beads](https://github.com/Dicklesworthstone/beads_rust) (`br`) 1.9.0+** — the
+  issue tracker in `.beads/`. Each clone also needs its merge driver, so
+  `.beads/issues.jsonl` merges per issue instead of per line:
+  `git config merge.beads.driver "br merge-driver %O %A %B"`
 - **[git-cliff](https://git-cliff.org) 2.13.0+** — only needed to cut a release;
   install with `mise use -g git-cliff@latest`
 
@@ -34,7 +38,7 @@ genuinely useful even when they go unanswered for a while.
 
 ```bash
 task setup         # install Go modules + npm packages, create build dirs
-pre-commit install # wire up the pre-commit, commit-msg and pre-push hooks
+pre-commit install # wire up the commit, push and checkout/merge hooks
 task dev:backend   # run the Go server (default :8080)
 task dev:frontend  # run the Vite dev server with HMR
 ```
@@ -53,7 +57,10 @@ task build    # type-check SPA, embed assets, compile the binary
 The hooks run these for you, each at the cheapest stage that still catches the
 problem: `commit-msg` checks the subject line, `pre-commit` runs the seconds-long
 gates (`golangci-lint fmt --diff` and the SQL ASCII check), and `pre-push` runs
-the full `task lint` and `task test`. Nothing that takes minutes sits on
+the full `task lint` and `task test` plus the beads merge-driver check.
+`post-checkout`, `post-merge` and `post-rewrite` rebuild the beads DB from the
+checked-out branch's `issues.jsonl` (skipped, with a warning, when the DB holds
+unflushed changes). Nothing that takes minutes sits on
 `git commit` — a hook slow enough to invite `--no-verify` stops being a gate.
 
 ## Conventions

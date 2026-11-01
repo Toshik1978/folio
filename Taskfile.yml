@@ -80,11 +80,16 @@ tasks:
     dir: web
     cmd: npm run test:ci
 
+  test:beads:
+    desc: Test the beads git hook scripts against a fake br
+    cmd: sh tools/beads/test.sh
+
   test:
     desc: Run all tests
     cmds:
       - task: test:frontend
       - task: test:backend
+      - task: test:beads
 
   format:backend:
     desc: Run gofumpt

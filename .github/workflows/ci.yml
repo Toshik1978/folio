@@ -49,6 +49,9 @@ jobs:
       - name: Check SQL is ASCII-only
         run: task lint:sql
 
+      - name: Test beads git hook scripts
+        run: task test:beads
+
       # `latest`, matching `.mise.toml`. Pinning one side only lets the two
       # drift: when 2.13 deprecated a gofumpt setting, a pinned CI stayed green
       # against a red local gate on code nobody had touched. Floating both is
