@@ -154,12 +154,12 @@ To keep context windows small and focus edits, load only the specific documentat
 
 | If you are working on... | Read this document first | Description |
 | :--- | :--- | :--- |
-| **Overall system layout & fallback routing** | [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md) | High-level system flows, directory tree. |
-| **Database ingestion, schema, or SQL queries** | [docs/DATABASE.md](./docs/DATABASE.md) | Ingestion workers, SQLite stacks, schema design. |
-| **REST API endpoints or OPDS Catalog XML** | [docs/API.md](./docs/API.md) | API specs, feed schemas, file streaming. |
-| **UI Views, Vue 3 SPA, or component styling** | [docs/FRONTEND.md](./docs/FRONTEND.md) | UI structure, Tailwind v4 + DaisyUI, theming. |
-| **Authentication (Cloudflare Tunnel / OPDS Basic Auth)** | [docs/NETWORKING.md](./docs/NETWORKING.md) | SSO configurations, security rules. |
-| **Docker configurations, Taskfile, or CI/CD pipelines** | [docs/BUILD-AND-DEPLOY.md](./docs/BUILD-AND-DEPLOY.md) | Dockerfiles, multi-stage pipelines, caching rules. |
-| **Backend architecture, Go packages, and embed details** | [docs/BACKEND.md](./docs/BACKEND.md) | Embedded FS mappings, router setup, `internal/` layout, dependency rules, composition. |
-| **Live sync status & SSE progress events** | [docs/SYNC-EVENTS.md](./docs/SYNC-EVENTS.md) | Event broker, SSE handler (`/api/sync/events`), frontend `EventSource`. |
-| **Ebook parsing (per-format metadata/covers)** | [docs/EBOOK-PARSING.md](./docs/EBOOK-PARSING.md) | epub/fb2/mobi/pdf parsers, annotation pipeline. |
+| **Overall system layout & fallback routing** | [docs/ARCHITECTURE.md](../docs/ARCHITECTURE.md) | High-level system flows, directory tree. |
+| **Database ingestion, schema, or SQL queries** | [docs/DATABASE.md](../docs/DATABASE.md) | Ingestion workers, SQLite stacks, schema design. |
+| **REST API endpoints or OPDS Catalog XML** | [docs/API.md](../docs/API.md) | API specs, feed schemas, file streaming. |
+| **UI Views, Vue 3 SPA, or component styling** | [docs/FRONTEND.md](../docs/FRONTEND.md) | UI structure, Tailwind v4 + DaisyUI, theming. |
+| **Authentication (Cloudflare Tunnel / OPDS Basic Auth)** | [docs/NETWORKING.md](../docs/NETWORKING.md) | SSO configurations, security rules. |
+| **Docker configurations, Taskfile, or CI/CD pipelines** | [docs/BUILD-AND-DEPLOY.md](../docs/BUILD-AND-DEPLOY.md) | Dockerfiles, multi-stage pipelines, caching rules. |
+| **Backend architecture, Go packages, and embed details** | [docs/BACKEND.md](../docs/BACKEND.md) | Embedded FS mappings, router setup, `internal/` layout, dependency rules, composition. |
+| **Live sync status & SSE progress events** | [docs/SYNC-EVENTS.md](../docs/SYNC-EVENTS.md) | Event broker, SSE handler (`/api/sync/events`), frontend `EventSource`. |
+| **Ebook parsing (per-format metadata/covers)** | [docs/EBOOK-PARSING.md](../docs/EBOOK-PARSING.md) | epub/fb2/mobi/pdf parsers, annotation pipeline. |

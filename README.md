@@ -92,7 +92,7 @@ docker run -p 8080:8080 -v /path/to/library:/library:ro -v folio-data:/data foli
 | [BUILD-AND-DEPLOY.md](docs/BUILD-AND-DEPLOY.md) | Taskfile targets, Docker multi-stage build, local dev workflow. |
 | [CHANGELOG.md](CHANGELOG.md) | What changed in each release and why, with the commit list behind it. |
 
-> **Contributing with an AI agent?** Start with [CLAUDE.md](CLAUDE.md) — setup commands, task rules, and a task-to-doc map.
+> **Contributing with an AI agent?** Start with [CLAUDE.md](.claude/CLAUDE.md) — setup commands, task rules, and a task-to-doc map.
 
 ---
 

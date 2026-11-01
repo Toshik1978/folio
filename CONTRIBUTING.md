@@ -2,7 +2,7 @@
 
 Thanks for your interest in improving Folio! This guide covers the essentials.
 For the full developer/agent onboarding — architecture map, task rules, and a
-task-to-doc reference — see [CLAUDE.md](CLAUDE.md).
+task-to-doc reference — see [CLAUDE.md](.claude/CLAUDE.md).
 
 ## Before you start
 
@@ -73,7 +73,7 @@ unflushed changes). Nothing that takes minutes sits on
   `feature/sync-events`). No other variant is accepted.
 - **Tests** use `testify` suites — one `Test<Package>` entry point per package
   that only wires suites; all assertions live in suite methods. See
-  [CLAUDE.md](CLAUDE.md) for the full testing rules.
+  [CLAUDE.md](.claude/CLAUDE.md) for the full testing rules.
 - **New dependencies** require approval before they're added — state the package,
   what it solves, and why the standard library is insufficient.
 

@@ -158,7 +158,7 @@ extracted changelog section as its body.
 
 The workflow only reads the repository — it never commits, bumps a version, or
 pushes a tag. Cutting a release means writing the changelog entry and pushing a
-tag; see [CLAUDE.md](../CLAUDE.md#cutting-a-release).
+tag; see [CLAUDE.md](../.claude/CLAUDE.md#cutting-a-release).
 
 There is no other deployment automation — deploying a release means pulling the
 published image (see [Build & Run](#build--run)).
