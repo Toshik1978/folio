@@ -21,13 +21,13 @@ func parsePDF(ctx context.Context, path string) (Metadata, error) {
 	}
 	defer f.Close()
 
-	// pdfcpu's ReadContext has no context hook and can be slow on a large or
-	// hostile file, so guard the two heavy phases (this read and the cover
-	// extraction below) with a cancellation check on either side.
+	// ReadContext can be slow on a large or hostile file. pdfcpu (>= 0.16) takes
+	// ctx itself; the explicit checks around the two heavy phases (this read and
+	// the cover extraction below) still bail out early before any work starts.
 	if err = ctx.Err(); err != nil {
 		return Metadata{}, fmt.Errorf("read pdf: %w", err)
 	}
-	doc, err := pdfcpuapi.ReadContext(f, model.NewDefaultConfiguration())
+	doc, err := pdfcpuapi.ReadContext(ctx, f, model.NewDefaultConfiguration())
 	if err != nil {
 		return Metadata{}, fmt.Errorf("read pdf: %w", err)
 	}
@@ -73,13 +73,13 @@ func coverFromContext(ctx context.Context, doc *model.Context) []byte {
 	// We run those passes on the context we already read (rather than re-parsing
 	// the file): if either fails we simply return no cover, while the text
 	// metadata pulled from the lenient read above is preserved by the caller.
-	if err := pdfcpuapi.ValidateContext(doc); err != nil {
+	if err := pdfcpuapi.ValidateContext(ctx, doc); err != nil {
 		return nil
 	}
-	if err := pdfcpuapi.OptimizeContext(doc); err != nil {
+	if err := pdfcpuapi.OptimizeContext(ctx, doc); err != nil {
 		return nil
 	}
-	imgs, err := pdfcpucore.ExtractPageImages(doc, 1, false)
+	imgs, err := pdfcpucore.ExtractPageImages(ctx, doc, 1, false)
 	if err != nil {
 		return nil
 	}
