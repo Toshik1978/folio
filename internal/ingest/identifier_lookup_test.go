@@ -14,7 +14,7 @@ type identifierLookupSuite struct {
 func (s *identifierLookupSuite) TestFindBookByIdentifierLowestID() {
 	ctx := context.Background()
 	lib := s.insertLibrary("folder", "/lib")
-	im := newImporter(s.log, s.db, s.store, 1)
+	im := newImporter(s.log, s.db, s.store, 1, testRank)
 	defer im.rollback()
 
 	// Two separate books carrying the same cleaned ISBN.
@@ -25,9 +25,9 @@ func (s *identifierLookupSuite) TestFindBookByIdentifierLowestID() {
 			Identifiers: []identifier{{Type: "isbn", Value: "978-1-4668-5345-4"}},
 		}
 	}
-	idA, err := im.add(ctx, mk("ka", "a.epub"), 1)
+	idA, err := im.add(ctx, mk("ka", "a.epub"), 1, true)
 	s.Require().NoError(err)
-	idB, err := im.add(ctx, mk("kb", "b.epub"), 1)
+	idB, err := im.add(ctx, mk("kb", "b.epub"), 1, true)
 	s.Require().NoError(err)
 	s.Require().NoError(im.commit())
 	s.Require().Less(idA, idB)

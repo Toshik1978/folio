@@ -103,7 +103,7 @@ func (s *inpxSuite) TestSync() {
 	s.writeArchive(dir, "f.fb2-000101-000200.zip", "161.fb2")
 
 	src := s.insertLibrary("inpx", inpxPath)
-	parser := INPXParser{s.log}
+	parser := INPXParser{log: s.log, rank: testRank}
 	res, err := parser.Sync(ctx, src, s.db, s.store, nopReporter{})
 	s.Require().NoError(err)
 	s.Equal(2, res.Added)
@@ -169,7 +169,7 @@ func (s *inpxSuite) TestSyncSkipsMissingEntries() {
 	s.writeArchive(dir, "arc.zip", "55.fb2")
 
 	src := s.insertLibrary("inpx", inpxPath)
-	parser := INPXParser{s.log}
+	parser := INPXParser{log: s.log, rank: testRank}
 	res, err := parser.Sync(context.Background(), src, s.db, s.store, nopReporter{})
 	s.Require().NoError(err)
 	s.Equal(1, res.Added)
@@ -190,7 +190,7 @@ func (s *inpxSuite) TestSyncSkipsWholeMissingArchive() {
 	// No arc.zip on disk at all.
 
 	src := s.insertLibrary("inpx", inpxPath)
-	parser := INPXParser{s.log}
+	parser := INPXParser{log: s.log, rank: testRank}
 	res, err := parser.Sync(context.Background(), src, s.db, s.store, nopReporter{})
 	s.Require().NoError(err)
 	s.Equal(0, res.Added)
@@ -206,7 +206,7 @@ func (s *inpxSuite) TestSyncSkipsCorruptArchive() {
 	s.Require().NoError(os.WriteFile(filepath.Join(dir, "arc.zip"), []byte("not a zip"), 0o600))
 
 	src := s.insertLibrary("inpx", inpxPath)
-	parser := INPXParser{s.log}
+	parser := INPXParser{log: s.log, rank: testRank}
 	res, err := parser.Sync(context.Background(), src, s.db, s.store, nopReporter{})
 	s.Require().NoError(err)
 	s.Equal(0, res.Added)

@@ -28,7 +28,7 @@ func (s *mergeSuite) view(format, hash, seriesName string) bookView {
 func (s *mergeSuite) TestHigherPriorityFormatOverwrites() {
 	book := s.view("pdf", "old", "")                    // PDF currently owns metadata
 	rec := bookRecord{Title: "New", FileFormat: "epub"} // EPUB outranks PDF
-	plan := planMerge(book, rec, nil)
+	plan := planMerge(book, rec, nil, testRank)
 
 	s.True(plan.relations, "higher-priority format must take the overwrite path")
 	s.Equal("New", plan.upd.Title, "title must be overwritten")
@@ -39,7 +39,7 @@ func (s *mergeSuite) TestHigherPriorityFormatOverwrites() {
 func (s *mergeSuite) TestLowerPriorityGapFillsNeverOverwritesTitle() {
 	book := s.view("epub", "old", "")                    // EPUB owns metadata
 	rec := bookRecord{Title: "Other", FileFormat: "pdf"} // PDF is lower priority
-	plan := planMerge(book, rec, nil)
+	plan := planMerge(book, rec, nil, testRank)
 
 	s.False(plan.relations, "lower-priority edition must gap-fill, not overwrite")
 	s.Equal("T", plan.upd.Title, "gap-fill must not touch the title")
@@ -57,7 +57,7 @@ func (s *mergeSuite) TestEditedInPlaceOverwritesUnlessSameFormatSibling() {
 	)
 
 	s.Run("no sibling overwrites", func() {
-		plan := planMerge(book, rec, []dbq.BookFile{{SourcePath: "a.epub", FileFormat: "epub"}})
+		plan := planMerge(book, rec, []dbq.BookFile{{SourcePath: "a.epub", FileFormat: "epub"}}, testRank)
 		s.True(plan.relations, "in-place edit of the owning edition must overwrite")
 	})
 
@@ -66,7 +66,7 @@ func (s *mergeSuite) TestEditedInPlaceOverwritesUnlessSameFormatSibling() {
 			{SourcePath: "a.epub", FileFormat: "epub"},
 			{SourcePath: "b.epub", FileFormat: "epub"},
 		}
-		plan := planMerge(book, rec, withSibling)
+		plan := planMerge(book, rec, withSibling, testRank)
 		s.False(plan.relations, "same-format sibling must suppress the in-place overwrite")
 	})
 }
@@ -75,7 +75,7 @@ func (s *mergeSuite) TestManualMatchOnlyGapFills() {
 	book := s.view("pdf", "old", "")
 	book.ManuallyMatched = 1
 	rec := bookRecord{Title: "Source", FileFormat: "epub"} // would overwrite if not locked
-	plan := planMerge(book, rec, nil)
+	plan := planMerge(book, rec, nil, testRank)
 
 	s.False(plan.relations, "manually matched book must never be overwritten by sync")
 	s.False(plan.titleFTS)
@@ -96,7 +96,7 @@ func (s *mergeSuite) TestSeriesStagedByNameNotID() {
 	)
 	// SourcePath deliberately blank on both rec and its sole file, so hasSameFormatSibling finds no sibling and the
 	// in-place overwrite proceeds.
-	plan := planMerge(book, rec, []dbq.BookFile{{SourcePath: "", FileFormat: "epub"}})
+	plan := planMerge(book, rec, []dbq.BookFile{{SourcePath: "", FileFormat: "epub"}}, testRank)
 
 	s.Equal("New Series", plan.seriesName, "series change must be staged by name")
 	s.True(plan.seriesFTS)
@@ -110,7 +110,7 @@ func (s *mergeSuite) TestGapFillStagesSeriesWhenBookHasNone() {
 		Title: "T", FileFormat: "pdf", Series: "S",
 		SeriesNumber: sql.NullFloat64{Float64: 3, Valid: true},
 	}
-	plan := planMerge(book, rec, nil)
+	plan := planMerge(book, rec, nil, testRank)
 
 	s.False(plan.relations, "gap-fill must not take the overwrite/relink path")
 	s.Equal("S", plan.seriesName, "an empty series must be filled from the record")
@@ -133,7 +133,7 @@ func (s *mergeSuite) TestSeriesNumberOnlyChangeOnOverwrite() {
 		"pre-condition: rec hash must differ from stored hash for the overwrite path to fire",
 	)
 	// Sole same-path file, so no same-format sibling suppresses the in-place edit.
-	plan := planMerge(book, rec, []dbq.BookFile{{SourcePath: "", FileFormat: "epub"}})
+	plan := planMerge(book, rec, []dbq.BookFile{{SourcePath: "", FileFormat: "epub"}}, testRank)
 
 	s.Equal("S", plan.seriesName, "a number-only change must still stage the series")
 	s.Equal(sql.NullFloat64{Float64: 2, Valid: true}, plan.seriesNumber, "the new series number must be staged")
@@ -145,7 +145,7 @@ func (s *mergeSuite) TestGapFillUpgradesUndefinedLanguage() {
 	book.Language = undefinedLanguage // "und" — unknown, eligible for upgrade
 	// Lower-priority edition → gap-fill, which still upgrades the unknown language.
 	rec := bookRecord{Title: "T", FileFormat: "pdf", Language: "fr"}
-	plan := planMerge(book, rec, nil)
+	plan := planMerge(book, rec, nil, testRank)
 
 	s.False(plan.relations, "gap-fill must not take the overwrite path")
 	s.Equal("fr", plan.upd.Language, "an 'und' language must be upgraded from the record")

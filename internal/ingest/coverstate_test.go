@@ -39,3 +39,17 @@ func (s *coverStateSuite) TestGetDefaultsToUnknownThenRoundTrips() {
 	s.Require().NoError(err)
 	s.Equal(int8(2), state)
 }
+
+// TestMarkFileCoverRecordsHasAndFilePrio proves a lazily extracted cover is
+// recorded as cover_state = has with cover_prio = 1, which marks it as derived
+// from the book's own file (and so invalidated when that file changes).
+func (s *coverStateSuite) TestMarkFileCoverRecordsHasAndFilePrio() {
+	id := s.insertBook()
+
+	s.Require().NoError(NewCoverState(s.db).MarkFileCover(context.Background(), id))
+
+	book, err := dbq.New(s.db).GetBook(context.Background(), id)
+	s.Require().NoError(err)
+	s.EqualValues(1, book.CoverState)
+	s.EqualValues(1, book.CoverPrio)
+}

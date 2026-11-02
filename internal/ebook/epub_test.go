@@ -3,17 +3,18 @@ package ebook
 import (
 	"archive/zip"
 	"context"
+	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 type epubSuite struct {
 	baseSuite
 }
 
-func (s *epubSuite) TestParse() {
-	m, err := s.d.Parse(context.Background(), s.log, s.fixture("test.epub"))
-	s.Require().NoError(err)
+func (s *epubSuite) TestMetadata() {
+	m := s.readMetadata(s.fixture("test.epub"))
 
 	s.Equal("Test EPUB Book", m.Title)
 	s.Equal([]string{"Jane Author", "John Coauthor"}, m.Authors)
@@ -21,7 +22,13 @@ func (s *epubSuite) TestParse() {
 	s.Equal("A test book for unit testing.", m.Annotation)
 	s.Equal("en", m.Language)
 	s.Equal("Test Series", m.Series)
-	s.NotEmpty(m.Cover, "expected cover bytes")
+	s.Nil(m.Cover, "Metadata never decodes the cover")
+}
+
+func (s *epubSuite) TestCover() {
+	cover := s.readCover(s.fixture("test.epub"))
+	s.Require().NotEmpty(cover, "expected cover bytes")
+	s.True(strings.HasPrefix(http.DetectContentType(cover), "image/"))
 }
 
 func (s *epubSuite) TestStripSeriesPrefix() {
@@ -40,11 +47,52 @@ func (s *epubSuite) TestStripSeriesPrefix() {
 	s.Equal("Other Series - 02 - Real Title", stripSeriesPrefix("Other Series - 02 - Real Title", "My Series"))
 }
 
+// TestCoverRelativeHref: manifest hrefs with "./" or "../" segments resolve to
+// the cleaned zip entry name, so a valid book is not reported as corrupt.
+func (s *epubSuite) TestCoverRelativeHref() {
+	for _, tc := range []struct{ href, entry string }{
+		{"./images/cover.jpg", "OEBPS/images/cover.jpg"},
+		{"../Images/cover.jpg", "Images/cover.jpg"},
+		{"images/../cover.jpg", "OEBPS/cover.jpg"},
+	} {
+		s.Run(tc.href, func() {
+			path := filepath.Join(s.T().TempDir(), "rel.epub")
+			f, err := os.Create(path)
+			s.Require().NoError(err)
+			zw := zip.NewWriter(f)
+			write := func(name, content string) {
+				w, werr := zw.Create(name)
+				s.Require().NoError(werr)
+				_, werr = w.Write([]byte(content))
+				s.Require().NoError(werr)
+			}
+			write("META-INF/container.xml", `<?xml version="1.0"?>
+<container xmlns="urn:oasis:names:tc:opendocument:xmlns:container" version="1.0">
+<rootfiles><rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/></rootfiles>
+</container>`)
+			write("OEBPS/content.opf", `<?xml version="1.0"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="2.0">
+<metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+<dc:title>Relative</dc:title>
+<meta name="cover" content="cover-img"/>
+</metadata>
+<manifest><item id="cover-img" href="`+tc.href+`" media-type="image/jpeg"/></manifest>
+</package>`)
+			write(tc.entry, "\xFF\xD8\xFFjpeg")
+			s.Require().NoError(zw.Close())
+			s.Require().NoError(f.Close())
+
+			s.Equal([]byte("\xFF\xD8\xFFjpeg"), s.readCover(path))
+		})
+	}
+}
+
 func (s *epubSuite) TestOversizedCoverIsBounded() {
 	// A pathological EPUB can hold a tiny compressed entry that inflates to
 	// hundreds of MB. Cover extraction must cap the decompressed read so a zip
-	// bomb can't spike memory on the low-spec target hosts (Pi/NAS); the parse
-	// still succeeds with the oversized cover dropped rather than loaded.
+	// bomb can't spike memory on the low-spec target hosts (Pi/NAS): the
+	// metadata still reads, and the oversized cover is an error rather than
+	// loaded.
 	const coverSize = 128 << 20 // inflates from a few KB on disk
 
 	path := filepath.Join(s.T().TempDir(), "bomb.epub")
@@ -80,9 +128,18 @@ func (s *epubSuite) TestOversizedCoverIsBounded() {
 	s.Require().NoError(zw.Close())
 	s.Require().NoError(f.Close())
 
-	m, peak := s.parsePeakHeapBytes(path)
+	var (
+		m        Metadata
+		cover    []byte
+		coverErr error
+	)
+	peak := s.peakHeapBytes(func() {
+		m = s.readMetadata(path)
+		cover, coverErr = s.d.Cover(context.Background(), s.log, s.open(path))
+	})
 	s.Equal("Bomb", m.Title)
-	s.Empty(m.Cover, "oversized cover must be dropped, not loaded into memory")
+	s.Require().Error(coverErr)
+	s.Nil(cover, "oversized cover must not be loaded into memory")
 	s.Less(peak, uint64(32<<20), "cover read must stay bounded well below the inflated size")
 }
 
@@ -111,8 +168,51 @@ func (s *epubSuite) TestSeriesIndex() {
 	s.Require().NoError(zw.Close())
 	s.Require().NoError(f.Close())
 
-	m, err := s.d.Parse(context.Background(), s.log, path)
-	s.Require().NoError(err)
+	m := s.readMetadata(path)
 	s.Equal("Dune Saga", m.Series)
 	s.InDelta(3.0, m.SeriesNumber, 0.0001)
+}
+
+func (s *epubSuite) TestTraits() {
+	s.Equal(Traits{Rank: 4, Describes: true}, epubParser{}.Traits())
+}
+
+func (s *epubSuite) TestSourceMetadataTruncated() {
+	src := s.open(s.fixture("truncated.epub"))
+
+	_, err := epubParser{}.Metadata(context.Background(), src)
+	s.Require().Error(err)
+}
+
+func (s *epubSuite) TestSourceBadCover() {
+	src := s.open(s.fixture("badcover.epub"))
+
+	m, err := epubParser{}.Metadata(context.Background(), src)
+	s.Require().NoError(err)
+	s.NotEmpty(m.Title)
+
+	got, err := epubParser{}.Cover(context.Background(), src)
+	s.Require().Error(err)
+	s.Nil(got)
+}
+
+func (s *epubSuite) TestSourceMetadataZipEntry() {
+	zr, err := zip.OpenReader(s.fixture("entries.zip"))
+	s.Require().NoError(err)
+	defer func() { _ = zr.Close() }()
+
+	var entry *zip.File
+	for _, f := range zr.File {
+		if f.Name == "book.epub" {
+			entry = f
+		}
+	}
+	s.Require().NotNil(entry)
+
+	src, closer := OpenZipEntry(entry, MaxEntryBytes)
+	defer func() { _ = closer.Close() }()
+
+	m, err := epubParser{}.Metadata(context.Background(), src)
+	s.Require().NoError(err)
+	s.NotEmpty(m.Annotation)
 }

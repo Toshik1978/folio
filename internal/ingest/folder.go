@@ -21,11 +21,12 @@ import (
 // disappeared.
 type FolderParser struct {
 	log    *slog.Logger
-	parser bookParser
+	parser bookReader
 }
 
-// NewFolderParser builds the plain-folder parser.
-func NewFolderParser(log *slog.Logger, parser bookParser) *FolderParser { //nolint:iface
+// NewFolderParser builds the plain-folder parser. parser reads each file and,
+// through parser.Rank, orders a book's formats.
+func NewFolderParser(log *slog.Logger, parser bookReader) *FolderParser { //nolint:iface
 	return &FolderParser{log: log, parser: parser}
 }
 
@@ -36,33 +37,43 @@ func (f *FolderParser) Sync(
 	covers CoverStore,
 	r Reporter,
 ) (Result, error) {
-	return runReconcile(ctx, db, covers, library, r, f.log, func(ctx context.Context, rc *reconciler) error {
-		w := &folderWalk{log: f.log, parser: f.parser, rc: rc, root: library.Path, libraryID: library.ID}
-		err := filepath.WalkDir(library.Path, func(path string, d fs.DirEntry, err error) error {
-			if ctxErr := ctx.Err(); ctxErr != nil {
-				return fmt.Errorf("folder walk canceled: %w", ctxErr)
+	return runReconcile(
+		ctx,
+		db,
+		covers,
+		library,
+		r,
+		f.log,
+		f.parser.Rank,
+		func(ctx context.Context, rc *reconciler) error {
+			w := &folderWalk{log: f.log, parser: f.parser, rc: rc, root: library.Path, libraryID: library.ID}
+			err := filepath.WalkDir(library.Path, func(path string, d fs.DirEntry, err error) error {
+				if ctxErr := ctx.Err(); ctxErr != nil {
+					return fmt.Errorf("folder walk canceled: %w", ctxErr)
+				}
+				return w.visit(ctx, path, d, err)
+			})
+			if err != nil {
+				return fmt.Errorf("walk library %s: %w", library.Path, err)
 			}
-			return w.visit(ctx, path, d, err)
-		})
-		if err != nil {
-			return fmt.Errorf("walk library %s: %w", library.Path, err)
-		}
 
-		return nil
-	})
+			return nil
+		},
+	)
 }
 
 // folderWalk carries the state threaded through a directory scan.
 type folderWalk struct {
 	log       *slog.Logger
-	parser    bookParser
+	parser    bookReader
 	rc        *reconciler
 	root      string
 	libraryID int64
 }
 
-// visit reconciles one directory entry: unchanged files (known path + same size)
-// are marked seen without re-parsing; new or changed files are parsed and upserted.
+// visit reconciles one directory entry: unchanged files (known path + same size
+// and mod time) are marked seen without re-reading; new or changed files have
+// their metadata read and are upserted.
 func (w *folderWalk) visit(ctx context.Context, path string, d fs.DirEntry, err error) error {
 	if err != nil {
 		return err
@@ -86,12 +97,29 @@ func (w *folderWalk) visit(ctx context.Context, path string, d fs.DirEntry, err 
 		return nil
 	}
 
-	meta, err := w.parser.Parse(ctx, w.log, path)
+	meta, err := w.readMetadata(ctx, path)
 	if err != nil {
 		return nil //nolint:nilerr // skip unparseable files, keep walking the tree
 	}
 
 	return w.rc.upsert(ctx, recordFromMeta(w.libraryID, rel, path, info.Size(), mtime, w.parser.Format(path), meta))
+}
+
+// readMetadata opens the file at path read-only and reads its metadata. The
+// cover is not read: folder covers come from the lazy cover flow.
+func (w *folderWalk) readMetadata(ctx context.Context, path string) (ebook.Metadata, error) {
+	src, closer, err := ebook.OpenFile(path)
+	if err != nil {
+		return ebook.Metadata{}, fmt.Errorf("open %s: %w", path, err)
+	}
+	defer func() { _ = closer.Close() }()
+
+	meta, err := w.parser.Metadata(ctx, w.log, src)
+	if err != nil {
+		return ebook.Metadata{}, fmt.Errorf("read metadata %s: %w", path, err)
+	}
+
+	return meta, nil
 }
 
 // fromEbookIdentifiers converts parser identifiers into importer records.
@@ -139,6 +167,5 @@ func recordFromMeta(
 		// the best chronological proxy. Without it added_at falls back to the
 		// sync-run time, pinning every folder book to the top of "Newest".
 		AddedAt: mtime,
-		Cover:   meta.Cover,
 	}
 }

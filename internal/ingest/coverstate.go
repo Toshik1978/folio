@@ -8,6 +8,13 @@ import (
 	"github.com/Toshik1978/folio/internal/db/dbq"
 )
 
+// books.cover_state values the importer reads, mirroring covers.StateHas and
+// covers.StateNone (ingest does not import covers).
+const (
+	coverStateHas  int64 = 1 // a real cover is cached on disk
+	coverStateNone int64 = 2 // parsed; the source carries no cover
+)
+
 // CoverState adapts the books.cover_state column to the covers.CoverState
 // interface, keeping the covers package a DB-free leaf. It is the cover-state
 // twin of Extractor: the composition root injects it into covers.NewStore.
@@ -38,6 +45,17 @@ func (c *CoverState) Set(ctx context.Context, bookID int64, state int8) error {
 	})
 	if err != nil {
 		return fmt.Errorf("set cover state %d: %w", bookID, err)
+	}
+
+	return nil
+}
+
+// MarkFileCover records that a cover extracted from the book's own file is
+// cached: cover_state = has with cover_prio = 1, so a later change to the file
+// invalidates it.
+func (c *CoverState) MarkFileCover(ctx context.Context, bookID int64) error {
+	if err := c.q.MarkFileCover(ctx, bookID); err != nil {
+		return fmt.Errorf("mark file cover %d: %w", bookID, err)
 	}
 
 	return nil

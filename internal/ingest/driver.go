@@ -18,7 +18,7 @@ type scanFunc func(ctx context.Context, rc *reconciler) error
 // importer, build the reconciler, run the source's scan, prune vanished files,
 // and commit (rolling back on any error). Sources keep their own per-source
 // diffing strategy (folder's size+mtime skip, Calibre/INPX content-hash merge)
-// inside scan.
+// inside scan. rank is the injected format preference handed to the importer.
 func runReconcile(
 	ctx context.Context,
 	db *sql.DB,
@@ -26,9 +26,10 @@ func runReconcile(
 	library dbq.Library,
 	r Reporter,
 	log *slog.Logger,
+	rank func(format string) int,
 	scan scanFunc,
 ) (Result, error) {
-	im := newImporter(log, db, covers, 1000)
+	im := newImporter(log, db, covers, 1000, rank)
 	defer im.rollback()
 
 	now := time.Now().Unix()

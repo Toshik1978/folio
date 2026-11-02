@@ -33,6 +33,9 @@ const (
 type CoverState interface {
 	Get(ctx context.Context, bookID int64) (int8, error)
 	Set(ctx context.Context, bookID int64, state int8) error
+	// MarkFileCover records StateHas for a cover extracted from the book's own
+	// file, marking it file-derived so a change to that file invalidates it.
+	MarkFileCover(ctx context.Context, bookID int64) error
 }
 
 type Store struct {
@@ -302,7 +305,8 @@ func (s *Store) atomicWrite(path string, data []byte) error {
 }
 
 // lazyExtract performs a one-time extraction of a missing cover. A real cover is
-// transcoded to JPEG, cached, and marked StateHas. A source that parsed cleanly
+// transcoded to JPEG, cached, and marked StateHas as a file-derived cover
+// (MarkFileCover). A source that parsed cleanly
 // but carries no cover is marked StateNone and written NOWHERE — the in-memory
 // placeholder is returned. A parse error records no state and caches nothing, so
 // a later view retries rather than permanently masking a good cover.
@@ -327,7 +331,7 @@ func (s *Store) lazyExtract(ctx context.Context, bookID int64) ([]byte, bool) {
 		return placeholderJPEG, true
 	}
 	if err := s.writeFile(bookID, jpegData, nil); err == nil {
-		_ = s.state.Set(ctx, bookID, StateHas)
+		_ = s.state.MarkFileCover(ctx, bookID) // file-derived: invalidated when the file changes
 	}
 
 	return jpegData, true

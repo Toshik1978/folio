@@ -1,6 +1,6 @@
 # Ebook Parsing
 
-> Per-format metadata & cover extraction in `internal/ebook`, plus the
+> Format-agnostic metadata & cover reading in `internal/ebook`, plus the
 > annotation rendering pipeline.
 >
 > **Status:** Implemented. The dispatcher and the EPUB / FB2 / MOBI-AZW3 / PDF
@@ -11,12 +11,14 @@
 
 ## Overview
 
-`internal/ebook` turns a single book file into an `ebook.Metadata` value
-(title, authors, series + series number, language, annotation, publisher, year,
-genres, identifiers, page count, and a cover image). A dispatcher picks the
-parser by extension (`.epub`, `.fb2`, `.fb2.zip`, `.mobi`, `.azw`, `.azw3`,
-`.pdf`); each format has its own quirks documented below. The `.fb2.zip`
-wrapper normalizes to the `fb2` format label (see the FB2 section).
+`internal/ebook` reads one book file and returns either its bibliographic
+metadata (`ebook.Metadata`: title, authors, series + series number, language,
+annotation, publisher, year, genres, identifiers, page count) or its cover
+image. It is the only package on the reading path that names formats: callers
+build one dispatcher and never name a format. The dispatcher picks the parser
+by extension (`.epub`, `.fb2`, `.fb2.zip`, `.mobi`, `.azw`, `.azw3`, `.pdf`);
+each format's quirks are documented below. The `.fb2.zip` wrapper normalizes to
+the `fb2` format label (see the FB2 section).
 
 The package depends only on the standard library plus `pdfcpu` and
 `golang.org/x/text` (legacy charset decoding — FB2 declared encodings via
@@ -24,6 +26,140 @@ The package depends only on the standard library plus `pdfcpu` and
 sanitizer at the serve boundary — no CGo — so the binary still builds statically
 (`CGO_ENABLED=0`) for Alpine/Distroless. See
 [BUILD-AND-DEPLOY.md](./BUILD-AND-DEPLOY.md).
+
+---
+
+## Public API
+
+### Building the dispatcher
+
+`ebook.NewStandardDispatcher()` returns a `*Dispatcher` over the standard parser
+set (EPUB, FB2, MOBI family, PDF). The composition root (`cmd/folio-idx`) builds
+one and injects it; tests use it too. The concrete parsers are unexported and
+only `NewStandardDispatcher` assembles them. `NewDispatcher(parsers ...Parser)`
+exists so tests can register fake `Parser`s; it panics on a duplicate extension.
+
+The exported surface is **format-agnostic**: no exported identifier (type,
+function, constant, variable, or method of an exported type) has a camelCase
+word equal to a format label or extension (`epub`, `fb2`, `fbz`, `mobi`, `azw`,
+`azw3`, `pdf`). The format labels are unexported constants.
+`ebookSuite.TestPublicSurfaceFormatAgnostic` parses the package and enforces
+this; `ingestSuite.TestNoFormatNames` keeps format names out of `ingest` and
+`covers` from the consumer side.
+
+The dispatcher also answers the format questions callers need without naming a
+format:
+
+| Method | Answers |
+| :--- | :--- |
+| `Supported(name)` | whether the extension of `name` has a parser |
+| `Format(name)` | the stored label (`book.fb2.zip` → `fb2`; `""` if unsupported) |
+| `Rank(format)` | preference among a book's files, by stored label (see [Traits](#traits)) |
+| `Describes(format)` | whether files of that label are read for descriptions |
+| `Extensions()` | every registered extension key, sorted (used by guard tests) |
+
+`ContentType(format)` maps a stored format label to its MIME type
+(`application/octet-stream` when unknown); `bookfile.ContentType` delegates to
+it.
+
+### Source
+
+Every read works on an `ebook.Source` — `{Name, R io.ReaderAt, Size}` — never a
+path. `Name` is the file name (or archive entry name) and is what the
+dispatcher routes on. Two constructors exist:
+
+- `OpenFile(path)` opens a plain file read-only and returns the `Source` and an
+  `io.Closer`. `R` is `TagIO` over the `*os.File`, so every read error other
+  than `io.EOF` matches `ErrSourceIO` (retryable). Open/stat errors keep their
+  cause (e.g. `fs.ErrNotExist`) and do not match it.
+- `OpenZipEntry(f *zip.File, limit)` exposes a zip entry that inflates lazily:
+  it inflates sequentially only up to the furthest offset read and keeps the
+  inflated prefix in memory. Holding more than `limit` bytes returns
+  `ErrTooLarge`. Production passes `MaxEntryBytes` (64 MiB); tests pass a small
+  limit. `ReadAt` is safe for concurrent use; the returned `io.Closer` releases
+  the decompressor and the buffer.
+
+`TagIO(r)` wraps any other `io.ReaderAt` (for example the `*os.File` under a
+`zip.NewReader`) so its read errors match `ErrSourceIO` too.
+
+### Metadata and Cover
+
+The dispatcher has two operations, each taking a context, a logger and a
+`Source`:
+
+- `Metadata(ctx, log, src)` reads the bibliographic metadata. It never decodes
+  cover images and never sets `Metadata.Cover`. That field stays because online
+  providers (`metasearch`, `api/enrich.go`, `api/match.go`) fill it.
+- `Cover(ctx, log, src)` returns the cover image bytes, or `(nil, nil)` when the
+  file has no cover.
+
+For both operations the dispatcher:
+
+1. returns the wrapped `ctx.Err()` before touching the source;
+2. routes by the extension of `src.Name` (an unsupported extension is an error
+   naming `src.Name`, so callers check `Supported` first);
+3. recovers a parser panic into `*PanicError`;
+4. passes errors matching `ErrSourceIO`, `ErrTooLarge`, `ErrMalformed`,
+   `context.Canceled` or `context.DeadlineExceeded` through unchanged in kind,
+   prefixed with `"<format> parser: "`;
+5. wraps every other parser error so it matches `ErrMalformed`, so a parser's
+   plain error (e.g. `zip.NewReader` rejecting a non-zip) still classifies as
+   corrupt.
+
+**Cover payload rule.** `Cover` returns `(nil, nil)` when the file declares no
+cover, or when the declared reference points at nothing (an FB2 `href` with no
+matching `<binary>`, a MOBI cover offset outside the records). It returns an
+error — `ErrMalformed` after the dispatcher wraps it — when the declared cover
+payload cannot be extracted: FB2 base64 that is invalid or truncated, or an EPUB
+manifest cover item whose zip entry is missing or fails to inflate. An FB2 or
+EPUB cover over the 10 MiB cover cap is an error too (FB2 reports
+`ErrTooLarge`); a MOBI cover record over the cap is treated as no cover.
+Extracted bytes that are not a
+decodable image are returned as-is; the `covers` package marks them none
+(`cover_state = 2`).
+
+### Traits
+
+Each parser reports `Traits{Rank, Describes}`:
+
+| Format | Rank | Describes |
+| :--- | :---: | :---: |
+| EPUB | 4 | yes |
+| FB2 (`.fb2`, `.fb2.zip`) | 3 | yes |
+| MOBI family (`.mobi`, `.azw`, `.azw3`) | 2 | yes |
+| PDF | 1 | no |
+
+Rank orders the files of one book (higher is preferred); `Describes = false`
+means the format is never read for descriptions. The dispatcher answers
+`Rank(format)` and `Describes(format)` by the **stored** label (`"azw3"` → MOBI
+traits); an unknown label gives `0` / `false`. Ingest injects `Rank` instead of
+keeping its own format priority table.
+
+### Errors and broken reasons
+
+| Error | Meaning | `ReasonOf` |
+| :--- | :--- | :--- |
+| `ErrSourceIO` | the book's bytes could not be read | retryable (`ok = false`) |
+| `ErrTooLarge` | an entry exceeds its size cap | `too_large` |
+| `ErrMalformed` | content a parser could not read | `corrupt` |
+| `*PanicError` | a parser panicked (value in `Value`) | `crashed` |
+| context errors, open errors | cancelled / unknown | retryable (`ok = false`) |
+
+`ReasonOf(err)` maps an error to its broken `Reason`. `ErrSourceIO` wins when an
+error also matches a broken kind. `ReasonMissingEntry` (`missing_entry`) is
+declared here but raised by ingest's resolver, when an archive has no entry for
+a book file.
+
+### Reader version
+
+`ReaderVersion` (`internal/ebook/version.go`) identifies the current reading
+logic. Broken-read records carry the version that produced them, and a record
+is trusted (the file is not read again) only while its version and the file's
+fingerprint still match. The ingest side of this — the `book_read_failures`
+records — lands with the read-outcome work of the unified-reading spec.
+**Bump `ReaderVersion` in the same change as a reader fix that could make a
+previously broken file readable**, so books recorded as broken under the old
+logic are retried.
 
 ### Metadata model
 
@@ -68,21 +204,22 @@ attribute and the EPUB `calibre:series_index` meta (see per-format notes).
 
 ## FB2
 
-- **`.fb2.zip` wrapper** — zipped FB2 files are handled by `parseFB2Zip`
-  (`internal/ebook/fb2.go`): it opens the archive, parses the first `.fb2`
-  entry it finds, and errors when the archive contains none. `DetectFormat`
-  normalizes the `.fb2.zip` extension to the plain `fb2` format label, so the
+- **`.fb2.zip` wrapper** — the FB2 parser owns both `.fb2` and `.fb2.zip`. For
+  the wrapper it opens the zip over the `Source`, reads the first `.fb2` entry
+  lazily (`OpenZipEntry`), and errors when the archive contains none. The
+  dispatcher normalizes `.fb2.zip` to the plain `fb2` format label, so the
   stored `book_files.file_format` — and the served Content-Type — match a bare
   FB2. Fixture: `testdata/test.fb2.zip`.
-- **Header-only parse** — `ParseFB2Description` (`internal/ebook/fb2.go`) reads
-  only the `<description>` header and returns as soon as its closing tag is
-  consumed, so the large base64 `<binary>` blocks that follow are never read or
-  decoded. It yields the same metadata as the full parser (title, authors,
-  annotation, genres, series, identifiers) but never a cover (`Metadata.Cover`
-  is always nil), and shares the full parser's input size cap and charset
-  handling. A stream with no `<description>` is an error. Used by Deep Index to
-  read INPX archive entries cheaply (see
-  [DATABASE.md](./DATABASE.md#deep-index-bulk-on-demand)).
+- **Implementation note — header-only `Metadata`.** The FB2 parser's
+  `Metadata` decodes only the `<description>` header and returns as soon as its
+  closing tag is consumed, so the body and the large base64 `<binary>` blocks
+  after it are never read or decoded. Over a lazy zip entry this inflates only
+  the first few KB. The read is capped at 64 MiB and honours the declared
+  charset; a stream with no `<description>` is an error. This is an unexported
+  detail of the parser; callers reach it only through `Dispatcher.Metadata`.
+- **Cover** — `Cover` token-scans the stream for the `<coverpage>` image
+  reference in the description, then decodes only the `<binary>` carrying that
+  id (stopping at `<body>` when there is no coverpage).
 - **Series number** — read from the FB2 `<sequence name="…" number="N"/>`
   attribute.
 - **Genres** — every `<genre>` is extracted as a flibusta code (`sf_history`,
@@ -91,7 +228,7 @@ attribute and the EPUB `calibre:series_index` meta (see per-format notes).
   Codes with no mapping are discarded (see [Genre taxonomy](#genre-taxonomy)).
 - **Annotation normalization** — FB2 uses its own markup vocabulary, not HTML,
   so a raw FB2 `<annotation>` would be flattened by the serve-time sanitizer.
-  `parseFB2XML` runs the annotation through `normalizeFB2Annotation`
+  `Metadata` runs the annotation through `normalizeFB2Annotation`
   (`internal/ebook/fb2.go`), which rewrites the FB2 vocabulary into the safe
   HTML subset the sanitizer keeps:
 
@@ -136,13 +273,15 @@ MOBI header) and the EXTH block. Several producer-specific quirks are handled:
 
 ## PDF
 
-- **Cover** — `parsePDF` validates + optimizes the cross-reference table, then
+- **Cover** — `Cover` validates + optimizes the cross-reference table, then
   extracts the first embedded image on **page 1** via pdfcpu
   (`coverFromContext` → `ExtractPageImages`). Digital books almost always embed
   their cover as the page-1 image, so this avoids a heavy vector-rendering or
   CGo dependency. Image kinds that are never covers (stencil masks, page
   thumbnails) are skipped. Scanned PDFs whose page 1 is the cover work; born-PDF
   with no page-1 image simply get the placeholder.
+- **Metadata** — `Metadata` reads the info dict and resolves the page count
+  from the page tree; it never runs the cover extraction.
 - PDFs carry plain-text descriptions only, so the serve-time sanitizer suffices.
 
 ---
@@ -173,7 +312,7 @@ format (see [DATABASE.md](./DATABASE.md#metadata-merge--gap-fill)).
 
 Two further tiers fill what the index and sibling formats can't, lazily on first
 view: a **local backfill** parses the actual book file
-(`ingest.Extractor.Backfill`, used for INPX books — it recovers the annotation
+(`ingest.Extractor.Description`, used for INPX books — it recovers the annotation
 and identifiers the index lacks), and an **online enrichment** tier queries
 Google Books for the metadata-poor formats above — PDFs (no
 annotation/genres/identifiers) and retail MOBIs (often no EXTH 103 description)
@@ -191,6 +330,10 @@ taxonomy has two parts:
 
 - **`fb2GenreMap`** — maps raw flibusta/INPX codes (`sf_history`,
   `prose_classic`, …) to a canonical label (`Alternative History`, `Classics`).
+  It holds the FB2 genre taxonomy (FictionBook XSD codes mapped to canonical
+  BISAC genres), is the source vocabulary every library's genres are mapped
+  through (including the genre filters), and lives in `internal/ingest` because
+  it serves all sources and filtering, not format reading.
 - **`targetGenres`** — the whitelist of canonical labels. A raw string that is
   already a canonical label (case-insensitive) passes through unchanged.
 
@@ -314,9 +457,18 @@ allowed HTML subset:
 
 `internal/ebook` follows the package's testify-suite layout (see
 [BACKEND.md](./BACKEND.md#test-strategy)): a `TestEbook` runner plus per-format
-suites (`epubSuite`, `fb2Suite`, `mobiSuite`, `pdfSuite`) against committed
-`testdata/` fixtures. Notable cases: FB2 tag mapping
-(`TestNormalizeAnnotationMapsFB2Tags` / `…FallsBackOnMalformed`), MOBI title
-preference (`TestUpdatedTitlePreferredOverHeader`), KF8 cover
-(`TestKF8CoverIsFirstImage`), series index (`fb2Suite.TestSeriesNumber` /
-`epubSuite.TestSeriesIndex`), and the year-floor sentinels.
+suites (`epubSuite`, `fb2Suite`, `mobiSuite`, `pdfSuite`), `dispatchSuite`,
+`sourceSuite`, `errorsSuite`, `metadataSuite` and `ebookSuite`, against
+committed `testdata/` fixtures. Every read goes through `OpenFile` /
+`OpenZipEntry` and `Metadata` / `Cover`. Notable cases: the public-surface guard
+(`ebookSuite.TestPublicSurfaceFormatAgnostic` and its self-test), dispatcher
+error classification (`dispatchSuite.TestErrorClassification`), FB2 tag mapping
+(`TestNormalizeAnnotationMapsFB2Tags` / `…FallsBackOnMalformed`), the FB2
+header-only read stopping before `<binary>`
+(`fb2Suite.TestHeaderStopsAtEndOfDescription`), MOBI title preference
+(`TestUpdatedTitlePreferredOverHeader`), MOBI cover resolution
+(`TestCoverViaFirstImageIndex` / `TestCoverIsFirstImage`), bounded memory on
+large files (`fb2Suite.TestMetadataBoundedMemory`, `mobiSuite.TestBoundedMemory`,
+`epubSuite.TestOversizedCoverIsBounded`), series index
+(`fb2Suite.TestSeriesNumber` / `epubSuite.TestSeriesIndex`), and the year-floor
+sentinels.

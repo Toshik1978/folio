@@ -134,9 +134,11 @@ CREATE TABLE books (
     manually_matched INTEGER NOT NULL DEFAULT 0, -- 1 once the user corrected this
                                   -- book via Fix Match; sync then gap-fills but never
                                   -- overwrites (manual data outranks any source edition)
-    cover_prio INTEGER NOT NULL DEFAULT 0, -- filePriority of the format whose cover is
-                                  -- cached on disk; 0 = none. Persisted so a partial
-                                  -- re-sync can't downgrade a richer edition's cover
+    cover_prio INTEGER NOT NULL DEFAULT 0, -- format rank of the format whose cover is
+                                  -- cached on disk; 1 = extracted by the lazy flow,
+                                  -- 1000 = manual, 0 = none or online enrichment.
+                                  -- Persisted so a partial re-sync can't downgrade a
+                                  -- richer edition's cover
     UNIQUE (library_id, library_key),
     FOREIGN KEY (library_id) REFERENCES libraries(id) ON DELETE CASCADE,
     FOREIGN KEY (series_id) REFERENCES series(id) ON DELETE SET NULL
@@ -352,7 +354,7 @@ different book (see [Stable identity](#stable-identity-library_key)).
    the `books_ad` FTS-cleanup trigger fires per row. Purge is idempotent: a second
    call on an already-deleted library is a clean no-op, and the minute-interval
    deadline sweep retries automatically if the async teardown fails.
-6. **Cover Extraction & Caching** — The sync engine extracts a cover during ingestion (preferring richer formats: epub→fb2→mobi/azw3→pdf), normalizes it to JPEG (`covers.Save` → `convertToJPEG`), and caches it keyed to the **logical** `books.id` under `/data/covers/{id/1000}/{id}.jpeg`. Every cached cover is therefore a JPEG, so serving and the OPDS feed declare `image/jpeg` without sniffing each file (see [API.md](./API.md#cover-image-serving--security)). The priority of the format whose cover is cached is **persisted** in `books.cover_prio`, so the "prefer richer formats" rule holds *across* runs, not just within one — a partial re-sync (e.g. only the PDF changed) can never downgrade a richer edition's cover. `covers.Save` skips a write when the new bytes are byte-identical to the cached file, so the on-disk mtime — and thus the `?v=` cache-buster — only changes when the image actually changes. Lazy extraction negative-caches a *missing* cover only after a **successful** parse that found none; a parse **error** is never cached, so a transient failure retries on the next view.
+6. **Cover Extraction & Caching** — A cover is cached keyed to the **logical** `books.id` under `/data/covers/{id/1000}/{id}.jpeg`, normalized to JPEG (`covers.Save` → `convertToJPEG`). Only a Calibre sync saves cover bytes at import (its `cover.jpg`). Every other library type, folder included, imports metadata only: the folder walk opens each new or changed file and reads its metadata, never its cover. Those covers come from the lazy cover flow: the first view of a book with `cover_state = 0` extracts the cover from its best file (preferring richer formats: epub→fb2→mobi/azw3→pdf) and records the result. Every cached cover is therefore a JPEG, so serving and the OPDS feed declare `image/jpeg` without sniffing each file (see [API.md](./API.md#cover-image-serving--security)). The priority of the format whose cover is cached is **persisted** in `books.cover_prio`, so the "prefer richer formats" rule holds *across* runs, not just within one — a partial re-sync (e.g. only the PDF changed) can never downgrade a richer edition's cover. `covers.Save` skips a write when the new bytes are byte-identical to the cached file, so the on-disk mtime — and thus the `?v=` cache-buster — only changes when the image actually changes. Lazy extraction negative-caches a *missing* cover only after a **successful** parse that found none; a parse **error** is never cached, so a transient failure retries on the next view. When the lazy flow caches a cover extracted from the book's file it records `cover_state = 1` with `cover_prio = 1` (`MarkFileCover`), marking it file-derived; an online-enrichment cover stays at `cover_prio = 0`. **Invalidation:** when a sync sees a file of an **existing** book that is new or whose size or mod time changed, and the record brings no cover bytes of its own, the importer queues an invalidation of the state that file produced: `cover_state = 2` (none), or `cover_state = 1` with `1 <= cover_prio < 1000` (a lazily extracted cover, or a cover saved at import). It is skipped when `cover_prio` outranks the file's format, or when a cover was already saved for that book in the same run. A brand-new book queues nothing: it has no cover to invalidate. After the batch commits the importer deletes the cached cover and thumbnail and runs `ResetCoverState` (`cover_state = 0`, `cover_prio = 0`), so the next view re-extracts the cover from the changed file. A rolled-back batch discards the invalidation. Two covers are kept: one with `cover_prio = 0` (an online cover, which nothing would fetch again, or a cover cached lazily before `cover_prio = 1` was recorded), and a manual cover (`cover_prio = 1000`), which is never touched and which `ResetCoverState` also skips.
 7. **Post-sync description fill** — A sync that added files (`Result.Added > 0`) then runs the Deep Index over just the books that run inserted, in the same queue turn. It runs only when a deep indexer is wired (`WithDeepIndexer`, as `cmd/folio-idx` does); otherwise it is a no-op. It releases the whole-run write guard first, so the indexer takes the guard per batch like a Deep Index run. The scope is `ingest.DeepIndexImportedAt(stamp)`, where `stamp` is the run's `imported_at` (`Result.ImportedAt`): unchecked books stamped with that value, never the backlog. The backlog is the Deep Index button's job. A checkpoint-skipped sync and a sync with no additions run no fill. On a library's first sync every book is new, so the fill is a full Deep Index for that library in that turn. A fill failure is logged as a warning and does not mark the library errored; the books stay unchecked for a later Deep Index.
 
 ---
@@ -405,8 +407,9 @@ edition and force a metadata refresh; `planMerge` stages the new hash and
 
 #### Format priority
 
-`filePriority` (`internal/ingest/merge.go`) ranks formats by metadata/cover
-reliability — the same ranking drives cover selection (`saveCoverIfBetter`):
+The importer's injected rank (`ebook.Dispatcher.Rank`, from each parser's
+`Traits().Rank`) orders formats by metadata/cover reliability — the same ranking
+drives cover selection (`saveCoverIfBetter`):
 
 ```
 epub (4) > fb2 (3) > mobi / azw3 / azw (2) > pdf (1)
@@ -464,7 +467,13 @@ row, and the persisted result shows on the next view.
 1. **Local backfill** (`metadata_checked`) — parse the actual book file (an INPX
    index, unlike the file it points at, carries no annotation or identifiers) and
    persist the annotation + cleaned identifiers. Implemented by `ingest.Extractor`
-   (`Backfill`) behind the api `MetadataExtractor` interface. PDFs are skipped.
+   (`Description`) behind the api `MetadataExtractor` interface. Formats that are
+   not read for descriptions (PDF) are skipped; of a book's other files, the
+   highest-ranked one that reads successfully wins (EPUB, then FB2, then the
+   MOBI family). Files are read in place through `ingest`'s resolver: a plain
+   file is read directly, and an INPX archive entry inflates lazily into memory
+   (capped at `ebook.MaxEntryBytes`). Nothing is written to disk, and a stored `source_path`
+   that escapes its library or archive directory (`../`) is rejected.
 2. **Online enrichment** (`enrichment_checked`) — when the local tiers still leave
    a gap, query Google Books by the book's ISBN (else title+author) for the
    description, publisher, year, categories (genres), identifiers, and cover.
@@ -489,16 +498,21 @@ opening each book. It is a sync-engine request kind (see
 implemented by `ingest.DeepIndexer` (`internal/ingest/deepindex.go`). It reads
 local files only, never calls the network, and never writes to a library source.
 
-- **Work list.** Books of the library with `metadata_checked = 0`, one file per
-  book (preferring fb2, then epub, then other formats, PDF last), ordered by
-  `source_path` so an INPX archive's entries are contiguous.
-- **Reading.** INPX libraries are processed one job per archive: the zip is opened
-  once (lazily, so a PDF-only archive is never opened) and each FB2 entry gets a
-  header-only parse (`ebook.ParseFB2Description`, see
-  [EBOOK-PARSING.md](./EBOOK-PARSING.md#fb2)). Other library types, and non-FB2
-  entries inside an INPX archive, go per book through the local `FileExtractor`
-  (`Backfill`). PDFs are marked checked without being parsed. A bounded worker
-  pool (`GOMAXPROCS`) reads; a single writer commits.
+- **Work list.** `ListDeepIndexWork` returns every file of each book with
+  `metadata_checked = 0`, ordered by `source_path` (then book id), so an
+  archive's entries are contiguous. SQL ranks nothing: Go groups the rows by
+  book and orders each book's files by `Dispatcher.Rank`.
+- **Reading.** Every format is read the same way, through the dispatcher: each
+  book goes through the Extractor's shared `readBook` (the same read as the
+  on-view fill), which opens its top-ranked describing file via the resolver
+  and calls `Dispatcher.Metadata`, falling back to lower-ranked files when a
+  read fails. There is no per-format special case in Deep Index. Books are grouped into jobs by `resolver.group` of their
+  top-ranked file: one job per archive (one job per book when the file is not
+  archive-backed), and each job is read in one `readSession` whose
+  `archiveCache` opens that archive once. Books with no file read for
+  descriptions (PDF-only, or no supported format) are marked checked without
+  being read. Deep Index names no format and no library type. A bounded worker
+  pool (`GOMAXPROCS`) reads, one session per job; a single writer commits.
 - **Annotation only when NULL.** The annotation is written with
   `SetBookAnnotationIfNull` (`... WHERE annotation IS NULL`), so an existing
   description — including one from enrichment or a manual edit — is never
@@ -511,7 +525,8 @@ local files only, never calls the network, and never writes to a library source.
   instead of waiting for the run to end.
 - **Failures and cancellation.** A book whose file is unreadable, missing or
   fails to parse is left unchecked and retried by the next run. On cancellation
-  the batches already committed stay; the rest is picked up next time.
+  the batches already committed stay, no further file is opened, and the rest
+  is picked up next time.
 - **Result.** `DeepIndexResult` counts `Checked`, `Filled` (annotation newly
   set), `Skipped` (already had one) and `Errors`; it is logged at the end of a run.
 

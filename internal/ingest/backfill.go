@@ -25,10 +25,11 @@ const backfillAcquireBudget = 2 * time.Second
 // FileExtractor recovers a book's metadata from its own source file. *Extractor
 // satisfies it. Declared here, beside its only consumer (LocalBackfiller).
 type FileExtractor interface {
-	// Backfill returns metadata parsed from the book's source file, identifiers
-	// already cleaned. ok is false when nothing parseable was found (missing book,
-	// skipped/unsupported format such as PDF).
-	Backfill(ctx context.Context, bookID int64) (ebook.Metadata, bool, error)
+	// Description returns the metadata read from the book's source file
+	// (annotation, identifiers, ...), identifiers already cleaned. ok is false
+	// when nothing readable was found (missing book, or only files that are not
+	// read for descriptions, such as PDF).
+	Description(ctx context.Context, bookID int64) (ebook.Metadata, bool, error)
 }
 
 // LocalBackfiller recovers a book's offline metadata (annotation + identifiers)
@@ -79,7 +80,7 @@ func (b *LocalBackfiller) fill(ctx context.Context, bookID int64) error {
 		return nil // already backfilled
 	}
 
-	meta, ok, err := b.extractor.Backfill(ctx, bookID)
+	meta, ok, err := b.extractor.Description(ctx, bookID)
 	if err != nil {
 		b.log.Warn("backfill: extract", slog.Int64("book", bookID), slog.Any("error", err))
 		return nil // transient → leave unchecked, retry later

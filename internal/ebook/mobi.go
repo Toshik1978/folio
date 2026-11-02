@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"html"
 	"io"
-	"os"
 	"strings"
 
 	"github.com/samber/lo"
@@ -30,6 +29,7 @@ const (
 	exthMagic          = "EXTH"
 	mobiMinSize        = 78
 	mobiRec0MinSize    = 132
+	mobiMaxRec0        = 1 << 20 // read cap for record 0 (the header block)
 	mobiExthFlag       = 0x40
 	recTableStart      = 78
 	recEntrySize       = 8
@@ -45,37 +45,7 @@ type mobiFile struct {
 	rec0            []byte
 	isCP1252        bool
 	firstImageIndex int // MOBI header "First Image Index" record; base for EXTH 201
-}
-
-func parseMOBI(ctx context.Context, path string) (Metadata, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return Metadata{}, fmt.Errorf("open mobi: %w", err)
-	}
-	defer func() { _ = f.Close() }()
-
-	info, err := f.Stat()
-	if err != nil {
-		return Metadata{}, fmt.Errorf("stat mobi: %w", err)
-	}
-
-	mf, err := openMOBI(f, info.Size())
-	if err != nil {
-		return Metadata{}, err
-	}
-
-	m := mf.readTitle()
-	// A missing/short EXTH is not fatal: the record-0 header title already read
-	// stands. The title is entity-decoded below either way.
-	mf.readEXTH(ctx, &m)
-
-	// MOBI/AZW3 titles (record-0 header or EXTH 503) can carry HTML/numeric
-	// entities (e.g. retail Kindle "Death&#x2019;s End"). Decode after EXTH so
-	// the preferred EXTH 503 title is unescaped too — and so a file without an
-	// EXTH block still gets its record-0 header title decoded.
-	m.Title = html.UnescapeString(m.Title)
-
-	return m, nil
+	coverOffset     int // EXTH 201 value read by readEXTH; -1 when absent
 }
 
 func openMOBI(r io.ReaderAt, size int64) (mobiFile, error) {
@@ -133,6 +103,7 @@ func openMOBI(r io.ReaderAt, size int64) (mobiFile, error) {
 		rec0:            rec0,
 		isCP1252:        encoding == mobiEncodingCP1252,
 		firstImageIndex: firstImageIndex,
+		coverOffset:     -1,
 	}, nil
 }
 
@@ -167,6 +138,10 @@ func readMOBIRecord0(r io.ReaderAt, size int64, recOffsets []int64) ([]byte, err
 	if rec0End-rec0Offset < mobiRec0MinSize {
 		return nil, errors.New("record 0 too short for MOBI header")
 	}
+	// size can be an archive's declared (attacker-controlled) entry size, and a
+	// one-record file would otherwise size record 0 to the whole book; the
+	// PalmDOC + MOBI + EXTH header always fits well inside the cap.
+	rec0End = min(rec0End, rec0Offset+mobiMaxRec0)
 
 	rec0 := make([]byte, rec0End-rec0Offset)
 	if _, err := r.ReadAt(rec0, rec0Offset); err != nil {
@@ -206,8 +181,9 @@ func (mf *mobiFile) readTitle() Metadata {
 // readEXTH applies the EXTH metadata block to m when one is present and well
 // formed. It is best-effort: a missing/short/!magic EXTH simply leaves m with
 // the record-0 header title already read, so the caller never has to special-case
-// the failure (it just decodes entities on whatever title stands).
-func (mf *mobiFile) readEXTH(ctx context.Context, m *Metadata) {
+// the failure (it just decodes entities on whatever title stands). The EXTH 201
+// cover offset is stored on mf.coverOffset (-1 when absent), not resolved here.
+func (mf *mobiFile) readEXTH(m *Metadata) {
 	exthFlag := binary.BigEndian.Uint32(mf.rec0[128:132])
 	if exthFlag&mobiExthFlag == 0 {
 		return
@@ -227,10 +203,57 @@ func (mf *mobiFile) readEXTH(ctx context.Context, m *Metadata) {
 		return
 	}
 
-	coverOffset := mf.parseEXTHRecords(exth, m)
-	if coverOffset >= 0 {
-		m.Cover = mf.extractCover(ctx, coverOffset)
+	mf.coverOffset = mf.parseEXTHRecords(exth, m)
+}
+
+// mobiReadMetadata reads the title and EXTH block of src without resolving the
+// cover image.
+func mobiReadMetadata(ctx context.Context, src Source) (Metadata, error) {
+	if err := ctx.Err(); err != nil {
+		return Metadata{}, fmt.Errorf("mobi metadata: %w", err)
 	}
+	mf, err := openMOBI(src.R, src.Size)
+	if err != nil {
+		return Metadata{}, fmt.Errorf("%w: mobi metadata: %w", ErrMalformed, err)
+	}
+
+	m := mf.readTitle()
+	mf.readEXTH(&m)
+	m.Title = html.UnescapeString(m.Title)
+
+	return m, nil
+}
+
+// mobiReadCover resolves the EXTH 201 cover of src, or (nil, nil) when it has none.
+func mobiReadCover(ctx context.Context, src Source) ([]byte, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("mobi cover: %w", err)
+	}
+	mf, err := openMOBI(src.R, src.Size)
+	if err != nil {
+		return nil, fmt.Errorf("%w: mobi cover: %w", ErrMalformed, err)
+	}
+
+	var discard Metadata
+	mf.readEXTH(&discard)
+	if mf.coverOffset < 0 {
+		return nil, nil
+	}
+	// EXTH 201 present but pointing outside the records is "no cover", not a
+	// cue for the first-image scan (that fallback is only for an absent 201).
+	// A FirstImageIndex outside the records is a broken base, not a broken
+	// offset, so it still gets extractCover's first-image scan.
+	if mf.firstImageIndex >= 0 && mf.firstImageIndex < mf.numRecords {
+		if rec := mf.firstImageIndex + mf.coverOffset; rec < 0 || rec >= mf.numRecords {
+			return nil, nil
+		}
+	}
+	cover := mf.extractCover(ctx, mf.coverOffset)
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("mobi cover: %w", err)
+	}
+
+	return cover, nil
 }
 
 func (mf *mobiFile) parseEXTHRecords(exth []byte, m *Metadata) int {

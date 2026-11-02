@@ -293,26 +293,40 @@ UPDATE books
 SET cover_state = ?
 WHERE id = ?;
 
--- ListDeepIndexWork returns one preferred file per not-yet-checked book of a
--- library (fb2, then epub, then mobi or any other format, PDF last), for the
--- deep indexer. A NULL imported_at means every book; otherwise only books
--- stamped by that sync run.
+-- ListDeepIndexWork returns every file of each not-yet-checked book of a
+-- library, for the deep indexer, which ranks a book's files in Go. Rows are
+-- ordered by source_path so the entries of one archive are contiguous. A NULL
+-- imported_at means every book; otherwise only books stamped by that sync run.
 -- name: ListDeepIndexWork :many
-SELECT ranked.book_id, ranked.file_id, ranked.file_format, ranked.source_path
-FROM (SELECT b.id                                                        AS book_id,
-             f.id                                                        AS file_id,
-             f.file_format                                               AS file_format,
-             f.source_path                                               AS source_path,
-             ROW_NUMBER() OVER (PARTITION BY b.id ORDER BY CASE LOWER(f.file_format)
-                                                               WHEN 'fb2' THEN 0
-                                                               WHEN 'epub' THEN 1
-                                                               WHEN 'pdf' THEN 3
-                                                               ELSE 2
-                                                           END, f.id) AS rn
-      FROM books b
-               JOIN book_files f ON f.book_id = b.id
-      WHERE b.library_id = sqlc.arg('library_id')
-        AND b.metadata_checked = 0
-        AND (CAST(sqlc.narg('imported_at') AS INTEGER) IS NULL OR b.imported_at = sqlc.narg('imported_at'))) AS ranked
-WHERE ranked.rn = 1
-ORDER BY ranked.source_path, ranked.book_id;
+SELECT b.id          AS book_id,
+       f.id          AS file_id,
+       f.file_format AS file_format,
+       f.source_path AS source_path
+FROM books b
+         JOIN book_files f ON f.book_id = b.id
+WHERE b.library_id = sqlc.arg('library_id')
+  AND b.metadata_checked = 0
+  AND (CAST(sqlc.narg('imported_at') AS INTEGER) IS NULL OR b.imported_at = sqlc.narg('imported_at'))
+ORDER BY f.source_path, b.id;
+
+-- ResetCoverState forgets a book's imported or lazily extracted cover after its
+-- file changed, so the next view re-extracts it: cover_state back to unknown and
+-- cover_prio back to 0. A manual cover (cover_prio 1000) is never touched.
+-- name: ResetCoverState :exec
+UPDATE books
+SET cover_state = 0,
+    cover_prio  = 0
+WHERE id = ?
+  AND cover_prio < 1000;
+
+-- MarkFileCover records that the lazy cover flow cached a cover extracted from
+-- the book's own file: cover_state = has and cover_prio = 1, the file-cover
+-- priority. The prio is what lets a later change to the file invalidate the
+-- cover, while an online-enrichment cover (prio 0) is kept. A manual cover
+-- (cover_prio 1000) is never touched.
+-- name: MarkFileCover :exec
+UPDATE books
+SET cover_state = 1,
+    cover_prio  = 1
+WHERE id = ?
+  AND cover_prio < 1000;

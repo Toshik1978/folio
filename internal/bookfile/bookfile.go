@@ -102,20 +102,7 @@ func serveFromZip(w http.ResponseWriter, library dbq.Library, file dbq.BookFile)
 }
 
 // ContentType maps a file format label to its MIME type.
-func ContentType(format string) string {
-	switch strings.ToLower(format) {
-	case ebook.FormatEPUB:
-		return "application/epub+zip"
-	case ebook.FormatFB2:
-		return "application/x-fictionbook+xml"
-	case ebook.FormatMOBI, ebook.FormatAZW, ebook.FormatAZW3:
-		return "application/x-mobipocket-ebook"
-	case ebook.FormatPDF:
-		return "application/pdf"
-	default:
-		return "application/octet-stream"
-	}
-}
+func ContentType(format string) string { return ebook.ContentType(format) }
 
 // withinRoot reports whether full resolves inside root, guarding against any
 // "../" stored in a source path.

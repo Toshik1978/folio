@@ -13,6 +13,16 @@ import (
 // undefinedLanguage represents an undefined or unspecified language.
 const undefinedLanguage = "und"
 
+// Cover priorities stored in books.cover_prio besides the format ranks (the
+// importer's injected rank) of covers saved at import.
+const (
+	// fileCoverPrio marks a cover the lazy flow extracted from the book's own
+	// file (covers.Store.lazyExtract via CoverState.MarkFileCover).
+	fileCoverPrio int64 = 1
+	// manualCoverPrio pins a user-supplied cover; it matches api.manualCoverPrio.
+	manualCoverPrio int64 = 1000
+)
+
 // msgIdentifierOverride is logged when identifier grouping links a record onto a
 // book whose library_key differs from the record's own — i.e. strong-identifier
 // matching overrode key-based grouping. This is the visibility hook for spotting
@@ -23,11 +33,14 @@ const msgIdentifierOverride = "identifier grouping overrode key-based grouping"
 // coverOp is a deferred cover filesystem mutation: non-nil data means Save,
 // nil data means Delete. Ops are queued during a batch and replayed on commit.
 // prio, when > 0, is written to cover_prio only after the Save succeeds so the
-// DB never claims a cover that isn't on disk.
+// DB never claims a cover that isn't on disk. invalidate marks a Delete of a
+// changed book's cover that also resets its cover state, so the lazy flow
+// re-extracts it.
 type coverOp struct {
-	bookID int64
-	data   []byte // non-nil = Save; nil = Delete
-	prio   int64  // when > 0 and Save succeeds, persist this as the book's cover_prio
+	bookID     int64
+	data       []byte // non-nil = Save; nil = Delete
+	prio       int64  // when > 0 and Save succeeds, persist this as the book's cover_prio
+	invalidate bool   // with nil data: also reset cover_state and cover_prio (ResetCoverState)
 }
 
 // importer wraps the writable folio database and cover store, providing a
@@ -40,6 +53,9 @@ type importer struct {
 	queries   *dbq.Queries
 	covers    CoverStore
 	batchSize int
+	// rank is the injected format preference (ebook.Dispatcher.Rank): higher
+	// wins cover saves and metadata ownership; unknown formats rank 0.
+	rank      func(format string) int
 	coverPrio map[int64]int // bookID -> priority of the cover currently saved this run
 	// pendingCovers holds cover filesystem mutations deferred until commit, so a
 	// rolled-back batch never leaves a cover that disagrees with the DB.
@@ -49,13 +65,17 @@ type importer struct {
 
 // newImporter builds an importer with an initialized cover-priority tracker. The
 // logger defaults to a discard handler so callers (and tests) that don't wire one
-// stay silent; production wires the real logger via setLogger.
-func newImporter(log *slog.Logger, db *sql.DB, covers CoverStore, batchSize int) *importer {
+// stay silent; production wires the real logger via setLogger. rank orders the
+// formats of a book's files (see importer.rank).
+func newImporter(
+	log *slog.Logger, db *sql.DB, covers CoverStore, batchSize int, rank func(format string) int,
+) *importer {
 	return &importer{
 		log:       log,
 		db:        db,
 		covers:    covers,
 		batchSize: batchSize,
+		rank:      rank,
 		coverPrio: map[int64]int{},
 	}
 }
@@ -98,10 +118,16 @@ func (im *importer) commit() error {
 // flushPendingCovers replays queued cover operations in order after a successful
 // commit: each Save/Delete, then — only for a cover that saved cleanly — the
 // raised cover_prio. A Save failure is logged and its prio bump skipped, so the
-// DB never claims a cover that isn't on disk. The sync engine holds the write
-// guard across the whole run, so these post-commit writes are serialized.
+// DB never claims a cover that isn't on disk. An invalidation deletes the cached
+// cover, then resets the book's cover state. The sync
+// engine holds the write guard across the whole run, so these post-commit writes
+// are serialized.
 func (im *importer) flushPendingCovers() {
 	for _, op := range im.pendingCovers {
+		if op.invalidate {
+			im.invalidateCover(op.bookID)
+			continue
+		}
 		if op.data == nil {
 			_ = im.covers.Delete(op.bookID)
 			continue
@@ -119,6 +145,20 @@ func (im *importer) flushPendingCovers() {
 		}
 	}
 	im.pendingCovers = nil
+}
+
+// invalidateCover drops bookID's cached cover and resets its cover state, so
+// the lazy flow re-extracts it from the changed file. add never queues an
+// invalidation for a manual cover (its cover_prio outranks every format), and
+// ResetCoverState guards the row the same way.
+func (im *importer) invalidateCover(bookID int64) {
+	if err := im.covers.Delete(bookID); err != nil {
+		im.log.Warn("delete invalidated cover", slog.Int64("book", bookID), slog.Any("error", err))
+		return
+	}
+	if err := dbq.New(im.db).ResetCoverState(context.Background(), bookID); err != nil {
+		im.log.Warn("reset cover state", slog.Int64("book", bookID), slog.Any("error", err))
+	}
 }
 
 func (im *importer) rollback() {
@@ -143,42 +183,19 @@ func (im *importer) getQueries(ctx context.Context) (*dbq.Queries, error) {
 // (library_id, library_key) when one exists (ensuring its format file and
 // gap-filling missing metadata) or creating a new book otherwise. It returns the
 // logical book id and, on success, caches the cover if this file's format
-// outranks any already saved.
-func (im *importer) add(ctx context.Context, rec bookRecord, addedAt int64) (int64, error) {
-	q, err := im.getQueries(ctx)
+// outranks any already saved. changed reports that rec's file is new or its
+// size or mod time moved; on an existing book it may invalidate the book's
+// file-derived cover (see invalidateCoverIfChanged).
+func (im *importer) add(ctx context.Context, rec bookRecord, addedAt int64, changed bool) (int64, error) {
+	b, err := im.upsertBook(ctx, rec, addedAt)
 	if err != nil {
 		return 0, err
 	}
 
-	matchKey, err := im.resolveMatchKey(ctx, q, rec)
-	if err != nil {
-		return 0, err
+	im.saveCoverIfBetter(ctx, b.id, b.coverPrio, rec)
+	if changed && !b.inserted { // a brand-new book has no cover to invalidate
+		im.invalidateCoverIfChanged(b.id, b.coverState, b.coverPrio, rec)
 	}
-
-	existing, err := q.FindBookByLibraryKey(ctx, dbq.FindBookByLibraryKeyParams{
-		LibraryID: rec.LibraryID, LibraryKey: matchKey,
-	})
-	var (
-		bookID    int64
-		coverPrio int64
-	)
-	switch {
-	case errors.Is(err, sql.ErrNoRows):
-		bookID, err = insertBook(ctx, q, im.tx, rec, resolveAddedAt(rec, addedAt), addedAt)
-		if err != nil {
-			return 0, err
-		}
-	case err != nil:
-		return 0, fmt.Errorf("find book by key: %w", err)
-	default:
-		bookID = existing.ID
-		coverPrio = existing.CoverPrio
-		if err := mergeExisting(ctx, q, im.tx, existing, rec); err != nil {
-			return 0, err
-		}
-	}
-
-	im.saveCoverIfBetter(ctx, bookID, coverPrio, rec)
 
 	im.count++
 	if im.count >= im.batchSize {
@@ -188,7 +205,50 @@ func (im *importer) add(ctx context.Context, rec bookRecord, addedAt int64) (int
 		im.count = 0
 	}
 
-	return bookID, nil
+	return b.id, nil
+}
+
+// upsertedBook is the logical book add persisted a record onto, with the cover
+// state and prio it had before this record (zero for a book just inserted).
+type upsertedBook struct {
+	id         int64
+	coverState int64
+	coverPrio  int64
+	inserted   bool
+}
+
+// upsertBook groups rec onto the existing logical book for its match key,
+// merging rec's metadata into it, or inserts a new book.
+func (im *importer) upsertBook(ctx context.Context, rec bookRecord, addedAt int64) (upsertedBook, error) {
+	q, err := im.getQueries(ctx)
+	if err != nil {
+		return upsertedBook{}, err
+	}
+
+	matchKey, err := im.resolveMatchKey(ctx, q, rec)
+	if err != nil {
+		return upsertedBook{}, err
+	}
+
+	existing, err := q.FindBookByLibraryKey(ctx, dbq.FindBookByLibraryKeyParams{
+		LibraryID: rec.LibraryID, LibraryKey: matchKey,
+	})
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		id, insErr := insertBook(ctx, q, im.tx, rec, resolveAddedAt(rec, addedAt), addedAt)
+		if insErr != nil {
+			return upsertedBook{}, insErr
+		}
+
+		return upsertedBook{id: id, inserted: true}, nil
+	case err != nil:
+		return upsertedBook{}, fmt.Errorf("find book by key: %w", err)
+	}
+	if err := mergeExisting(ctx, q, im.tx, existing, rec, im.rank); err != nil {
+		return upsertedBook{}, err
+	}
+
+	return upsertedBook{id: existing.ID, coverState: existing.CoverState, coverPrio: existing.CoverPrio}, nil
 }
 
 // resolveMatchKey returns the library_key to use when looking up an existing book.
@@ -270,7 +330,7 @@ func (im *importer) saveCoverIfBetter(_ context.Context, bookID, persistedPrio i
 	if len(rec.Cover) == 0 {
 		return
 	}
-	p := int64(filePriority(rec.FileFormat))
+	p := int64(im.rank(rec.FileFormat))
 	if p < persistedPrio {
 		return
 	}
@@ -283,6 +343,30 @@ func (im *importer) saveCoverIfBetter(_ context.Context, bookID, persistedPrio i
 		op.prio = p
 	}
 	im.pendingCovers = append(im.pendingCovers, op)
+}
+
+// invalidateCoverIfChanged queues an invalidation of an existing book's cover
+// after one of its files changed (or a new file joined it), so the lazy flow
+// re-extracts the cover from the new file. Only state the file produced is
+// invalidated: a none marker (cover_state 2), or a cached cover (cover_state 1)
+// whose prio marks it file-derived (fileCoverPrio up to below manualCoverPrio:
+// lazily extracted or saved at import). A cover with prio 0 (online
+// enrichment, nothing would fetch it again) and a manual cover are kept. It is
+// also skipped when rec brings cover bytes of its own, when persistedPrio
+// outranks rec's format (a richer edition's cover), and when a cover was
+// already saved for the book this run (a Calibre cover.jpg arrives on only the
+// first of a book's format rows). Like every cover op it runs only after the
+// batch commits.
+func (im *importer) invalidateCoverIfChanged(bookID, coverState, persistedPrio int64, rec bookRecord) {
+	fileState := coverState == coverStateNone ||
+		(coverState == coverStateHas && persistedPrio >= fileCoverPrio && persistedPrio < manualCoverPrio)
+	if !fileState || len(rec.Cover) > 0 || int64(im.rank(rec.FileFormat)) < persistedPrio {
+		return
+	}
+	if _, saved := im.coverPrio[bookID]; saved {
+		return
+	}
+	im.pendingCovers = append(im.pendingCovers, coverOp{bookID: bookID, invalidate: true})
 }
 
 // remove deletes a book by id (cascading authors/genres/FTS) and evicts its

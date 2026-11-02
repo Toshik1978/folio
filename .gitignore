@@ -23,3 +23,6 @@ node_modules/
 
 # CI
 release.md
+
+# Local agent workspace
+.superpowers/

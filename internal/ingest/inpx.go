@@ -23,7 +23,8 @@ import (
 // archive is unzipped here. source_path is stored as "{archive}.zip/{inner}"
 // so downloads can later seek directly into the ZIP.
 type INPXParser struct {
-	log *slog.Logger
+	log  *slog.Logger
+	rank func(format string) int
 }
 
 // INP field indices (MyHomeLib / flibusta layout).
@@ -47,8 +48,11 @@ const (
 // fields up to EXT are required.
 const inpMinFields = inpExt + 1
 
-// NewINPXParser builds the INPX inventory parser.
-func NewINPXParser(log *slog.Logger) *INPXParser { return &INPXParser{log} }
+// NewINPXParser builds the INPX inventory parser. rank orders a book's formats
+// (typically ebook.Dispatcher.Rank).
+func NewINPXParser(log *slog.Logger, rank func(format string) int) *INPXParser {
+	return &INPXParser{log: log, rank: rank}
+}
 
 // Checkpoint fingerprints the .inpx bundle, which is regenerated wholesale, so
 // the engine can skip an unchanged inventory.
@@ -69,7 +73,7 @@ func (p *INPXParser) Sync(
 	}
 	defer func() { _ = zr.Close() }()
 
-	return runReconcile(ctx, db, covers, library, r, p.log, func(ctx context.Context, rc *reconciler) error {
+	return runReconcile(ctx, db, covers, library, r, p.log, p.rank, func(ctx context.Context, rc *reconciler) error {
 		libDir := filepath.Dir(library.Path)
 		for _, f := range zr.File {
 			if !strings.EqualFold(filepath.Ext(f.Name), ".inp") {

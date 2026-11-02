@@ -18,9 +18,9 @@ import (
 )
 
 // manualCoverPrio pins a user-supplied cover in books.cover_prio. It sits far
-// above every filePriority (max 4, EPUB), so the importer's saveCoverIfBetter
-// refuses to downgrade it on any later sync, and the on-disk file beats lazy
-// extraction at serve time. A manual cover is therefore sticky everywhere.
+// above every format rank (ebook.Dispatcher.Rank, max 4 for EPUB), so the
+// importer's saveCoverIfBetter refuses to downgrade it on any later sync, and
+// the on-disk file beats lazy extraction at serve time. A manual cover is therefore sticky everywhere.
 const manualCoverPrio int64 = 1000
 
 // maxCoverBytes caps an uploaded or fetched cover so a hostile or accidental

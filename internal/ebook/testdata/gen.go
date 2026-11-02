@@ -4,6 +4,7 @@ package main
 
 import (
 	"archive/zip"
+	"bytes"
 	"encoding/base64"
 	"encoding/binary"
 	"fmt"
@@ -29,6 +30,12 @@ func main() {
 	generateMOBICP1252(dir)
 	generateAZW3(dir)
 	generatePDF(dir)
+	generateCorruptFB2(dir)
+	generateTruncatedEPUB(dir)
+	generateBadCoverFB2(dir)
+	generateOddCoverFB2(dir)
+	generateBadCoverEPUB(dir)
+	generateEntriesZip(dir)
 	fmt.Println("all fixtures generated")
 }
 
@@ -376,6 +383,193 @@ func generateAZW3(dir string) {
 	}
 
 	must(os.WriteFile(filepath.Join(dir, "test.azw3"), buf, 0o644))
+}
+
+// fb2WithCover builds a valid FB2 whose coverpage points at #cover.jpg and whose
+// <binary id="cover.jpg"> holds the given (possibly broken) payload.
+func fb2WithCover(title, coverPayload string) string {
+	return `<?xml version="1.0" encoding="UTF-8"?>
+<FictionBook xmlns="http://www.gribuser.ru/xml/fictionbook/2.0" xmlns:l="http://www.w3.org/1999/xlink">
+  <description>
+    <title-info>
+      <book-title>` + title + `</book-title>
+      <author>
+        <first-name>Ivan</first-name>
+        <last-name>Testov</last-name>
+      </author>
+      <annotation><p>A description that stays readable.</p></annotation>
+      <lang>en</lang>
+      <coverpage><image l:href="#cover.jpg"/></coverpage>
+    </title-info>
+  </description>
+  <binary id="cover.jpg" content-type="image/jpeg">` + coverPayload + `</binary>
+</FictionBook>`
+}
+
+// generateCorruptFB2 writes an FB2 whose XML is cut off inside <description>.
+func generateCorruptFB2(dir string) {
+	xml := `<?xml version="1.0" encoding="UTF-8"?>
+<FictionBook xmlns="http://www.gribuser.ru/xml/fictionbook/2.0">
+  <description>
+    <title-info>
+      <book-title>Corrupt FB2 Book</book-title>
+      <author>
+        <first-name>Ivan</first-name>
+        <last-na`
+
+	must(os.WriteFile(filepath.Join(dir, "corrupt.fb2"), []byte(xml), 0o644))
+}
+
+// generateTruncatedEPUB writes an EPUB whose zip is cut before the central directory.
+func generateTruncatedEPUB(dir string) {
+	data := epubBytes(fakePNG())
+	i := bytes.Index(data, []byte("PK\x01\x02"))
+	if i < 0 {
+		must(fmt.Errorf("central directory not found"))
+	}
+
+	must(os.WriteFile(filepath.Join(dir, "truncated.epub"), data[:i], 0o644))
+}
+
+// generateBadCoverFB2 writes an FB2 with a valid description and a cover
+// <binary> that is not valid base64.
+func generateBadCoverFB2(dir string) {
+	xml := fb2WithCover("Bad Cover FB2 Book", "!!not*valid*base64!!")
+	must(os.WriteFile(filepath.Join(dir, "badcover.fb2"), []byte(xml), 0o644))
+}
+
+// generateOddCoverFB2 writes an FB2 whose cover <binary> is valid base64 of
+// bytes that are not an image.
+func generateOddCoverFB2(dir string) {
+	payload := base64.StdEncoding.EncodeToString([]byte("this is plain text, not an image"))
+	xml := fb2WithCover("Odd Cover FB2 Book", payload)
+	must(os.WriteFile(filepath.Join(dir, "oddcover.fb2"), []byte(xml), 0o644))
+}
+
+// generateBadCoverEPUB writes an EPUB with a valid OPF and a manifest cover
+// item whose zip entry has a corrupted deflate stream (CRC/inflate failure).
+func generateBadCoverEPUB(dir string) {
+	// Incompressible, deterministic cover bytes keep the flate stream stored,
+	// so flipping a payload byte breaks the entry's CRC.
+	cover := []byte(fakePNG())
+	x := uint32(777)
+	for i := 0; i < 512; i++ {
+		x = x*1664525 + 1013904223
+		cover = append(cover, byte(x>>24))
+	}
+
+	data := epubBytes(string(cover))
+
+	zr, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
+	must(err)
+	for _, f := range zr.File {
+		if f.Name != "OEBPS/cover.png" {
+			continue
+		}
+		off, err := f.DataOffset()
+		must(err)
+		data[off+int64(f.CompressedSize64)/2] ^= 0xFF
+	}
+
+	// Prove the fixture is broken: reading the cover entry must fail.
+	zr, err = zip.NewReader(bytes.NewReader(data), int64(len(data)))
+	must(err)
+	for _, f := range zr.File {
+		if f.Name != "OEBPS/cover.png" {
+			continue
+		}
+		rc, err := f.Open()
+		must(err)
+		var sink bytes.Buffer
+		if _, err := sink.ReadFrom(rc); err == nil {
+			must(fmt.Errorf("badcover.epub cover entry unexpectedly readable"))
+		}
+	}
+
+	must(os.WriteFile(filepath.Join(dir, "badcover.epub"), data, 0o644))
+}
+
+// epubBytes builds an EPUB (valid OPF, manifest cover item OEBPS/cover.png)
+// with deterministic zip headers and the given cover payload.
+func epubBytes(cover string) []byte {
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+
+	writeZipEntry(zw, "mimetype", "application/epub+zip")
+	writeZipEntry(zw, "META-INF/container.xml", `<?xml version="1.0"?>
+<container xmlns="urn:oasis:names:tc:opendocument:xmlns:container" version="1.0">
+  <rootfiles>
+    <rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/>
+  </rootfiles>
+</container>`)
+	writeZipEntry(zw, "OEBPS/content.opf", `<?xml version="1.0"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="2.0">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:title>Broken EPUB Book</dc:title>
+    <dc:creator>Jane Author</dc:creator>
+    <dc:description>A description that stays readable.</dc:description>
+    <dc:language>en</dc:language>
+    <meta name="cover" content="cover-img"/>
+  </metadata>
+  <manifest>
+    <item id="cover-img" href="cover.png" media-type="image/png"/>
+  </manifest>
+</package>`)
+	writeZipEntry(zw, "OEBPS/cover.png", cover)
+	must(zw.Close())
+
+	return buf.Bytes()
+}
+
+// generateEntriesZip writes an archive holding one book per format, used to
+// exercise reading single entries out of an archive. big.fb2 starts with an
+// annotation and carries a >1 MiB <binary>, so reaching the binary requires
+// inflating far beyond 64 KiB.
+func generateEntriesZip(dir string) {
+	raw := make([]byte, 1100*1024)
+	x := uint32(24680)
+	for i := range raw {
+		x = x*1664525 + 1013904223
+		raw[i] = byte(x >> 24)
+	}
+	bigFB2 := `<?xml version="1.0" encoding="UTF-8"?>
+<FictionBook xmlns="http://www.gribuser.ru/xml/fictionbook/2.0">
+  <description>
+    <title-info>
+      <book-title>Big FB2 Book</book-title>
+      <author>
+        <first-name>Ivan</first-name>
+        <last-name>Testov</last-name>
+      </author>
+      <annotation><p>Leading annotation of a big book.</p></annotation>
+      <lang>en</lang>
+    </title-info>
+  </description>
+  <body><section><p>Text.</p></section></body>
+  <binary id="cover.jpg" content-type="image/jpeg">` + base64.StdEncoding.EncodeToString(raw) + `</binary>
+</FictionBook>`
+
+	epub := epubBytes(fakePNG())
+
+	mobiRec0 := buildMOBIRecord0("Entry MOBI Book", "Alex Writer", "An entry MOBI description.", 65001, 0xFFFFFFFF, 0)
+	mobiHeader := make([]byte, 78)
+	copy(mobiHeader[0:32], padTo("Entry MOBI", 32))
+	binary.BigEndian.PutUint16(mobiHeader[76:78], 1)
+	mobiTable := make([]byte, 8)
+	binary.BigEndian.PutUint32(mobiTable[0:4], uint32(78+len(mobiTable)))
+	mobi := append(append(mobiHeader, mobiTable...), mobiRec0...)
+
+	pdf := "%PDF-1.4\n1 0 obj\n<< /Type /Catalog >>\nendobj\ntrailer\n<< /Root 1 0 R >>\n%%EOF\n"
+
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	writeZipEntry(zw, "big.fb2", bigFB2)
+	writeZipEntry(zw, "book.epub", string(epub))
+	writeZipEntry(zw, "book.mobi", string(mobi))
+	writeZipEntry(zw, "book.pdf", pdf)
+	must(zw.Close())
+
+	must(os.WriteFile(filepath.Join(dir, "entries.zip"), buf.Bytes(), 0o644))
 }
 
 func fakePNG() string {

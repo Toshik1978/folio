@@ -42,12 +42,15 @@ func (f *fakeExtractor) Cover(context.Context, int64) ([]byte, bool, error) {
 
 // fakeState is an in-memory covers.CoverState for store tests.
 type fakeState struct {
-	mu     sync.Mutex
-	states map[int64]int8
-	getErr error
+	mu         sync.Mutex
+	states     map[int64]int8
+	fileCovers map[int64]bool // books recorded through MarkFileCover
+	getErr     error
 }
 
-func newFakeState() *fakeState { return &fakeState{states: map[int64]int8{}} }
+func newFakeState() *fakeState {
+	return &fakeState{states: map[int64]int8{}, fileCovers: map[int64]bool{}}
+}
 
 func (f *fakeState) Get(_ context.Context, id int64) (int8, error) {
 	if f.getErr != nil {
@@ -63,6 +66,15 @@ func (f *fakeState) Set(_ context.Context, id int64, s int8) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.states[id] = s
+
+	return nil
+}
+
+func (f *fakeState) MarkFileCover(_ context.Context, id int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.states[id] = StateHas
+	f.fileCovers[id] = true
 
 	return nil
 }
@@ -297,6 +309,7 @@ func (s *coversTestSuite) TestServeRealCoverMarksHasAndCachesFile() {
 	s.Equal("public, max-age=31536000, immutable", rr.Header().Get("Cache-Control"))
 	state, _ := st.Get(context.Background(), 9)
 	s.Equal(StateHas, state)
+	s.True(st.fileCovers[9], "a lazily extracted cover is recorded as file-derived")
 	s.True(store.Has(9)) // real cover file on disk
 }
 

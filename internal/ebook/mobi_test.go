@@ -1,6 +1,8 @@
 package ebook
 
 import (
+	"archive/zip"
+	"bytes"
 	"context"
 	"encoding/binary"
 	"os"
@@ -25,11 +27,10 @@ func (s *mobiSuite) TestCoverViaFirstImageIndex() {
 	cover := append([]byte{0xFF, 0xD8, 0xFF}, make([]byte, 60)...)        // image at record 3
 	path := s.writeMOBIFixture("azw3", rec0, font, thumbnail, cover)
 
-	m, err := s.d.Parse(context.Background(), s.log, path)
-	s.Require().NoError(err)
-	s.NotEmpty(m.Cover, "must select cover via FirstImageIndex + CoverOffset")
-	s.Len(m.Cover, len(cover), "must return record 3 (JPEG cover), not record 2 (PNG thumbnail)")
-	s.Equal("KF8\u2019Book", m.Title, "title entities must be unescaped")
+	got := s.readCover(path)
+	s.NotEmpty(got, "must select cover via FirstImageIndex + CoverOffset")
+	s.Len(got, len(cover), "must return record 3 (JPEG cover), not record 2 (PNG thumbnail)")
+	s.Equal("KF8\u2019Book", s.readMetadata(path).Title, "title entities must be unescaped")
 }
 
 // TestCoverIsFirstImage validates the simple case: CoverOffset=0 → the first
@@ -41,9 +42,7 @@ func (s *mobiSuite) TestCoverIsFirstImage() {
 	jpeg := append([]byte{0xFF, 0xD8, 0xFF}, make([]byte, 40)...)
 	path := s.writeMOBIFixture("mobi", rec0, jpeg)
 
-	m, err := s.d.Parse(context.Background(), s.log, path)
-	s.Require().NoError(err)
-	s.NotEmpty(m.Cover)
+	s.NotEmpty(s.readCover(path))
 }
 
 // TestCoverFallbackNoFirstImageIndex validates that when FirstImageIndex is
@@ -55,9 +54,7 @@ func (s *mobiSuite) TestCoverFallbackNoFirstImageIndex() {
 	jpeg := append([]byte{0xFF, 0xD8, 0xFF}, make([]byte, 40)...)
 	path := s.writeMOBIFixture("mobi", rec0, jpeg)
 
-	m, err := s.d.Parse(context.Background(), s.log, path)
-	s.Require().NoError(err)
-	s.NotEmpty(m.Cover, "fallback scan must find the image")
+	s.NotEmpty(s.readCover(path), "fallback scan must find the image")
 }
 
 // TestUpdatedTitlePreferredOverHeader covers M5: EXTH 503 (the clean, full title)
@@ -69,8 +66,7 @@ func (s *mobiSuite) TestUpdatedTitlePreferredOverHeader() {
 	})
 	path := s.writeMOBIFixture("mobi", rec0)
 
-	m, err := s.d.Parse(context.Background(), s.log, path)
-	s.Require().NoError(err)
+	m := s.readMetadata(path)
 	s.Equal("Clean Updated Title", m.Title)
 }
 
@@ -83,8 +79,7 @@ func (s *mobiSuite) TestHeaderTitleEntitiesDecodedWithoutEXTH() {
 	rec0 := buildRec0("Death&#x2019;s End", nil, withoutEXTH())
 	path := s.writeMOBIFixture("mobi", rec0)
 
-	m, err := s.d.Parse(context.Background(), s.log, path)
-	s.Require().NoError(err)
+	m := s.readMetadata(path)
 	s.Equal("Death’s End", m.Title,
 		"header title entities must be decoded even when the file has no EXTH block")
 }
@@ -192,11 +187,11 @@ func (s *mobiSuite) writeMOBIFixture(ext string, records ...[]byte) string {
 	return path
 }
 
-// TestParseMOBIBoundedMemory guards against the OOM that killed the indexer in
-// memory-limited containers (Docker): parsing a large MOBI must not load the
+// TestBoundedMemory guards against the OOM that killed the indexer in
+// memory-limited containers (Docker): reading a large MOBI must not load the
 // whole file into memory. Metadata only needs record 0 and the cover image
 // record, so a ~64 MB book-text record must not be allocated.
-func (s *mobiSuite) TestParseMOBIBoundedMemory() {
+func (s *mobiSuite) TestBoundedMemory() {
 	const fillerSize = 64 << 20 // stand-in for the book's text records
 	rec0 := buildRec0("Huge Book", []exthRecord{
 		{typ: exthCoverOffset, data: u32(0)},
@@ -205,41 +200,45 @@ func (s *mobiSuite) TestParseMOBIBoundedMemory() {
 	cover := append([]byte{0xFF, 0xD8, 0xFF}, make([]byte, 60)...) // image at record 2
 	path := s.writeMOBIFixture("mobi", rec0, filler, cover)
 
-	m, peak := s.parsePeakHeapBytes(path)
-	s.NotEmpty(m.Cover, "must still extract the cover")
+	var got []byte
+	peak := s.peakHeapBytes(func() {
+		_ = s.readMetadata(path)
+		got = s.readCover(path)
+	})
+	s.NotEmpty(got, "must still extract the cover")
 	s.Lessf(peak, uint64(fillerSize/2),
-		"parsing a %d-byte MOBI held %d peak heap bytes; it must not read the whole file",
+		"reading a %d-byte MOBI held %d peak heap bytes; it must not read the whole file",
 		fillerSize, peak)
 }
 
-func (s *mobiSuite) TestParseMOBI() {
-	m, err := s.d.Parse(context.Background(), s.log, s.fixture("test.mobi"))
-	s.Require().NoError(err)
+func (s *mobiSuite) TestMetadataMOBI() {
+	m := s.readMetadata(s.fixture("test.mobi"))
 
 	s.Equal("Test MOBI Book", m.Title)
 	s.Equal([]string{"Alex Writer"}, m.Authors)
 	s.Equal("A MOBI description.", m.Annotation)
-	s.NotEmpty(m.Cover, "expected cover bytes")
+	s.Nil(m.Cover, "Metadata never decodes the cover")
+	s.NotEmpty(s.readCover(s.fixture("test.mobi")), "expected cover bytes")
 }
 
-func (s *mobiSuite) TestParseAZW3() {
-	m, err := s.d.Parse(context.Background(), s.log, s.fixture("test.azw3"))
-	s.Require().NoError(err)
+func (s *mobiSuite) TestMetadataAZW3() {
+	m := s.readMetadata(s.fixture("test.azw3"))
 
 	s.Equal("Test AZW3 Book", m.Title)
 	s.Equal([]string{"Kate Kindler"}, m.Authors)
 	s.Equal("An AZW3 description.", m.Annotation)
-	s.NotEmpty(m.Cover, "expected cover bytes")
+	s.Nil(m.Cover, "Metadata never decodes the cover")
+	cover := s.readCover(s.fixture("test.azw3"))
+	s.NotEmpty(cover, "expected cover bytes")
 	// The fixture has a decoy image before the real cover; resolving the cover
 	// via FirstImageIndex + CoverOffset must pick the cover, not the decoy a
 	// fallback scan would return first.
-	s.Contains(string(m.Cover), "COVERIMG", "must select the cover via the header offset")
-	s.NotContains(string(m.Cover), "DECOY", "must not fall back to the first image")
+	s.Contains(string(cover), "COVERIMG", "must select the cover via the header offset")
+	s.NotContains(string(cover), "DECOY", "must not fall back to the first image")
 }
 
-func (s *mobiSuite) TestParseCP1252() {
-	m, err := s.d.Parse(context.Background(), s.log, s.fixture("test_cp1252.mobi"))
-	s.Require().NoError(err)
+func (s *mobiSuite) TestMetadataCP1252() {
+	m := s.readMetadata(s.fixture("test_cp1252.mobi"))
 
 	s.Equal("Résumé", m.Title)
 	s.Equal([]string{"François Müller"}, m.Authors)
@@ -284,11 +283,116 @@ func (s *mobiSuite) TestApplyEXTHPublishing() {
 	})
 	path := s.writeMOBIFixture("mobi", rec0)
 
-	m, err := s.d.Parse(context.Background(), s.log, path)
-	s.Require().NoError(err)
+	m := s.readMetadata(path)
 	s.Equal("Super Publisher", m.Publisher)
 	s.Equal(2026, m.Year)
 	s.Len(m.Identifiers, 1)
 	s.Equal(Identifier{Type: IdentifierISBN, Value: "978-3-16-148410-0"}, m.Identifiers[0])
 	s.Equal("en", m.Language)
+}
+
+func (s *mobiSuite) TestTraits() {
+	s.Equal(Traits{Rank: 2, Describes: true}, mobiParser{}.Traits())
+}
+
+func (s *mobiSuite) TestSourceMetadataZipEntry() {
+	zr, err := zip.OpenReader(s.fixture("entries.zip"))
+	s.Require().NoError(err)
+	defer func() { _ = zr.Close() }()
+
+	var entry *zip.File
+	for _, f := range zr.File {
+		if f.Name == "book.mobi" {
+			entry = f
+		}
+	}
+	s.Require().NotNil(entry)
+
+	src, closer := OpenZipEntry(entry, MaxEntryBytes)
+	defer func() { _ = closer.Close() }()
+
+	m, err := mobiParser{}.Metadata(context.Background(), src)
+	s.Require().NoError(err)
+	s.NotEmpty(m.Annotation)
+}
+
+func (s *mobiSuite) TestSourceCoverNone() {
+	rec0 := buildRec0("No Cover", nil)
+	path := s.writeMOBIFixture("mobi", rec0)
+	src := s.open(path)
+
+	got, err := mobiParser{}.Cover(context.Background(), src)
+	s.Require().NoError(err)
+	s.Nil(got)
+}
+
+func (s *mobiSuite) TestSourceCoverOffsetOutsideRecords() {
+	rec0 := buildRec0("Far", []exthRecord{{typ: exthCoverOffset, data: []byte{0, 0, 0xFF, 0xFF}}})
+	path := s.writeMOBIFixture("mobi", rec0)
+	src := s.open(path)
+
+	got, err := mobiParser{}.Cover(context.Background(), src)
+	s.Require().NoError(err)
+	s.Nil(got)
+}
+
+func (s *mobiSuite) TestSourceMalformed() {
+	src := Source{Name: "bad.mobi", R: bytes.NewReader([]byte("short")), Size: 5}
+
+	_, err := mobiParser{}.Metadata(context.Background(), src)
+	s.Require().ErrorIs(err, ErrMalformed)
+	_, err = mobiParser{}.Cover(context.Background(), src)
+	s.Require().ErrorIs(err, ErrMalformed)
+}
+
+func (s *mobiSuite) TestSourceCanceled() {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	src := s.open(s.fixture("test.mobi"))
+
+	_, err := mobiParser{}.Metadata(ctx, src)
+	s.Require().ErrorIs(err, context.Canceled)
+	_, err = mobiParser{}.Cover(ctx, src)
+	s.Require().ErrorIs(err, context.Canceled)
+}
+
+// TestSourceCoverOffsetOutsideRecordsWithImages: an EXTH 201 that points past
+// the records yields no cover even though an image record exists to fall back on.
+func (s *mobiSuite) TestSourceCoverOffsetOutsideRecordsWithImages() {
+	rec0 := buildRec0("Far", []exthRecord{{typ: exthCoverOffset, data: u32(0xFFFF)}}, withFirstImageIndex(1))
+	image := append([]byte{0xFF, 0xD8, 0xFF}, make([]byte, 20)...)
+	path := s.writeMOBIFixture("mobi", rec0, image)
+	src := s.open(path)
+
+	got, err := mobiParser{}.Cover(context.Background(), src)
+	s.Require().NoError(err)
+	s.Nil(got)
+}
+
+// TestSourceCoverJunkFirstImageIndexScans: a FirstImageIndex outside the
+// records is a broken base, not a broken cover offset, so the first-image scan
+// still finds the cover.
+func (s *mobiSuite) TestSourceCoverJunkFirstImageIndexScans() {
+	rec0 := buildRec0("Junk Base", []exthRecord{{typ: exthCoverOffset, data: u32(0)}}, withFirstImageIndex(0x7FFFFFFF))
+	image := append([]byte{0xFF, 0xD8, 0xFF}, make([]byte, 20)...)
+	path := s.writeMOBIFixture("mobi", rec0, image)
+
+	got, err := mobiParser{}.Cover(context.Background(), s.open(path))
+	s.Require().NoError(err)
+	s.Equal(image, got)
+}
+
+// TestRecord0ReadIsCapped: a one-record MOBI sizes record 0 to the end of the
+// source, and an archive entry's size is whatever the archive declares, so a
+// lying 8 GiB declaration must not become an 8 GiB allocation.
+func (s *mobiSuite) TestRecord0ReadIsCapped() {
+	data, err := os.ReadFile(s.writeMOBIFixture("mobi", buildRec0("One Record", nil)))
+	s.Require().NoError(err)
+	src := Source{Name: "liar.mobi", R: bytes.NewReader(data), Size: 8 << 30}
+
+	peak := s.peakHeapBytes(func() {
+		_, err = mobiParser{}.Metadata(context.Background(), src)
+	})
+	s.Require().ErrorIs(err, ErrMalformed)
+	s.Less(peak, uint64(4*mobiMaxRec0))
 }

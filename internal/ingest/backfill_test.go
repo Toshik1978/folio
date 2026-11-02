@@ -20,7 +20,7 @@ type fakeFileExtractor struct {
 	called int
 }
 
-func (f *fakeFileExtractor) Backfill(context.Context, int64) (ebook.Metadata, bool, error) {
+func (f *fakeFileExtractor) Description(context.Context, int64) (ebook.Metadata, bool, error) {
 	f.called++
 	return f.meta, f.ok, nil
 }

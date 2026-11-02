@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"os"
 	"slices"
 	"strings"
 
@@ -14,32 +13,18 @@ import (
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/types"
 )
 
-func parsePDF(ctx context.Context, path string) (Metadata, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return Metadata{}, fmt.Errorf("open pdf: %w", err)
-	}
-	defer f.Close()
-
-	// ReadContext can be slow on a large or hostile file. pdfcpu (>= 0.16) takes
-	// ctx itself; the explicit checks around the two heavy phases (this read and
-	// the cover extraction below) still bail out early before any work starts.
-	if err = ctx.Err(); err != nil {
-		return Metadata{}, fmt.Errorf("read pdf: %w", err)
-	}
-	doc, err := pdfcpuapi.ReadContext(ctx, f, model.NewDefaultConfiguration())
-	if err != nil {
-		return Metadata{}, fmt.Errorf("read pdf: %w", err)
-	}
-
+// pdfInfoMetadata fills Pages and the info-dict fields (title, authors,
+// subject, creation year) from an already-read PDF. A missing or unreadable
+// info dict is not fatal: the page count alone is returned.
+func pdfInfoMetadata(doc *model.Context) Metadata {
 	m := Metadata{Pages: doc.PageCount}
 
 	if doc.Info == nil {
-		return m, nil
+		return m
 	}
 	infoDict, err := doc.DereferenceDict(*doc.Info)
 	if err != nil {
-		return m, nil // missing info dict is not fatal
+		return m
 	}
 
 	m.Title = pdfString(doc.XRefTable, infoDict, "Title")
@@ -47,9 +32,54 @@ func parsePDF(ctx context.Context, path string) (Metadata, error) {
 	m.Annotation = pdfString(doc.XRefTable, infoDict, "Subject")
 	m.Year = ParseYear(pdfString(doc.XRefTable, infoDict, "CreationDate"))
 
-	m.Cover = coverFromContext(ctx, doc)
+	return m
+}
 
-	return m, nil
+// pdfRead reads the PDF in src leniently, wrapping a failure as ErrMalformed
+// unless ctx was cancelled.
+func pdfRead(ctx context.Context, src Source, op string) (*model.Context, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("pdf %s: %w", op, err)
+	}
+	doc, err := pdfcpuapi.ReadContext(ctx, io.NewSectionReader(src.R, 0, src.Size), model.NewDefaultConfiguration())
+	if err != nil {
+		if cerr := ctx.Err(); cerr != nil {
+			return nil, fmt.Errorf("pdf %s: %w", op, cerr)
+		}
+		return nil, fmt.Errorf("%w: pdf %s: %w", ErrMalformed, op, err)
+	}
+
+	return doc, nil
+}
+
+// pdfReadMetadata reads the info dict and page count of src without extracting
+// the cover.
+func pdfReadMetadata(ctx context.Context, src Source) (Metadata, error) {
+	doc, err := pdfRead(ctx, src, "metadata")
+	if err != nil {
+		return Metadata{}, err
+	}
+
+	// ReadContext leaves PageCount unset (only validation fills it); resolve it
+	// from the page tree. A broken tree leaves Pages at 0 rather than failing.
+	_ = doc.EnsurePageCount()
+
+	return pdfInfoMetadata(doc), nil
+}
+
+// pdfReadCover extracts the page-1 cover image of src, or (nil, nil) when none
+// is usable.
+func pdfReadCover(ctx context.Context, src Source) ([]byte, error) {
+	doc, err := pdfRead(ctx, src, "cover")
+	if err != nil {
+		return nil, err
+	}
+	cover := coverFromContext(ctx, doc)
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("pdf cover: %w", err)
+	}
+
+	return cover, nil
 }
 
 // coverFromContext extracts a usable cover from page 1 of an already-parsed PDF.

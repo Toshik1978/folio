@@ -7,17 +7,19 @@ import (
 )
 
 // Format labels are the normalized, lower-case format identifiers returned by
-// Dispatcher.Format and stored in book_files.file_format. They are the shared
-// vocabulary across packages (cover content-type, ingest priority, browse filters).
+// Dispatcher.Format and stored in book_files.file_format. They stay unexported:
+// other packages reach format behavior through the Dispatcher and ContentType.
 const (
-	FormatEPUB = "epub"
-	FormatFB2  = "fb2"
-	FormatMOBI = "mobi"
-	FormatAZW  = "azw"
-	FormatAZW3 = "azw3"
-	FormatPDF  = "pdf"
+	formatEPUB = "epub"
+	formatFB2  = "fb2"
+	formatMOBI = "mobi"
+	formatAZW  = "azw"
+	formatAZW3 = "azw3"
+	formatPDF  = "pdf"
 )
 
+// Metadata is the bibliographic description of one book. Parsers never set
+// Cover (it is read separately through Cover); online providers fill it.
 type Metadata struct {
 	Title        string
 	Authors      []string
@@ -58,6 +60,11 @@ const maxCoverBytes int64 = 10 << 20 // 10 MiB
 // anti-bomb reason. Generous enough for real files (FB2 embeds base64 images
 // inline, inflating the document) while still bounding pathological expansion.
 const maxArchiveTextBytes int64 = 64 << 20 // 64 MiB
+
+// MaxEntryBytes is the production cap on the inflated bytes OpenZipEntry may
+// hold for one archive entry, the same anti-bomb ceiling as the archive text
+// reads. Callers pass it explicitly so tests can lower it.
+const MaxEntryBytes int64 = 64 << 20 // 64 MiB
 
 var yearPattern = regexp.MustCompile(`\d{4}`)
 

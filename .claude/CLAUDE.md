@@ -167,4 +167,4 @@ To keep context windows small and focus edits, load only the specific documentat
 | **Docker configurations, Taskfile, or CI/CD pipelines** | [docs/BUILD-AND-DEPLOY.md](../docs/BUILD-AND-DEPLOY.md) | Dockerfiles, multi-stage pipelines, caching rules. |
 | **Backend architecture, Go packages, and embed details** | [docs/BACKEND.md](../docs/BACKEND.md) | Embedded FS mappings, router setup, `internal/` layout, dependency rules, composition. |
 | **Live sync status & SSE progress events** | [docs/SYNC-EVENTS.md](../docs/SYNC-EVENTS.md) | Event broker, SSE handler (`/api/sync/events`), frontend `EventSource`. |
-| **Ebook parsing (per-format metadata/covers)** | [docs/EBOOK-PARSING.md](../docs/EBOOK-PARSING.md) | epub/fb2/mobi/pdf parsers, annotation pipeline. |
+| **Ebook parsing (per-format metadata/covers)** | [docs/EBOOK-PARSING.md](../docs/EBOOK-PARSING.md) | `ebook.Source` + `Dispatcher` reading, per-format metadata/cover parsers, annotation pipeline. |

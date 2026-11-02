@@ -65,28 +65,29 @@ type rootfileItem struct {
 	MediaType string `xml:"media-type,attr"`
 }
 
-func parseEPUB(_ context.Context, filePath string) (Metadata, error) {
-	zr, err := zip.OpenReader(filePath)
+// readEPUBPackage locates and parses the OPF package document of zr, returning
+// it with its path inside the archive.
+func readEPUBPackage(zr *zip.Reader) (opfPackage, string, error) {
+	opfPath, err := findOPFPath(zr)
 	if err != nil {
-		return Metadata{}, fmt.Errorf("open epub: %w", err)
-	}
-	defer zr.Close()
-
-	opfPath, err := findOPFPath(&zr.Reader)
-	if err != nil {
-		return Metadata{}, err
+		return opfPackage{}, "", err
 	}
 
-	opfData, err := readZipFile(&zr.Reader, opfPath, maxArchiveTextBytes)
+	opfData, err := readZipFile(zr, opfPath, maxArchiveTextBytes)
 	if err != nil {
-		return Metadata{}, fmt.Errorf("read OPF: %w", err)
+		return opfPackage{}, "", fmt.Errorf("read OPF: %w", err)
 	}
 
 	var pkg opfPackage
 	if err := xml.Unmarshal(opfData, &pkg); err != nil {
-		return Metadata{}, fmt.Errorf("parse OPF: %w", err)
+		return opfPackage{}, "", fmt.Errorf("parse OPF: %w", err)
 	}
 
+	return pkg, opfPath, nil
+}
+
+// epubMetadata maps an OPF package to Metadata, without a cover.
+func epubMetadata(pkg opfPackage) Metadata {
 	m := Metadata{
 		Title:   firstNonEmpty(pkg.Metadata.Title),
 		Authors: extractCreators(pkg.Metadata.Creator),
@@ -109,9 +110,42 @@ func parseEPUB(_ context.Context, filePath string) (Metadata, error) {
 	// clean title so editions group with their siblings (which keep it clean).
 	m.Title = stripSeriesPrefix(m.Title, m.Series)
 
-	m.Cover = extractEPUBCover(&zr.Reader, pkg, opfPath)
+	return m
+}
 
-	return m, nil
+// epubReadMetadata reads the OPF package of src and maps it to Metadata.
+func epubReadMetadata(ctx context.Context, src Source) (Metadata, error) {
+	if err := ctx.Err(); err != nil {
+		return Metadata{}, fmt.Errorf("epub metadata: %w", err)
+	}
+	zr, err := zip.NewReader(src.R, src.Size)
+	if err != nil {
+		return Metadata{}, fmt.Errorf("open epub: %w", err)
+	}
+	pkg, _, err := readEPUBPackage(zr)
+	if err != nil {
+		return Metadata{}, err
+	}
+
+	return epubMetadata(pkg), nil
+}
+
+// epubReadCover reads the declared cover image of src, or (nil, nil) when the
+// package declares none.
+func epubReadCover(ctx context.Context, src Source) ([]byte, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("epub cover: %w", err)
+	}
+	zr, err := zip.NewReader(src.R, src.Size)
+	if err != nil {
+		return nil, fmt.Errorf("open epub: %w", err)
+	}
+	pkg, opfPath, err := readEPUBPackage(zr)
+	if err != nil {
+		return nil, err
+	}
+
+	return epubCover(zr, pkg, opfPath)
 }
 
 // applySeriesMeta fills series name/index from Calibre's OPF meta elements.
@@ -188,20 +222,22 @@ func extractEPUBIdentifiers(ids []opfIdentifier) []Identifier {
 	return out
 }
 
-func extractEPUBCover(zr *zip.Reader, pkg opfPackage, opfPath string) []byte {
+// epubCover returns the bytes of the manifest cover image, capped at
+// maxCoverBytes. It returns (nil, nil) when the package declares no cover, and
+// an error when the declared cover entry is missing or unreadable.
+func epubCover(zr *zip.Reader, pkg opfPackage, opfPath string) ([]byte, error) {
 	coverID := findCoverID(pkg)
 	if coverID == "" {
-		return nil
+		return nil, nil
 	}
 
 	for _, item := range pkg.Manifest.Items {
 		if item.ID == coverID && strings.HasPrefix(item.MediaType, "image/") {
-			data, _ := readZipFile(zr, resolveOPFRelative(opfPath, item.Href), maxCoverBytes)
-			return data
+			return readZipFile(zr, resolveOPFRelative(opfPath, item.Href), maxCoverBytes)
 		}
 	}
 
-	return nil
+	return nil, nil
 }
 
 func findCoverID(pkg opfPackage) string {
@@ -223,12 +259,8 @@ func resolveOPFRelative(opfPath, href string) string {
 	if decoded, err := url.PathUnescape(href); err == nil {
 		href = decoded
 	}
-	dir := path.Dir(opfPath)
-	if dir == "." {
-		return href
-	}
-
-	return dir + "/" + href
+	// Clean folds "./" and "../" segments, which zip entry names never carry.
+	return path.Join(path.Dir(opfPath), href)
 }
 
 func readZipFile(zr *zip.Reader, name string, limit int64) ([]byte, error) {

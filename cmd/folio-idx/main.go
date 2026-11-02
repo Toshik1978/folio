@@ -61,11 +61,11 @@ func run() int { //revive:disable:function-length
 	writeGuard := db.NewWriteGuard()
 
 	// One ebook dispatcher owns the per-format parser set; injected into every consumer.
-	parser := ebook.NewDispatcher(ebook.NewEPUB(), ebook.NewFB2(), ebook.NewMOBI(), ebook.NewPDF())
+	parser := ebook.NewStandardDispatcher()
 
 	// One extractor recovers covers and metadata from source files; it backs
 	// lazy cover serving, cover-warming, and metadata backfill.
-	extractor := ingest.NewExtractor(database, log, cfg.DataDir, parser)
+	extractor := ingest.NewExtractor(database, log, parser)
 
 	backfiller := ingest.NewLocalBackfiller(log, database, writeGuard, extractor)
 
@@ -113,8 +113,8 @@ func run() int { //revive:disable:function-length
 		database,
 		writeGuard,
 		map[string]sync.Parser{
-			libtype.Calibre: ingest.NewCalibreParser(log),
-			libtype.INPX:    ingest.NewINPXParser(log),
+			libtype.Calibre: ingest.NewCalibreParser(log, parser.Rank),
+			libtype.INPX:    ingest.NewINPXParser(log, parser.Rank),
 			libtype.Folder:  ingest.NewFolderParser(log, parser),
 		},
 		coverStore,

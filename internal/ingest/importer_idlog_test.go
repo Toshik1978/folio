@@ -63,12 +63,12 @@ func (s *idMatchSuite) TestIdentifierOverrideIsLogged() {
 	ctx := context.Background()
 	lib := s.insertLibrary("folder", "/lib")
 	logger, recs := s.newCaptureLogger()
-	im := newImporter(logger, s.db, s.store, 1)
+	im := newImporter(logger, s.db, s.store, 1, testRank)
 	defer im.rollback()
 
-	id1, err := im.add(ctx, s.recISBN(lib, "key-cixin-liu", "a.epub", "9781466853454"), 1)
+	id1, err := im.add(ctx, s.recISBN(lib, "key-cixin-liu", "a.epub", "9781466853454"), 1, true)
 	s.Require().NoError(err)
-	_, err = im.add(ctx, s.recISBN(lib, "key-liu-cixin", "b.azw3", "978-1-4668-5345-4"), 1)
+	_, err = im.add(ctx, s.recISBN(lib, "key-liu-cixin", "b.azw3", "978-1-4668-5345-4"), 1, true)
 	s.Require().NoError(err)
 	s.Require().NoError(im.commit())
 
@@ -88,12 +88,12 @@ func (s *idMatchSuite) TestIdentifierMatchSameKeyNotLogged() {
 	ctx := context.Background()
 	lib := s.insertLibrary("folder", "/lib")
 	logger, recs := s.newCaptureLogger()
-	im := newImporter(logger, s.db, s.store, 1)
+	im := newImporter(logger, s.db, s.store, 1, testRank)
 	defer im.rollback()
 
-	_, err := im.add(ctx, s.recISBN(lib, "same-key", "a.epub", "9781466853454"), 1)
+	_, err := im.add(ctx, s.recISBN(lib, "same-key", "a.epub", "9781466853454"), 1, true)
 	s.Require().NoError(err)
-	_, err = im.add(ctx, s.recISBN(lib, "same-key", "b.azw3", "9781466853454"), 1)
+	_, err = im.add(ctx, s.recISBN(lib, "same-key", "b.azw3", "9781466853454"), 1, true)
 	s.Require().NoError(err)
 	s.Require().NoError(im.commit())
 

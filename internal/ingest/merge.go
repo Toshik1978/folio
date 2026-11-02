@@ -8,7 +8,6 @@ import (
 
 	dbf "github.com/Toshik1978/folio/internal/db"
 	"github.com/Toshik1978/folio/internal/db/dbq"
-	"github.com/Toshik1978/folio/internal/ebook"
 )
 
 // bookView is the merged book as the reconcile decision sees it: every books
@@ -19,8 +18,11 @@ type bookView = dbq.FindBookByLibraryKeyRow
 // mergeExisting reconciles rec onto an already-stored book: it loads the book's
 // files once, ensures rec's file row exists/updates, then merges rec's metadata
 // onto the book (gap-fill or, for the owning edition, overwrite). The preloaded
-// file list also tells the merge whether a same-format sibling exists (M8).
-func mergeExisting(ctx context.Context, q *dbq.Queries, x dbq.DBTX, existing bookView, rec bookRecord) error {
+// file list also tells the merge whether a same-format sibling exists (M8). rank
+// orders formats for the overwrite decision (see resolveMode).
+func mergeExisting(
+	ctx context.Context, q *dbq.Queries, x dbq.DBTX, existing bookView, rec bookRecord, rank func(format string) int,
+) error {
 	files, err := q.ListFilesForBook(ctx, existing.ID)
 	if err != nil {
 		return fmt.Errorf("list files: %w", err)
@@ -29,7 +31,7 @@ func mergeExisting(ctx context.Context, q *dbq.Queries, x dbq.DBTX, existing boo
 		return err
 	}
 
-	return gapFill(ctx, q, x, existing, rec, files)
+	return gapFill(ctx, q, x, existing, rec, files, rank)
 }
 
 // ensureFile makes the book's preloaded set of files contain rec's file: it
@@ -85,9 +87,9 @@ type mergePlan struct {
 }
 
 // planMerge reconciles rec against the stored book, producing a side-effect-free
-// mergePlan. Pure: a function of (book, rec, files) only — unit-testable without a
-// database. Mirrors the previous mergedBook decision exactly.
-func planMerge(book bookView, rec bookRecord, files []dbq.BookFile) mergePlan {
+// mergePlan. Pure: a function of (book, rec, files, rank) only — unit-testable
+// without a database. rank is the injected format preference (higher wins).
+func planMerge(book bookView, rec bookRecord, files []dbq.BookFile, rank func(format string) int) mergePlan {
 	plan := mergePlan{
 		upd: dbq.UpdateBookParams{
 			Title: book.Title, SeriesID: book.SeriesID, SeriesNumber: book.SeriesNumber,
@@ -103,7 +105,7 @@ func planMerge(book bookView, rec bookRecord, files []dbq.BookFile) mergePlan {
 		return plan
 	}
 
-	mode, recHash := resolveMode(book, rec, files)
+	mode, recHash := resolveMode(book, rec, files, rank)
 	if mode == modeOverwrite {
 		plan.upd.ContentHash = recHash
 		planOverwrite(book, rec, &plan)
@@ -115,14 +117,20 @@ func planMerge(book bookView, rec bookRecord, files []dbq.BookFile) mergePlan {
 	return plan
 }
 
-// resolveMode holds the entire subtle overwrite-vs-gap-fill decision: a strictly
-// higher-priority format overwrites; an in-place edit of the metadata-owning
-// edition (content-hash drift, no same-format sibling) overwrites; else gap-fill.
+// resolveMode holds the entire subtle overwrite-vs-gap-fill decision: a format
+// that strictly outranks the metadata owner's (by rank) overwrites; an in-place
+// edit of the metadata-owning edition (content-hash drift, no same-format
+// sibling) overwrites; else gap-fill.
 // It also returns the record's content hash whenever it had to compute one, so the
 // caller can reuse it for the overwrite stamp instead of hashing the record twice
 // (an empty string means the decision short-circuited before any hash was needed).
-func resolveMode(book bookView, rec bookRecord, files []dbq.BookFile) (mergeMode, string) {
-	if filePriority(rec.FileFormat) > filePriority(book.MetadataFormat.String) {
+func resolveMode(
+	book bookView,
+	rec bookRecord,
+	files []dbq.BookFile,
+	rank func(format string) int,
+) (mergeMode, string) {
+	if rank(rec.FileFormat) > rank(book.MetadataFormat.String) {
 		return modeOverwrite, contentHash(rec)
 	}
 	if isMetadataOwner(book, rec) {
@@ -200,8 +208,9 @@ func fillSeriesPlan(book bookView, rec bookRecord, plan *mergePlan) bool {
 // pure plan and applying it.
 func gapFill(
 	ctx context.Context, q *dbq.Queries, x dbq.DBTX, book bookView, rec bookRecord, files []dbq.BookFile,
+	rank func(format string) int,
 ) error {
-	return applyPlan(ctx, q, x, book, rec, planMerge(book, rec, files))
+	return applyPlan(ctx, q, x, book, rec, planMerge(book, rec, files, rank))
 }
 
 // applyPlan turns a mergePlan into writes: upsert the staged series to an id,
@@ -371,20 +380,4 @@ func relinkGenres(ctx context.Context, q *dbq.Queries, bookID int64, rec bookRec
 	}
 
 	return linkGenres(ctx, q, bookID, genres)
-}
-
-// filePriority ranks formats by how good/reliable their metadata and cover are.
-func filePriority(format string) int {
-	switch strings.ToLower(format) {
-	case ebook.FormatEPUB:
-		return 4
-	case ebook.FormatFB2:
-		return 3
-	case ebook.FormatMOBI, ebook.FormatAZW3, ebook.FormatAZW:
-		return 2
-	case ebook.FormatPDF:
-		return 1
-	default:
-		return 0
-	}
 }

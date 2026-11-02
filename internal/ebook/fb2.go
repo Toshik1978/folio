@@ -3,7 +3,6 @@ package ebook
 import (
 	"archive/zip"
 	"bufio"
-	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/xml"
@@ -11,7 +10,6 @@ import (
 	"fmt"
 	"html"
 	"io"
-	"os"
 	"strings"
 
 	"golang.org/x/text/encoding/ianaindex"
@@ -20,12 +18,6 @@ import (
 )
 
 const extFB2Zip = ".fb2.zip"
-
-type fb2Book struct {
-	XMLName     xml.Name    `xml:"FictionBook"`
-	Description fb2Desc     `xml:"description"`
-	Binaries    []fb2Binary `xml:"binary"`
-}
 
 type fb2Desc struct {
 	TitleInfo   fb2TitleInfo `xml:"title-info"`
@@ -78,69 +70,40 @@ type fb2Binary struct {
 	Data        string `xml:",chardata"`
 }
 
-func parseFB2(_ context.Context, path string) (Metadata, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return Metadata{}, fmt.Errorf("open fb2: %w", err)
-	}
-	defer func() { _ = f.Close() }()
-
-	// Stream the file through the XML decoder instead of reading it whole: the
-	// metadata lives in the leading <description>, and the (potentially large)
-	// <body> text carries no metadata, so the decoder discards it as it scans.
-	// Cap the stream at the same ceiling as the .fb2.zip path (readZipEntry): an
-	// FB2 embeds its cover as inline base64 in a <binary>, which the decoder
-	// buffers as one large token, so an oversized file is rejected rather than
-	// read wholesale into memory on the low-spec target hosts.
-	return parseFB2Reader(bufio.NewReader(io.LimitReader(f, maxArchiveTextBytes)))
+// capReader passes reads through until more than limit bytes have been read,
+// then fails with ErrTooLarge. Unlike io.LimitReader's silent EOF — which the
+// XML decoder would report as a truncated, i.e. corrupt, file — hitting the
+// cap classifies the same way as every other format's size cap.
+type capReader struct {
+	r     io.Reader
+	limit int64
+	read  int64
 }
 
-func parseFB2Zip(_ context.Context, path string) (Metadata, error) {
-	zr, err := zip.OpenReader(path)
-	if err != nil {
-		return Metadata{}, fmt.Errorf("open fb2.zip: %w", err)
-	}
-	defer zr.Close()
-
-	for _, f := range zr.File {
-		if !strings.HasSuffix(strings.ToLower(f.Name), ".fb2") {
-			continue
-		}
-
-		data, err := readZipEntry(f, maxArchiveTextBytes)
-		if err != nil {
-			return Metadata{}, fmt.Errorf("read fb2 in zip: %w", err)
-		}
-
-		return parseFB2XML(data)
-	}
-
-	return Metadata{}, errors.New("no .fb2 file found in archive")
+func newCapReader(r io.Reader, limit int64) *capReader {
+	return &capReader{r: r, limit: limit}
 }
 
-func parseFB2XML(data []byte) (Metadata, error) {
-	return parseFB2Reader(bytes.NewReader(data))
-}
-
-func parseFB2Reader(r io.Reader) (Metadata, error) {
-	var book fb2Book
-	dec := newFB2Decoder(r)
-	if err := dec.Decode(&book); err != nil {
-		return Metadata{}, fmt.Errorf("parse fb2 xml: %w", err)
+func (c *capReader) Read(p []byte) (int, error) {
+	if c.read > c.limit {
+		return 0, fmt.Errorf("%w: fb2 exceeds %d bytes", ErrTooLarge, c.limit)
+	}
+	if room := c.limit + 1 - c.read; int64(len(p)) > room {
+		p = p[:room]
+	}
+	n, err := c.r.Read(p)
+	c.read += int64(n)
+	if c.read > c.limit {
+		return n, fmt.Errorf("%w: fb2 exceeds %d bytes", ErrTooLarge, c.limit)
 	}
 
-	m := fb2DescMetadata(book.Description)
-	m.Cover = extractFB2Cover(book.Description.TitleInfo.Coverpage, book.Binaries)
-
-	return m, nil
+	return n, err //nolint:wrapcheck // a pass-through reader: io.EOF must reach the decoder unwrapped
 }
 
-// ParseFB2Description extracts metadata from the <description> header of an FB2
-// stream and stops reading at its closing tag, so the (potentially huge) base64
-// <binary> blocks that follow are never read or decoded. Metadata.Cover is
-// always nil. The input is capped at the same ceiling as the full parser.
-func ParseFB2Description(r io.Reader) (Metadata, error) {
-	dec := newFB2Decoder(io.LimitReader(r, maxArchiveTextBytes))
+// parseFB2Header decodes only the <description> element and stops at its closing
+// tag. The input is capped at maxArchiveTextBytes. Metadata.Cover stays nil.
+func parseFB2Header(r io.Reader) (Metadata, error) {
+	dec := newFB2Decoder(newCapReader(r, maxArchiveTextBytes))
 
 	for {
 		tok, err := dec.Token()
@@ -326,26 +289,9 @@ func buildFB2AuthorName(a fb2Author) string {
 	return strings.Join(parts, " ")
 }
 
-func extractFB2Cover(coverpage *fb2Cover, binaries []fb2Binary) []byte {
-	if coverpage == nil || len(coverpage.Images) == 0 {
-		return nil
-	}
-
-	href := strings.TrimPrefix(coverpage.Images[0].Href, "#")
-	if href == "" {
-		return nil
-	}
-
-	for _, b := range binaries {
-		if b.ID == href && strings.HasPrefix(b.ContentType, "image/") {
-			return decodeBase64Binary(b.Data)
-		}
-	}
-
-	return nil
-}
-
-func decodeBase64Binary(s string) []byte {
+// decodeFB2Binary decodes the base64 text of a <binary>, ignoring whitespace.
+// Invalid or truncated base64 is an error.
+func decodeFB2Binary(s string) ([]byte, error) {
 	cleaned := strings.Map(func(r rune) rune {
 		if r == ' ' || r == '\n' || r == '\r' || r == '\t' {
 			return -1
@@ -355,10 +301,10 @@ func decodeBase64Binary(s string) []byte {
 
 	data, err := base64.StdEncoding.DecodeString(cleaned)
 	if err != nil {
-		return nil
+		return nil, fmt.Errorf("decode fb2 binary: %w", err)
 	}
 
-	return data
+	return data, nil
 }
 
 func charsetReader(charset string, input io.Reader) (io.Reader, error) {
@@ -371,4 +317,169 @@ func charsetReader(charset string, input io.Reader) (io.Reader, error) {
 	}
 
 	return enc.NewDecoder().Reader(input), nil
+}
+
+// fb2Open returns the stream holding the FB2 XML for src: the source itself, or
+// its first .fb2 entry when src is a .fb2.zip. The closer releases the lazy
+// entry, if any.
+func fb2Open(src Source) (io.Reader, func(), error) {
+	if !strings.HasSuffix(strings.ToLower(src.Name), extFB2Zip) {
+		return bufio.NewReader(io.NewSectionReader(src.R, 0, src.Size)), func() {}, nil
+	}
+
+	zr, err := zip.NewReader(src.R, src.Size)
+	if err != nil {
+		return nil, nil, fmt.Errorf("open fb2.zip: %w", err)
+	}
+	for _, f := range zr.File {
+		if !strings.HasSuffix(strings.ToLower(f.Name), ".fb2") {
+			continue
+		}
+		entry, closer := OpenZipEntry(f, MaxEntryBytes)
+
+		return bufio.NewReader(io.NewSectionReader(entry.R, 0, entry.Size)), func() { _ = closer.Close() }, nil
+	}
+
+	return nil, nil, errors.New("no .fb2 file found in archive")
+}
+
+// fb2ReadMetadata reads the <description> header of src without touching the body.
+func fb2ReadMetadata(ctx context.Context, src Source) (Metadata, error) {
+	if err := ctx.Err(); err != nil {
+		return Metadata{}, fmt.Errorf("fb2 metadata: %w", err)
+	}
+	r, release, err := fb2Open(src)
+	if err != nil {
+		return Metadata{}, err
+	}
+	defer release()
+
+	return parseFB2Header(r)
+}
+
+// fb2ReadCover token-scans src for the coverpage reference in <description>, then
+// decodes only the <binary> carrying that id.
+func fb2ReadCover(ctx context.Context, src Source) ([]byte, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("fb2 cover: %w", err)
+	}
+	r, release, err := fb2Open(src)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+
+	return fb2ScanCover(r)
+}
+
+// fb2ScanCover walks the token stream of r for the cover reference, then for
+// the binary it names.
+func fb2ScanCover(r io.Reader) ([]byte, error) {
+	dec := newFB2Decoder(newCapReader(r, maxArchiveTextBytes))
+
+	href, err := fb2FindCoverRef(dec)
+	if err != nil || href == "" {
+		return nil, err
+	}
+
+	return fb2FindBinary(dec, href)
+}
+
+// fb2FindCoverRef returns the first coverpage image id, or "" if there is none.
+func fb2FindCoverRef(dec *xml.Decoder) (string, error) {
+	for {
+		start, ok, err := nextFB2Start(dec)
+		if err != nil || !ok {
+			return "", err
+		}
+		if start.Name.Local == "coverpage" {
+			return decodeFB2Coverpage(dec, &start)
+		}
+		if start.Name.Local == "body" {
+			return "", nil
+		}
+	}
+}
+
+// fb2FindBinary decodes the <binary> with the given id, or returns nil.
+func fb2FindBinary(dec *xml.Decoder, id string) ([]byte, error) {
+	for {
+		start, ok, err := nextFB2Start(dec)
+		if err != nil || !ok {
+			return nil, err
+		}
+		if start.Name.Local == "binary" && attrValue(start.Attr, "id") == id {
+			return decodeFB2BinaryElement(dec, &start)
+		}
+	}
+}
+
+// nextFB2Start returns the next start element; ok is false at a clean end of input.
+func nextFB2Start(dec *xml.Decoder) (start xml.StartElement, ok bool, err error) {
+	for {
+		tok, err := dec.Token()
+		if errors.Is(err, io.EOF) {
+			return xml.StartElement{}, false, nil
+		}
+		if err != nil {
+			return xml.StartElement{}, false, fmt.Errorf("parse fb2 xml: %w", err)
+		}
+		if start, ok := tok.(xml.StartElement); ok {
+			return start, true, nil
+		}
+	}
+}
+
+// decodeFB2BinaryElement decodes the <binary> element at start as a cover.
+func decodeFB2BinaryElement(dec *xml.Decoder, start *xml.StartElement) ([]byte, error) {
+	var b fb2Binary
+	if err := dec.DecodeElement(&b, start); err != nil {
+		return nil, fmt.Errorf("parse fb2 binary: %w", err)
+	}
+
+	return decodeFB2Cover(b.Data)
+}
+
+// decodeFB2Coverpage returns the first image reference (without '#') of a
+// <coverpage> element.
+func decodeFB2Coverpage(dec *xml.Decoder, start *xml.StartElement) (string, error) {
+	var cp fb2Cover
+	if err := dec.DecodeElement(&cp, start); err != nil {
+		return "", fmt.Errorf("parse fb2 coverpage: %w", err)
+	}
+	if len(cp.Images) == 0 {
+		return "", nil
+	}
+
+	return strings.TrimPrefix(strings.TrimSpace(cp.Images[0].Href), "#"), nil
+}
+
+// decodeFB2Cover decodes cover base64, rejecting a payload over maxCoverBytes.
+func decodeFB2Cover(text string) ([]byte, error) {
+	// Base64 text is 4/3 of the payload; allow slack for line breaks.
+	if int64(len(text)) > maxCoverBytes*2 {
+		return nil, fmt.Errorf("%w: fb2 cover is larger than %d bytes", ErrTooLarge, maxCoverBytes)
+	}
+	data, err := decodeFB2Binary(text)
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > maxCoverBytes {
+		return nil, fmt.Errorf("%w: fb2 cover is larger than %d bytes", ErrTooLarge, maxCoverBytes)
+	}
+	if len(data) == 0 {
+		return nil, nil
+	}
+
+	return data, nil
+}
+
+func attrValue(attrs []xml.Attr, name string) string {
+	for _, a := range attrs {
+		if a.Name.Local == name {
+			return a.Value
+		}
+	}
+
+	return ""
 }

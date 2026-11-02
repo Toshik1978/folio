@@ -1,14 +1,11 @@
 package ingest
 
 import (
-	"archive/zip"
 	"context"
 	"database/sql"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
-	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
@@ -17,7 +14,6 @@ import (
 	"github.com/Toshik1978/folio/internal/db"
 	"github.com/Toshik1978/folio/internal/db/dbq"
 	"github.com/Toshik1978/folio/internal/ebook"
-	"github.com/Toshik1978/folio/internal/libtype"
 )
 
 // deepIndexBatchSize is the number of books the writer commits per transaction
@@ -46,8 +42,9 @@ func DeepIndexImportedAt(stamp int64) DeepIndexScope {
 // cancelled or failed first) is counted nowhere and stays unchecked.
 type DeepIndexResult struct {
 	// Checked is the number of books marked metadata_checked: those whose file
-	// was read (with or without an annotation in it) plus PDF-only books, which
-	// are marked without being parsed.
+	// was read (with or without an annotation in it) plus books with no file
+	// read for descriptions (PDF-only, or no supported format), which are marked
+	// without being read.
 	Checked int
 	// Filled is the number of checked books whose annotation was NULL and now
 	// holds the annotation recovered from their file.
@@ -61,41 +58,43 @@ type DeepIndexResult struct {
 }
 
 // DeepIndexer fills missing book descriptions (and gap-fills identifiers) from
-// the books' own local files and makes them full-text searchable. INPX
-// libraries are read archive by archive with a header-only FB2 parse; other
-// library types go per book through the local FileExtractor. It never makes
-// network calls and never writes to a library source.
+// the books' own local files and makes them full-text searchable. Every book is
+// read through the Extractor's shared readBook, so the code names no format and
+// no library type; books sharing an archive form one job whose session opens
+// that archive once. It never makes network calls and never writes to a
+// library source.
 type DeepIndexer struct {
 	log       *slog.Logger
 	db        *sql.DB
 	guard     *db.WriteGuard
-	extractor FileExtractor
+	extractor *Extractor
 
-	// batchSize and parseFB2 are fixed in production; tests override them.
+	// batchSize is fixed in production; tests lower it.
 	batchSize int
-	parseFB2  func(io.Reader) (ebook.Metadata, error)
 }
 
-// NewDeepIndexer builds a DeepIndexer. extractor is the local-file tier used for
-// non-INPX libraries (and non-FB2 entries of an INPX library).
-func NewDeepIndexer(
-	log *slog.Logger, database *sql.DB, guard *db.WriteGuard, extractor FileExtractor,
-) *DeepIndexer {
+// NewDeepIndexer builds a DeepIndexer reading books through extractor.
+func NewDeepIndexer(log *slog.Logger, database *sql.DB, guard *db.WriteGuard, extractor *Extractor) *DeepIndexer {
 	return &DeepIndexer{
 		log:       log,
 		db:        database,
 		guard:     guard,
 		extractor: extractor,
 		batchSize: deepIndexBatchSize,
-		parseFB2:  ebook.ParseFB2Description,
 	}
 }
 
-// deepIndexJob is one unit of worker input: all wanted entries of one INPX
-// archive, or a single book of another library type.
+// deepIndexBook is one unchecked book with every one of its files.
+type deepIndexBook struct {
+	id    int64
+	files []dbq.BookFile
+}
+
+// deepIndexJob is one unit of worker input: the books whose top-ranked file
+// shares an archive, or a single book otherwise. A worker reads a job in one
+// session, so its archive is opened once.
 type deepIndexJob struct {
-	archivePath string // INPX only; empty for per-book jobs
-	items       []dbq.ListDeepIndexWorkRow
+	books []deepIndexBook
 }
 
 // deepIndexOutcome is a worker's verdict for one book.
@@ -121,9 +120,10 @@ func (d *DeepIndexer) Run(
 	if err != nil {
 		return DeepIndexResult{}, fmt.Errorf("list deep index work: %w", err)
 	}
-	rep.SetTotal(len(work))
+	books := groupByBook(work)
+	rep.SetTotal(len(books))
 
-	res, err := d.process(ctx, library, d.jobs(library, work), rep)
+	res, err := d.process(ctx, library, d.jobs(library, books), rep)
 
 	d.log.Info("deep index finished",
 		slog.Int64("library_id", library.ID),
@@ -138,31 +138,48 @@ func (d *DeepIndexer) Run(
 	return res, err
 }
 
-// jobs groups the work list: one job per archive for INPX (the list is ordered
-// by source_path, so an archive's entries are contiguous), one job per book
-// otherwise.
-func (d *DeepIndexer) jobs(library dbq.Library, work []dbq.ListDeepIndexWorkRow) []deepIndexJob {
-	if library.Type != libtype.INPX {
-		jobs := make([]deepIndexJob, len(work))
-		for i := range work {
-			jobs[i] = deepIndexJob{items: work[i : i+1]}
+// groupByBook collects the work rows into books, in order of each book's first
+// row (the list is ordered by source_path).
+func groupByBook(work []dbq.ListDeepIndexWorkRow) []deepIndexBook {
+	var books []deepIndexBook
+	byID := map[int64]int{}
+	for _, row := range work {
+		i, ok := byID[row.BookID]
+		if !ok {
+			i = len(books)
+			byID[row.BookID] = i
+			books = append(books, deepIndexBook{id: row.BookID})
 		}
-
-		return jobs
+		books[i].files = append(books[i].files, dbq.BookFile{
+			ID: row.FileID, BookID: row.BookID, FileFormat: row.FileFormat, SourcePath: row.SourcePath,
+		})
 	}
 
+	return books
+}
+
+// jobs groups books by resolver.group of their top-ranked describing file: one
+// job per archive, and one job per book whose file is not archive-backed or
+// that has no file to read.
+func (d *DeepIndexer) jobs(library dbq.Library, books []deepIndexBook) []deepIndexJob {
 	var jobs []deepIndexJob
-	byArchive := map[string]int{}
-	for _, row := range work {
-		archiveName, _, _ := strings.Cut(row.SourcePath, "/")
-		path := filepath.Join(filepath.Dir(library.Path), archiveName)
-		i, ok := byArchive[path]
+	byGroup := map[string]int{}
+	for _, book := range books {
+		key := ""
+		if top := d.extractor.candidates(flowMetadata, book.files); len(top) > 0 {
+			key = d.extractor.res.group(library, top[0])
+		}
+		if key == "" {
+			jobs = append(jobs, deepIndexJob{books: []deepIndexBook{book}})
+			continue
+		}
+		i, ok := byGroup[key]
 		if !ok {
 			i = len(jobs)
-			byArchive[path] = i
-			jobs = append(jobs, deepIndexJob{archivePath: path})
+			byGroup[key] = i
+			jobs = append(jobs, deepIndexJob{})
 		}
-		jobs[i].items = append(jobs[i].items, row)
+		jobs[i].books = append(jobs[i].books, book)
 	}
 
 	return jobs
@@ -214,118 +231,42 @@ func (d *DeepIndexer) process(
 	return res, err
 }
 
-// runJob produces one outcome per item of the job. Every send selects on ctx so
-// a worker never blocks once the writer has stopped.
+// runJob produces one outcome per book of the job, reading them all in one
+// session. Every send selects on ctx so a worker never blocks once the writer
+// has stopped.
 func (d *DeepIndexer) runJob(
 	ctx context.Context, library dbq.Library, job deepIndexJob, out chan<- deepIndexOutcome,
 ) {
-	send := func(o deepIndexOutcome) bool {
+	sess := d.extractor.newSession()
+	defer sess.close()
+
+	for _, book := range job.books {
+		if ctx.Err() != nil {
+			return
+		}
 		select {
-		case out <- o:
-			return true
+		case out <- d.read(ctx, sess, library, book):
 		case <-ctx.Done():
-			return false
-		}
-	}
-
-	if library.Type != libtype.INPX {
-		for _, item := range job.items {
-			if ctx.Err() != nil || !send(d.extract(ctx, item)) {
-				return
-			}
-		}
-
-		return
-	}
-
-	a := &deepIndexArchive{path: job.archivePath}
-	defer a.close()
-	for _, item := range job.items {
-		if ctx.Err() != nil || !send(d.inpxItem(ctx, a, item)) {
 			return
 		}
 	}
 }
 
-// deepIndexArchive opens an INPX archive lazily, at most once per job, so an
-// archive holding only PDF entries is never opened.
-type deepIndexArchive struct {
-	path string
-	zr   *zip.ReadCloser
-	err  error
-}
-
-func (a *deepIndexArchive) reader() (*zip.ReadCloser, error) {
-	if a.zr == nil && a.err == nil {
-		a.zr, a.err = zip.OpenReader(a.path)
-	}
-
-	return a.zr, a.err
-}
-
-func (a *deepIndexArchive) close() {
-	if a.zr != nil {
-		_ = a.zr.Close()
-	}
-}
-
-// inpxItem resolves one book of an INPX archive job.
-func (d *DeepIndexer) inpxItem(
-	ctx context.Context, a *deepIndexArchive, item dbq.ListDeepIndexWorkRow,
+// read describes one book from the best of its files. A book with no file read
+// for descriptions yields an empty outcome and is marked checked unread.
+func (d *DeepIndexer) read(
+	ctx context.Context, sess *readSession, library dbq.Library, book deepIndexBook,
 ) deepIndexOutcome {
-	switch {
-	case isPDF(item.FileFormat):
-		return deepIndexOutcome{bookID: item.BookID}
-	case !strings.EqualFold(item.FileFormat, ebook.FormatFB2):
-		return d.extract(ctx, item) // epub/mobi inside an INPX archive: full local parse
-	}
-	zr, err := a.reader()
+	meta, ok, err := sess.description(ctx, library, book.files)
 	if err != nil {
-		return deepIndexOutcome{bookID: item.BookID, err: fmt.Errorf("open archive: %w", err)}
-	}
-
-	return d.parseEntry(zr, item)
-}
-
-// parseEntry header-parses one FB2 entry of an open INPX archive.
-func (d *DeepIndexer) parseEntry(zr *zip.ReadCloser, item dbq.ListDeepIndexWorkRow) deepIndexOutcome {
-	_, inner, found := strings.Cut(item.SourcePath, "/")
-	if !found {
-		return deepIndexOutcome{bookID: item.BookID, err: fmt.Errorf("malformed source path %q", item.SourcePath)}
-	}
-	rc, err := zr.Open(inner)
-	if err != nil {
-		return deepIndexOutcome{bookID: item.BookID, err: fmt.Errorf("open entry %s: %w", inner, err)}
-	}
-	defer func() { _ = rc.Close() }()
-
-	meta, err := d.parseFB2(rc)
-	if err != nil {
-		return deepIndexOutcome{bookID: item.BookID, err: fmt.Errorf("parse entry %s: %w", inner, err)}
-	}
-	meta.Identifiers = cleanedEbookIdentifiers(meta.Identifiers)
-
-	return deepIndexOutcome{bookID: item.BookID, meta: meta}
-}
-
-// extract reads one book through the local FileExtractor. PDF-only books are
-// marked checked without being read.
-func (d *DeepIndexer) extract(ctx context.Context, item dbq.ListDeepIndexWorkRow) deepIndexOutcome {
-	if isPDF(item.FileFormat) {
-		return deepIndexOutcome{bookID: item.BookID}
-	}
-	meta, ok, err := d.extractor.Backfill(ctx, item.BookID)
-	if err != nil {
-		return deepIndexOutcome{bookID: item.BookID, err: fmt.Errorf("extract: %w", err)}
+		return deepIndexOutcome{bookID: book.id, err: fmt.Errorf("read: %w", err)}
 	}
 	if !ok {
 		meta = ebook.Metadata{}
 	}
 
-	return deepIndexOutcome{bookID: item.BookID, meta: meta}
+	return deepIndexOutcome{bookID: book.id, meta: meta}
 }
-
-func isPDF(format string) bool { return strings.EqualFold(format, ebook.FormatPDF) }
 
 // write is the single writer: it collects outcomes into batches and commits
 // each under its own write-guard acquisition.

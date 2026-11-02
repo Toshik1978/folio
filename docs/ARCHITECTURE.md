@@ -98,7 +98,7 @@ folio/
 │   ├── server/             # Router assembly, middleware, SPA serving
 │   ├── db/                 # SQLite open/migrations, sqlc queries (dbq/), dynamic book filter (Bob)
 │   ├── ingest/             # Source parsers (calibre/inpx/folder) + reconciliation/merge
-│   ├── ebook/              # Per-format file parsers (epub/fb2(.zip)/mobi+azw3/pdf)
+│   ├── ebook/              # Format-agnostic ebook reading: `Source` (random-access) + `Dispatcher` (Metadata/Cover by extension); per-format parsers are implementation details
 │   ├── googlebooks/        # Minimal stdlib Google Books client (enrichment / Fix Match)
 │   ├── metasearch/         # Federated metadata + cover providers (registry, aggregator, retry); adapters under providers/
 │   ├── libtype/            # Library-type constants (calibre/inpx/folder); dependency-free leaf shared across layers
@@ -128,7 +128,8 @@ folio/
 ```
 
 The composition root (`cmd/folio-idx/main.go`) owns the wiring: it injects an
-`ebook.Dispatcher` of the per-format parsers, assembles the per-library-type
+`ebook.Dispatcher` (`ebook.NewStandardDispatcher`; it reads every book format
+through one random-access `ebook.Source`), assembles the per-library-type
 parser map (`buildParsers`) the sync engine dispatches on, and registers a stats
 observer (`WithStatsObserver`) the engine notifies when catalog stats change, so a
 finished sync refreshes the cached catalog stats. The full `internal/` package layout, dependency graph, and

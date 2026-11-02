@@ -4,11 +4,11 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"sync"
-	"sync/atomic"
 
 	"github.com/Toshik1978/folio/internal/db"
 	"github.com/Toshik1978/folio/internal/db/dbq"
@@ -23,45 +23,29 @@ const (
 	diCorrupt = "Повреждённая книга"
 	diBig     = "Книга с большой бинарной секцией"
 	diPDF     = "Книга только в PDF"
+	diEPUB    = "Книга в формате EPUB"
+	diMOBI    = "Книга в формате MOBI"
+	diBadEPUB = "Усечённая книга EPUB"
+	diHuge    = "Книга с огромной бинарной секцией"
 )
 
+// diArchives returns the fixture files of the testdata/deepindex library.
+func diArchives() []string {
+	return []string{
+		"library.inpx", "a.fb2-000001-000004.zip", "b.fb2-000005-000006.zip", "c.fb2-000007-000010.zip",
+	}
+}
+
 // deepIndexSuite drives the DeepIndexer against a synced copy of the
-// testdata/deepindex INPX library.
+// testdata/deepindex INPX library, reading through a real Extractor over the
+// standard Dispatcher wrapped in a countingReader.
 type deepIndexSuite struct {
 	baseSuite
 
 	dir    string // temp copy of the fixtures
 	lib    dbq.Library
-	ext    *countingExtractor
-	parses atomic.Int64
-}
-
-// countingExtractor is a FileExtractor that records every call; the INPX path
-// must never touch it for FB2/PDF entries.
-type countingExtractor struct {
-	mu     sync.Mutex
-	calls  []int64
-	meta   ebook.Metadata
-	ok     bool
-	errFor map[int64]error
-}
-
-func (c *countingExtractor) Backfill(_ context.Context, bookID int64) (ebook.Metadata, bool, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.calls = append(c.calls, bookID)
-	if err := c.errFor[bookID]; err != nil {
-		return ebook.Metadata{}, false, err
-	}
-
-	return c.meta, c.ok, nil
-}
-
-func (c *countingExtractor) callCount() int {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	return len(c.calls)
+	reader *countingReader
+	ext    *Extractor
 }
 
 // recordingReporter records progress; onAdd (optional) runs after each Add.
@@ -81,32 +65,34 @@ func (r *recordingReporter) Add(n int) {
 
 func (s *deepIndexSuite) SetupTest() {
 	s.baseSuite.SetupTest()
-	s.parses.Store(0)
 
 	s.dir = s.T().TempDir()
-	for _, name := range []string{"library.inpx", "a.fb2-000001-000004.zip", "b.fb2-000005-000006.zip"} {
+	for _, name := range diArchives() {
 		data, err := os.ReadFile(filepath.Join("testdata", "deepindex", name))
 		s.Require().NoError(err)
 		s.Require().NoError(os.WriteFile(filepath.Join(s.dir, name), data, 0o644))
 	}
 
 	s.lib = s.insertLibrary("inpx", filepath.Join(s.dir, "library.inpx"))
-	res, err := NewINPXParser(s.log).Sync(context.Background(), s.lib, s.db, s.store, nopReporter{})
+	res, err := NewINPXParser(s.log, testRank).Sync(context.Background(), s.lib, s.db, s.store, nopReporter{})
 	s.Require().NoError(err)
-	s.Require().Equal(6, res.Added)
+	s.Require().Equal(10, res.Added)
 
-	s.ext = &countingExtractor{}
+	s.reader = &countingReader{Dispatcher: newTestDispatcher()}
+	s.ext = NewExtractor(s.db, s.log, s.reader)
 }
 
-// indexer builds a DeepIndexer whose FB2 header parser counts its calls.
+// indexer builds a DeepIndexer over the suite's Extractor.
 func (s *deepIndexSuite) indexer() *DeepIndexer {
-	d := NewDeepIndexer(s.log, s.db, db.NewWriteGuard(), s.ext)
-	d.parseFB2 = func(r io.Reader) (ebook.Metadata, error) {
-		s.parses.Add(1)
-		return ebook.ParseFB2Description(r)
-	}
+	return NewDeepIndexer(s.log, s.db, db.NewWriteGuard(), s.ext)
+}
 
-	return d
+// reads returns the names of the Sources read for metadata so far.
+func (s *deepIndexSuite) reads() []string {
+	s.reader.mu.Lock()
+	defer s.reader.mu.Unlock()
+
+	return slices.Clone(s.reader.metadata)
 }
 
 func (s *deepIndexSuite) book(title string) dbq.Book {
@@ -131,13 +117,13 @@ func (s *deepIndexSuite) TestCountsAreCorrect() {
 	res, err := s.indexer().Run(context.Background(), s.lib, DeepIndexAll(), rep)
 	s.Require().NoError(err)
 
-	s.Equal(DeepIndexResult{Checked: 5, Filled: 3, Skipped: 0, Errors: 1}, res)
-	s.Equal(6, rep.total)
-	s.Equal(6, rep.added)
-	s.Zero(s.ext.callCount(), "INPX FB2/PDF books never go through the extractor")
+	s.Equal(DeepIndexResult{Checked: 8, Filled: 6, Skipped: 0, Errors: 2}, res)
+	s.Equal(10, rep.total)
+	s.Equal(10, rep.added)
 
 	s.Equal(map[string]bool{
 		diUTF8: true, diCP1251: true, diNoAnn: true, diCorrupt: false, diBig: true, diPDF: true,
+		diEPUB: true, diMOBI: true, diBadEPUB: false, diHuge: true,
 	}, s.checkedTitles())
 
 	utf := s.book(diUTF8)
@@ -146,6 +132,56 @@ func (s *deepIndexSuite) TestCountsAreCorrect() {
 	s.Contains(s.book(diBig).Annotation.String, "Громадный Бинарник Мельница")
 	s.False(s.book(diNoAnn).Annotation.Valid)
 	s.False(s.book(diPDF).Annotation.Valid)
+}
+
+// TestEveryFormatIsFilled proves EPUB and MOBI entries of an archive are read
+// like FB2 ones (SC-003), and that a PDF-only book is checked without a read.
+func (s *deepIndexSuite) TestEveryFormatIsFilled() {
+	_, err := s.indexer().Run(context.Background(), s.lib, DeepIndexAll(), nopReporter{})
+	s.Require().NoError(err)
+
+	epub := s.book(diEPUB)
+	s.Contains(epub.Annotation.String, "Эпубное описание Маяк Верста")
+	s.True(s.ftsHas(epub.ID, "annotation", "Верста"))
+	mobi := s.book(diMOBI)
+	s.Contains(mobi.Annotation.String, "Мобийное описание Дирижабль Заря")
+	s.True(s.ftsHas(mobi.ID, "annotation", "Дирижабль"))
+	s.Contains(s.book(diHuge).Annotation.String, "Исполинский Бинарник Маяк")
+
+	s.Equal(int64(1), s.book(diPDF).MetadataChecked)
+	s.NotContains(s.reads(), "6.pdf", "a PDF-only book is never read")
+}
+
+// TestFB2ReadStaysHeaderOnly caps every inflated archive entry at 64 KiB: the
+// >1 MiB 10.fb2 is still filled, so its read never inflates past its header.
+func (s *deepIndexSuite) TestFB2ReadStaysHeaderOnly() {
+	s.ext.res.entryLimit = 64 << 10
+
+	_, err := s.indexer().Run(context.Background(), s.lib, DeepIndexAll(), nopReporter{})
+	s.Require().NoError(err)
+
+	huge := s.book(diHuge)
+	s.Equal(int64(1), huge.MetadataChecked)
+	s.Contains(huge.Annotation.String, "Исполинский Бинарник Маяк")
+}
+
+// TestEachArchiveIsOpenedOncePerJob counts archive opens: every archive is one
+// job, so each is opened exactly once in a run (b only for its FB2 entry).
+func (s *deepIndexSuite) TestEachArchiveIsOpenedOncePerJob() {
+	var mu sync.Mutex
+	opens := map[string]int{}
+	s.ext.onArchiveOpen = func(path string) {
+		mu.Lock()
+		defer mu.Unlock()
+		opens[filepath.Base(path)]++
+	}
+
+	_, err := s.indexer().Run(context.Background(), s.lib, DeepIndexAll(), nopReporter{})
+	s.Require().NoError(err)
+
+	s.Equal(map[string]int{
+		"a.fb2-000001-000004.zip": 1, "b.fb2-000005-000006.zip": 1, "c.fb2-000007-000010.zip": 1,
+	}, opens)
 }
 
 func (s *deepIndexSuite) TestExistingAnnotationIsNotOverwritten() {
@@ -157,7 +193,7 @@ func (s *deepIndexSuite) TestExistingAnnotationIsNotOverwritten() {
 	res, err := s.indexer().Run(context.Background(), s.lib, DeepIndexAll(), nopReporter{})
 	s.Require().NoError(err)
 
-	s.Equal(DeepIndexResult{Checked: 5, Filled: 2, Skipped: 1, Errors: 1}, res)
+	s.Equal(DeepIndexResult{Checked: 8, Filled: 5, Skipped: 1, Errors: 2}, res)
 	got := s.book(diUTF8)
 	s.Equal("Ручное описание", got.Annotation.String)
 	s.Equal(int64(1), got.MetadataChecked, "a skipped book is still marked checked")
@@ -176,24 +212,27 @@ func (s *deepIndexSuite) TestCorruptEntryStaysUnchecked() {
 	res, err := s.indexer().Run(context.Background(), s.lib, DeepIndexAll(), nopReporter{})
 	s.Require().NoError(err)
 
-	s.Equal(1, res.Errors)
-	b := s.book(diCorrupt)
-	s.Equal(int64(0), b.MetadataChecked)
-	s.False(b.Annotation.Valid)
+	s.Equal(2, res.Errors)
+	for _, title := range []string{diCorrupt, diBadEPUB} {
+		b := s.book(title)
+		s.Equal(int64(0), b.MetadataChecked, title)
+		s.False(b.Annotation.Valid, title)
+	}
 }
 
 func (s *deepIndexSuite) TestRerunDoesNoParsing() {
 	_, err := s.indexer().Run(context.Background(), s.lib, DeepIndexAll(), nopReporter{})
 	s.Require().NoError(err)
-	s.Equal(int64(5), s.parses.Load(), "first run parses the five FB2 entries, never the PDF")
+	s.Len(s.reads(), 9, "first run reads the nine describing entries, never the PDF")
 
-	s.parses.Store(0)
+	s.reader.mu.Lock()
+	s.reader.metadata = nil
+	s.reader.mu.Unlock()
 	res, err := s.indexer().Run(context.Background(), s.lib, DeepIndexAll(), nopReporter{})
 	s.Require().NoError(err)
 
-	s.Equal(DeepIndexResult{Errors: 1}, res)
-	s.Equal(int64(1), s.parses.Load(), "only the still-unchecked corrupt entry is retried")
-	s.Zero(s.ext.callCount())
+	s.Equal(DeepIndexResult{Errors: 2}, res)
+	s.ElementsMatch([]string{"4.fb2", "9.epub"}, s.reads(), "only the still-unchecked entries are retried")
 }
 
 func (s *deepIndexSuite) TestCancelledRunKeepsEarlierBatches() {
@@ -215,12 +254,12 @@ func (s *deepIndexSuite) TestCancelledRunKeepsEarlierBatches() {
 	s.Equal(2, rep.added, "exactly one batch committed before the cancel")
 	s.Equal(res.Checked, checked, "result reflects the committed batch")
 	s.Positive(checked, "the first batch stays committed")
-	s.Less(checked, 5, "later batches were not committed")
+	s.Less(checked, 8, "later batches were not committed")
 
 	// A later run resumes and finishes the remaining books.
 	res2, err := s.indexer().Run(context.Background(), s.lib, DeepIndexAll(), nopReporter{})
 	s.Require().NoError(err)
-	s.Equal(5, checked+res2.Checked)
+	s.Equal(8, checked+res2.Checked)
 }
 
 func (s *deepIndexSuite) TestImportedAtScopeTouchesOnlyMatchingBooks() {
@@ -239,6 +278,7 @@ func (s *deepIndexSuite) TestImportedAtScopeTouchesOnlyMatchingBooks() {
 	s.Equal(2, rep.total)
 	s.Equal(map[string]bool{
 		diUTF8: true, diCP1251: false, diNoAnn: true, diCorrupt: false, diBig: false, diPDF: false,
+		diEPUB: false, diMOBI: false, diBadEPUB: false, diHuge: false,
 	}, s.checkedTitles())
 	s.False(s.book(diCP1251).Annotation.Valid)
 }
@@ -248,7 +288,7 @@ func (s *deepIndexSuite) TestArchivesAreUnchanged() {
 		info os.FileInfo
 		data []byte
 	}
-	names := []string{"library.inpx", "a.fb2-000001-000004.zip", "b.fb2-000005-000006.zip"}
+	names := diArchives()
 	before := map[string]snap{}
 	for _, n := range names {
 		p := filepath.Join(s.dir, n)
@@ -285,52 +325,79 @@ func (s *deepIndexSuite) TestMissingArchiveCountsAsErrors() {
 
 	// Archive b holds book 5 (FB2, unreadable now) and book 6 (PDF-only, which
 	// needs no read and is still marked checked).
-	s.Equal(DeepIndexResult{Checked: 4, Filled: 2, Errors: 2}, res)
+	s.Equal(DeepIndexResult{Checked: 7, Filled: 5, Errors: 3}, res)
 	s.False(s.checkedTitles()[diBig])
 	s.True(s.checkedTitles()[diPDF])
 }
 
-// deepIndexFolderSuite covers non-INPX libraries, which go per book through the
-// local FileExtractor.
+// deepIndexFolderSuite covers non-archive libraries, which go one book per job
+// through the same Extractor read.
 type deepIndexFolderSuite struct {
 	baseSuite
 }
 
-func (s *deepIndexFolderSuite) seedBook(libraryID int64, title, format string) int64 {
+// scriptedReader is a bookReader over the standard Dispatcher whose Metadata
+// returns meta, or errFor[name] for the named Sources, recording every read.
+type scriptedReader struct {
+	*ebook.Dispatcher
+
+	meta   ebook.Metadata
+	errFor map[string]error
+
+	mu    sync.Mutex
+	names []string
+}
+
+func (r *scriptedReader) Metadata(_ context.Context, _ *slog.Logger, src ebook.Source) (ebook.Metadata, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.names = append(r.names, src.Name)
+	if err := r.errFor[src.Name]; err != nil {
+		return ebook.Metadata{}, err
+	}
+
+	return r.meta, nil
+}
+
+// seedBook inserts a book with one file, and writes that file under dir.
+func (s *deepIndexFolderSuite) seedBook(libraryID int64, dir, title, format string) int64 {
 	q := dbq.New(s.db)
 	id, err := q.InsertBook(context.Background(), dbq.InsertBookParams{
 		Title: title, LibraryID: libraryID, LibraryKey: title,
 		Language: "en", ContentHash: title, AddedAt: 1,
 	})
 	s.Require().NoError(err)
+	name := title + "." + format
 	_, err = q.InsertBookFile(context.Background(), dbq.InsertBookFileParams{
-		BookID: id, FileFormat: format, FileSize: 1, SourcePath: title + "." + format,
+		BookID: id, FileFormat: format, FileSize: 1, SourcePath: name,
 	})
 	s.Require().NoError(err)
+	s.Require().NoError(os.WriteFile(filepath.Join(dir, name), []byte("x"), 0o644))
 
 	return id
 }
 
-func (s *deepIndexFolderSuite) TestNonINPXUsesExtractor() {
-	src := s.insertLibrary("folder", s.T().TempDir())
-	epub := s.seedBook(src.ID, "Epub Book", "epub")
-	pdf := s.seedBook(src.ID, "Pdf Book", "pdf")
-	broken := s.seedBook(src.ID, "Broken Book", "fb2")
+func (s *deepIndexFolderSuite) TestFolderLibraryReadsThroughExtractor() {
+	dir := s.T().TempDir()
+	src := s.insertLibrary("folder", dir)
+	epub := s.seedBook(src.ID, dir, "Epub Book", "epub")
+	pdf := s.seedBook(src.ID, dir, "Pdf Book", "pdf")
+	broken := s.seedBook(src.ID, dir, "Broken Book", "fb2")
 
-	ext := &countingExtractor{
+	reader := &scriptedReader{
+		Dispatcher: newTestDispatcher(),
 		meta: ebook.Metadata{
 			Annotation:  "<p>Локальное описание</p>",
 			Identifiers: []ebook.Identifier{{Type: "isbn", Value: "9780441013593"}},
 		},
-		ok:     true,
-		errFor: map[int64]error{broken: errors.New("unreadable")},
+		errFor: map[string]error{"Broken Book.fb2": errors.New("unreadable")},
 	}
-	d := NewDeepIndexer(s.log, s.db, db.NewWriteGuard(), ext)
+	d := NewDeepIndexer(s.log, s.db, db.NewWriteGuard(), NewExtractor(s.db, s.log, reader))
 	res, err := d.Run(context.Background(), src, DeepIndexAll(), nopReporter{})
 	s.Require().NoError(err)
 
 	s.Equal(DeepIndexResult{Checked: 2, Filled: 1, Errors: 1}, res)
-	s.ElementsMatch([]int64{epub, broken}, ext.calls, "PDF-only books are never handed to the extractor")
+	s.ElementsMatch([]string{"Epub Book.epub", "Broken Book.fb2"}, reader.names, "PDF-only books are never read")
 
 	q := dbq.New(s.db)
 	got, err := q.GetBook(context.Background(), epub)

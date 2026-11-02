@@ -4,10 +4,13 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"time"
 
+	"github.com/Toshik1978/folio/internal/covers"
 	"github.com/Toshik1978/folio/internal/db/dbq"
 )
 
@@ -144,11 +147,10 @@ func (s *folderSuite) TestSync() {
 	s.Equal(filepath.Join("sub", "b.fb2"), s.fileFor(beta.ID).SourcePath)
 	s.False(beta.SeriesID.Valid)
 
-	// Cover cached for Alpha (has cover), absent for Beta.
-	_, err = os.Stat(s.store.Path(alpha.ID))
-	s.Require().NoError(err)
-	_, err = os.Stat(s.store.Path(beta.ID))
-	s.True(os.IsNotExist(err))
+	// No cover is cached at import, even for Alpha's embedded one: folder
+	// covers come from the lazy cover flow.
+	s.False(s.store.Has(alpha.ID))
+	s.False(s.store.Has(beta.ID))
 
 	// Second sync with no changes is a no-op (nothing re-parsed/inserted).
 	res, err = parser.Sync(ctx, src, s.db, s.store, nopReporter{})
@@ -292,7 +294,7 @@ func (s *folderSuite) TestTitleFallsBackToFilename() {
 
 func (s *folderSuite) TestMetadataFormatPriority() {
 	ctx := context.Background()
-	im := newImporter(s.log, s.db, s.store, 1)
+	im := newImporter(s.log, s.db, s.store, 1, testRank)
 
 	src := s.insertLibrary("folder", "/dummy")
 
@@ -311,7 +313,7 @@ func (s *folderSuite) TestMetadataFormatPriority() {
 		FileSize:   100,
 	}
 
-	bookID, err := im.add(ctx, pdfRec, 12345)
+	bookID, err := im.add(ctx, pdfRec, 12345, true)
 	s.Require().NoError(err)
 
 	// Verify database record has PDF metadata and metadata_format = "pdf"
@@ -335,7 +337,7 @@ func (s *folderSuite) TestMetadataFormatPriority() {
 		FileSize:   200,
 	}
 
-	bookID2, err := im.add(ctx, epubRec, 12345)
+	bookID2, err := im.add(ctx, epubRec, 12345, true)
 	s.Require().NoError(err)
 	s.Equal(bookID, bookID2)
 
@@ -372,7 +374,7 @@ func (s *folderSuite) TestMetadataFormatPriority() {
 		FileSize:   300,
 	}
 
-	bookID3, err := im.add(ctx, mobiRec, 12345)
+	bookID3, err := im.add(ctx, mobiRec, 12345, true)
 	s.Require().NoError(err)
 	s.Equal(bookID, bookID3)
 
@@ -444,7 +446,7 @@ func (s *folderSuite) TestResultImportedAtMatchesInsertedBooks() {
 // Cyrillic), and the first-seen display casing is kept.
 func (s *folderSuite) TestCaseFoldedDedupAcrossRecords() {
 	ctx := context.Background()
-	im := newImporter(s.log, s.db, s.store, 1)
+	im := newImporter(s.log, s.db, s.store, 1, testRank)
 	src := s.insertLibrary("folder", "/dummy")
 
 	rec1 := bookRecord{
@@ -462,9 +464,9 @@ func (s *folderSuite) TestCaseFoldedDedupAcrossRecords() {
 		FileFormat: "epub", SourcePath: "2.epub", FileSize: 1,
 	}
 
-	_, err := im.add(ctx, rec1, 1)
+	_, err := im.add(ctx, rec1, 1, true)
 	s.Require().NoError(err)
-	_, err = im.add(ctx, rec2, 2)
+	_, err = im.add(ctx, rec2, 2, true)
 	s.Require().NoError(err)
 
 	// Two distinct authors (Latin + Cyrillic), not four; one series; one genre.
@@ -476,4 +478,212 @@ func (s *folderSuite) TestCaseFoldedDedupAcrossRecords() {
 	var seriesName string
 	s.Require().NoError(s.db.QueryRowContext(ctx, "SELECT name FROM series").Scan(&seriesName))
 	s.Equal("War Saga", seriesName)
+}
+
+// coverState returns the book's lazy cover-extraction marker.
+func (s *folderSuite) coverState(bookID int64) int64 {
+	st, err := dbq.New(s.db).GetCoverState(context.Background(), bookID)
+	s.Require().NoError(err)
+
+	return st
+}
+
+// TestImportReadsMetadataOnly proves a folder import reads each new file's
+// metadata once and never its cover: covers come from the lazy flow, so the
+// book is left with no cached cover and cover_state unknown (0).
+func (s *folderSuite) TestImportReadsMetadataOnly() {
+	ctx := context.Background()
+	dir := s.T().TempDir()
+	s.writeFB2(filepath.Join(dir, "a.fb2"), "Alpha", "Ann", "Author", "", s.coverFixture())
+
+	src := s.insertLibrary("folder", dir)
+	reader := &countingReader{Dispatcher: newTestDispatcher()}
+	parser := FolderParser{log: s.log, parser: reader}
+	_, err := parser.Sync(ctx, src, s.db, s.store, nopReporter{})
+	s.Require().NoError(err)
+
+	s.Equal([]string{"a.fb2"}, reader.metadata, "the import reads the file's metadata once")
+	s.Empty(reader.covers, "the import must not read covers")
+	alpha := s.booksByLibrary(src.ID)["Alpha"]
+	s.False(s.store.Has(alpha.ID), "no cover is cached at import")
+	s.Zero(s.coverState(alpha.ID), "cover_state stays unknown for the lazy flow")
+}
+
+// lazilyCover simulates the lazy flow having extracted bookID's cover from its
+// file: the cover is cached and recorded as has with the file-cover prio 1.
+func (s *folderSuite) lazilyCover(bookID int64) {
+	s.Require().NoError(s.store.Save(bookID, s.coverFixture()))
+	s.Require().NoError(NewCoverState(s.db).MarkFileCover(context.Background(), bookID))
+}
+
+// syncTouched syncs a fresh folder library holding one FB2 at a pinned mod
+// time, runs prepare on its book, then advances the file's mod time and
+// re-syncs. It returns the book id.
+func (s *folderSuite) syncTouched(store CoverStore, cover []byte, prepare func(bookID int64)) int64 {
+	ctx := context.Background()
+	dir := s.T().TempDir()
+	path := filepath.Join(dir, "a.fb2")
+	s.writeFB2(path, "Alpha", "Ann", "Author", "", cover)
+	old := time.Unix(1_000_000, 0)
+	s.Require().NoError(os.Chtimes(path, old, old))
+
+	src := s.insertLibrary("folder", dir)
+	parser := FolderParser{log: s.log, parser: newTestDispatcher()}
+	_, err := parser.Sync(ctx, src, s.db, store, nopReporter{})
+	s.Require().NoError(err)
+	id := s.booksByLibrary(src.ID)["Alpha"].ID
+	prepare(id)
+
+	newer := old.Add(time.Hour)
+	s.Require().NoError(os.Chtimes(path, newer, newer))
+	_, err = parser.Sync(ctx, src, s.db, store, nopReporter{})
+	s.Require().NoError(err)
+
+	return id
+}
+
+// TestChangedFileKeepsOnlineCover proves a cover that did not come from the
+// book's file (an online-enrichment cover: has, cover_prio 0) survives the file
+// changing, since nothing would fetch it again.
+func (s *folderSuite) TestChangedFileKeepsOnlineCover() {
+	id := s.syncTouched(s.store, nil, func(bookID int64) {
+		s.Require().NoError(s.store.Save(bookID, s.coverFixture())) // has, prio 0
+	})
+
+	s.True(s.store.Has(id), "an online cover is kept")
+	s.EqualValues(1, s.coverState(id), "an online cover keeps its state")
+}
+
+// TestChangedFileResetsNoneState proves a book the lazy flow found cover-less
+// is re-examined after its file changes: cover_state none goes back to unknown.
+func (s *folderSuite) TestChangedFileResetsNoneState() {
+	id := s.syncTouched(s.store, nil, func(bookID int64) {
+		s.Require().NoError(NewCoverState(s.db).Set(context.Background(), bookID, 2))
+	})
+
+	s.Zero(s.coverState(id), "a none state is reset so the new file is re-read")
+}
+
+// TestLazyCoverSavedAsFileCoverAndInvalidated drives the real lazy flow: the
+// first view extracts the cover from the file and records it with cover_prio 1,
+// and a later change to the file invalidates it.
+func (s *folderSuite) TestLazyCoverSavedAsFileCoverAndInvalidated() {
+	store, err := covers.NewStore(s.T().TempDir(),
+		NewExtractor(s.db, s.log, newTestDispatcher()), NewCoverState(s.db))
+	s.Require().NoError(err)
+
+	id := s.syncTouched(store, s.coverFixture(), func(bookID int64) {
+		s.Require().False(store.Has(bookID), "no cover at import")
+		rr := httptest.NewRecorder()
+		store.ServeCover(rr, httptest.NewRequestWithContext(context.Background(),
+			http.MethodGet, "/cover", http.NoBody), bookID)
+		s.Require().True(store.Has(bookID), "the first view extracts and caches the cover")
+		book := s.booksByLibrary(s.libraryOf(bookID))["Alpha"]
+		s.EqualValues(1, book.CoverState)
+		s.EqualValues(1, book.CoverPrio, "a lazily extracted cover is recorded with prio 1")
+	})
+
+	s.False(store.Has(id), "a changed file's lazily extracted cover is deleted")
+	s.Zero(s.coverState(id), "a changed file's cover_state is reset")
+}
+
+// libraryOf returns the library id of bookID.
+func (s *folderSuite) libraryOf(bookID int64) int64 {
+	book, err := dbq.New(s.db).GetBook(context.Background(), bookID)
+	s.Require().NoError(err)
+
+	return book.LibraryID
+}
+
+// deleteCountingStore is a CoverStore over the suite's store that counts
+// Delete calls.
+type deleteCountingStore struct {
+	CoverStore
+
+	deletes int
+}
+
+func (d *deleteCountingStore) Delete(bookID int64) error {
+	d.deletes++
+
+	return d.CoverStore.Delete(bookID) //nolint:wrapcheck // test pass-through
+}
+
+// TestFreshImportQueuesNoInvalidation proves importing brand-new books touches
+// no cover: a new book has nothing cached to invalidate.
+func (s *folderSuite) TestFreshImportQueuesNoInvalidation() {
+	dir := s.T().TempDir()
+	s.writeFB2(filepath.Join(dir, "a.fb2"), "Alpha", "Ann", "Author", "", nil)
+	s.writeFB2(filepath.Join(dir, "b.fb2"), "Beta", "Bob", "Builder", "", nil)
+
+	src := s.insertLibrary("folder", dir)
+	store := &deleteCountingStore{CoverStore: s.store}
+	parser := FolderParser{log: s.log, parser: newTestDispatcher()}
+	_, err := parser.Sync(context.Background(), src, s.db, store, nopReporter{})
+	s.Require().NoError(err)
+
+	s.Len(s.booksByLibrary(src.ID), 2)
+	s.Zero(store.deletes, "a fresh import queues no cover invalidation")
+}
+
+// TestChangedFileInvalidatesLazyCover proves touching a file and re-syncing
+// drops the book's lazily extracted cover and resets cover_state, so the next
+// view re-extracts it, while an untouched sibling book keeps its cover.
+func (s *folderSuite) TestChangedFileInvalidatesLazyCover() {
+	ctx := context.Background()
+	dir := s.T().TempDir()
+	pathA := filepath.Join(dir, "a.fb2")
+	s.writeFB2(pathA, "Alpha", "Ann", "Author", "", nil)
+	s.writeFB2(filepath.Join(dir, "b.fb2"), "Beta", "Bob", "Builder", "", nil)
+	old := time.Unix(1_000_000, 0)
+	s.Require().NoError(os.Chtimes(pathA, old, old))
+
+	src := s.insertLibrary("folder", dir)
+	parser := FolderParser{log: s.log, parser: newTestDispatcher()}
+	_, err := parser.Sync(ctx, src, s.db, s.store, nopReporter{})
+	s.Require().NoError(err)
+	books := s.booksByLibrary(src.ID)
+	alpha, beta := books["Alpha"], books["Beta"]
+	s.lazilyCover(alpha.ID)
+	s.lazilyCover(beta.ID)
+
+	newer := old.Add(time.Hour)
+	s.Require().NoError(os.Chtimes(pathA, newer, newer))
+	_, err = parser.Sync(ctx, src, s.db, s.store, nopReporter{})
+	s.Require().NoError(err)
+
+	s.False(s.store.Has(alpha.ID), "a changed file's cached cover is deleted")
+	s.Zero(s.coverState(alpha.ID), "a changed file's cover_state is reset")
+	s.True(s.store.Has(beta.ID), "an unchanged book keeps its cover")
+	s.EqualValues(1, s.coverState(beta.ID), "an unchanged book keeps its cover_state")
+}
+
+// TestChangedFileKeepsManualCover proves a manual cover (cover_prio 1000)
+// survives its file changing: neither the cached bytes nor the state move.
+func (s *folderSuite) TestChangedFileKeepsManualCover() {
+	ctx := context.Background()
+	dir := s.T().TempDir()
+	path := filepath.Join(dir, "a.fb2")
+	s.writeFB2(path, "Alpha", "Ann", "Author", "", nil)
+	old := time.Unix(1_000_000, 0)
+	s.Require().NoError(os.Chtimes(path, old, old))
+
+	src := s.insertLibrary("folder", dir)
+	parser := FolderParser{log: s.log, parser: newTestDispatcher()}
+	_, err := parser.Sync(ctx, src, s.db, s.store, nopReporter{})
+	s.Require().NoError(err)
+	alpha := s.booksByLibrary(src.ID)["Alpha"]
+	s.lazilyCover(alpha.ID)
+	s.Require().NoError(dbq.New(s.db).UpdateBookCoverPrio(ctx,
+		dbq.UpdateBookCoverPrioParams{CoverPrio: 1000, ID: alpha.ID}))
+
+	newer := old.Add(time.Hour)
+	s.Require().NoError(os.Chtimes(path, newer, newer))
+	_, err = parser.Sync(ctx, src, s.db, s.store, nopReporter{})
+	s.Require().NoError(err)
+
+	s.True(s.store.Has(alpha.ID), "a manual cover is never deleted")
+	book := s.booksByLibrary(src.ID)["Alpha"]
+	s.EqualValues(1000, book.CoverPrio, "a manual cover keeps its priority")
+	s.EqualValues(1, s.coverState(alpha.ID), "a manual cover keeps its state")
 }

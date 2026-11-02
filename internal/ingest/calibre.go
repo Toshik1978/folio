@@ -20,7 +20,8 @@ import (
 // (the folder containing metadata.db); book files and cover images are
 // resolved relative to it.
 type CalibreParser struct {
-	log *slog.Logger
+	log  *slog.Logger
+	rank func(format string) int
 }
 
 // calibreAuthorsQuery joins authors per book.
@@ -75,8 +76,11 @@ const calibreBooksQuery = `
 // automatically (no separate FROM/WHERE to maintain).
 const calibreBooksCountQuery = `SELECT COUNT(*) FROM (` + calibreBooksQuery + `)`
 
-// NewCalibreParser builds the Calibre library parser.
-func NewCalibreParser(log *slog.Logger) *CalibreParser { return &CalibreParser{log} }
+// NewCalibreParser builds the Calibre library parser. rank orders a book's
+// formats (typically ebook.Dispatcher.Rank).
+func NewCalibreParser(log *slog.Logger, rank func(format string) int) *CalibreParser {
+	return &CalibreParser{log: log, rank: rank}
+}
 
 // Checkpoint fingerprints the library's metadata.db, which Calibre rewrites on
 // any change, so the engine can skip an unchanged library.
@@ -119,7 +123,7 @@ func (c *CalibreParser) Sync(
 	}
 	defer func() { _ = rows.Close() }()
 
-	return runReconcile(ctx, db, covers, library, r, c.log, func(ctx context.Context, rc *reconciler) error {
+	return runReconcile(ctx, db, covers, library, r, c.log, c.rank, func(ctx context.Context, rc *reconciler) error {
 		return reconcileCalibreRows(ctx, rc, rows, library.Path, library.ID, links)
 	})
 }

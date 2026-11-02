@@ -66,50 +66,44 @@ func (s *deepIndexWorkSuite) work(lib int64, importedAt sql.NullInt64) []dbq.Lis
 	return rows
 }
 
-func (s *deepIndexWorkSuite) TestPreferenceOrder() {
-	cases := []struct {
-		name  string
-		files [][2]string
-		want  string
-	}{
-		{
-			"fb2 beats all",
-			[][2]string{{"pdf", "a.pdf"}, {"mobi", "a.mobi"}, {"epub", "a.epub"}, {"fb2", "a.fb2"}},
-			"fb2",
-		},
-		{"epub beats mobi and pdf", [][2]string{{"pdf", "b.pdf"}, {"mobi", "b.mobi"}, {"epub", "b.epub"}}, "epub"},
-		{"mobi beats pdf", [][2]string{{"pdf", "c.pdf"}, {"mobi", "c.mobi"}}, "mobi"},
-		{"other beats pdf", [][2]string{{"pdf", "d.pdf"}, {"azw3", "d.azw3"}}, "azw3"},
-		{"pdf only", [][2]string{{"pdf", "e.pdf"}}, "pdf"},
+// paths returns the source_path of every row, in order.
+func paths(rows []dbq.ListDeepIndexWorkRow) []string {
+	out := make([]string, len(rows))
+	for i, r := range rows {
+		out[i] = r.SourcePath
 	}
-	for _, c := range cases {
-		s.Run(c.name, func() {
-			lib := s.newLibrary(c.name, "/"+c.name)
-			id := s.book(lib, "k", 10, c.files...)
-			rows := s.work(lib, sql.NullInt64{})
-			s.Require().Len(rows, 1)
-			s.Equal(id, rows[0].BookID)
-			s.Equal(c.want, rows[0].FileFormat)
-			s.NotZero(rows[0].FileID)
-			s.NotEmpty(rows[0].SourcePath)
-		})
-	}
+
+	return out
 }
 
-func (s *deepIndexWorkSuite) TestOneRowPerBookOrderedBySourcePath() {
-	s.book(s.lib, "z", 10, [2]string{"epub", "z.epub"}, [2]string{"fb2", "z.fb2"})
+func (s *deepIndexWorkSuite) TestEveryFileOfABookIsReturned() {
+	id := s.book(s.lib, "k", 10,
+		[2]string{"pdf", "a.pdf"}, [2]string{"mobi", "a.mobi"}, [2]string{"epub", "a.epub"}, [2]string{"fb2", "a.fb2"})
+	rows := s.work(s.lib, sql.NullInt64{})
+	s.Require().Len(rows, 4, "no format is preferred in SQL")
+	formats := map[string]string{}
+	for _, r := range rows {
+		s.Equal(id, r.BookID)
+		s.NotZero(r.FileID)
+		formats[r.SourcePath] = r.FileFormat
+	}
+	s.Equal(map[string]string{"a.pdf": "pdf", "a.mobi": "mobi", "a.epub": "epub", "a.fb2": "fb2"}, formats)
+}
+
+func (s *deepIndexWorkSuite) TestRowsOrderedBySourcePath() {
+	s.book(s.lib, "z", 10, [2]string{"epub", "z.epub"}, [2]string{"fb2", "c.fb2"})
 	s.book(s.lib, "a", 10, [2]string{"epub", "a.epub"})
 	rows := s.work(s.lib, sql.NullInt64{})
-	s.Require().Len(rows, 2)
-	s.Equal("a.epub", rows[0].SourcePath)
-	s.Equal("z.fb2", rows[1].SourcePath)
+	s.Equal([]string{"a.epub", "c.fb2", "z.epub"}, paths(rows))
 }
 
-func (s *deepIndexWorkSuite) TestSameFormatTieBreaksByFileID() {
-	s.book(s.lib, "t", 10, [2]string{"epub", "second.epub"}, [2]string{"epub", "first.epub"})
+func (s *deepIndexWorkSuite) TestSameSourcePathTieBreaksByBookID() {
+	first := s.book(s.lib, "first", 10, [2]string{"fb2", "same.fb2"})
+	second := s.book(s.lib, "second", 10, [2]string{"fb2", "same.fb2"})
 	rows := s.work(s.lib, sql.NullInt64{})
-	s.Require().Len(rows, 1)
-	s.Equal("second.epub", rows[0].SourcePath)
+	s.Require().Len(rows, 2)
+	s.Equal(first, rows[0].BookID)
+	s.Equal(second, rows[1].BookID)
 }
 
 func (s *deepIndexWorkSuite) TestCheckedBooksExcluded() {

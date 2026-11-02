@@ -29,7 +29,7 @@ type fakeExtractor struct {
 	called      int
 }
 
-func (f *fakeExtractor) Backfill(_ context.Context, _ int64) (ebook.Metadata, bool, error) {
+func (f *fakeExtractor) Description(_ context.Context, _ int64) (ebook.Metadata, bool, error) {
 	f.called++
 	if f.annotation == "" && len(f.identifiers) == 0 {
 		return ebook.Metadata{}, false, nil

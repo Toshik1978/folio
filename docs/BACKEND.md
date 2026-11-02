@@ -264,13 +264,14 @@ internal/
 │   ├── calibre.go · inpx.go · folder.go   # one sync.Parser impl per source type
 │   ├── driver.go          #   shared reconcile lifecycle (runReconcile; stamps imported_at)
 │   ├── reconcile.go       #   upsert/diff books & files (stable identity)
-│   ├── merge.go           #   pure merge decision (planMerge / filePriority) + applyPlan
-│   ├── importer.go        #   transactional batch writer (add/remove, saveCoverIfBetter)
+│   ├── merge.go           #   pure merge decision (planMerge, injected rank) + applyPlan
+│   ├── importer.go        #   transactional batch writer (add/remove, saveCoverIfBetter, cover invalidation)
 │   ├── insert.go · record.go   # row insert + the in-flight bookRecord model
 │   ├── groupkey.go        #   library_key + content_hash
 │   ├── genres.go          #   genre taxonomy normalization (see EBOOK-PARSING.md)
 │   ├── identifier.go      #   identifier cleaning/dedup (see EBOOK-PARSING.md)
-│   ├── extract.go         #   lazy cover/metadata extractor (Backfill)
+│   ├── extract.go         #   lazy cover/metadata extractor (Cover, Description, readBook)
+│   ├── source.go          #   resolver: library layout → ebook.Source (archiveCache, withinRoot)
 │   └── enrich.go          #   online enricher (Google Books → ebook.Metadata)
 ├── ebook/                 # Ebook file parsers (epub/fb2(.zip)/mobi+azw3/pdf)
 │   │                      #   assembled into a Dispatcher by main and injected
@@ -302,9 +303,31 @@ documented in [EBOOK-PARSING.md](./EBOOK-PARSING.md).
 wires dependencies in order and starts the server; no business logic lives here.
 One `ebook.Dispatcher` owns the per-format parser set (`epub`/`fb2`/`mobi`/`pdf`)
 and is injected into the extractor and the folder parser, so no package reaches
-for a global registry. One `ingest.Extractor` (built over `*sql.DB` and the
-dispatcher) is shared by the cover store and the sync engine — passed as a
-constructor parameter, not a setter. An `ingest.Enricher` wraps a
+for a global registry. Its `Rank` method (EPUB 4, FB2 3, MOBI/AZW/AZW3 2,
+PDF 1, unknown 0) is the only format ranking `ingest` uses: every source parser
+receives it — `NewCalibreParser(log, parser.Rank)`,
+`NewINPXParser(log, parser.Rank)`, and `NewFolderParser(log, parser)`, which
+uses `parser.Rank` — and hands it through `runReconcile(…, rank, scan)` to
+`newImporter(log, db, covers, batchSize, rank)`, where it decides cover saves
+(`saveCoverIfBetter`), cover invalidation and metadata ownership
+(`planMerge`). `ingest` and `covers` hold no format names of their own:
+`ingestSuite.TestNoFormatNames` parses their non-test sources and fails on a
+string literal equal to a registered format label or containing its dotted
+extension, and on a format-specific `ebook` symbol (`ebook.Format*`,
+`ebook.New<Format>`, `ebook.<Format>Parser`, `ebook.ParseFB2Description`).
+Words inside identifiers (`fb2GenreMap`) and comments are not checked, and
+identifier-scheme literals such as `"mobi-asin"` pass. One `ingest.Extractor` (built over `*sql.DB` and the
+dispatcher: `NewExtractor(db, log, reader)`) is shared by the cover store and
+the sync engine — passed as a constructor parameter, not a setter — and also
+backs the Deep Index (`NewDeepIndexer(log, db, guard, extractor)`). It reads a
+book's files through `ingest`'s resolver (`internal/ingest/source.go`), the only
+reading code that knows the library layout: a Calibre or folder file is
+`library.Path` + `source_path`, while an INPX book is an entry of a sibling
+archive (`filepath.Join(filepath.Dir(library.Path), archiveName)`) that inflates
+lazily into memory. An `archiveCache` opens each archive once per caller
+(`os.Open` → `ebook.TagIO` → `zip.NewReader`, so a disk read error stays
+retryable), and `withinRoot` rejects a `source_path` that escapes its root.
+Nothing is written to disk. An `ingest.Enricher` wraps a
 `googlebooks.Client` built from `cfg.GoogleKey` (an empty key uses the anonymous
 quota) and backs on-view online enrichment; the cover store doubles as the
 `CoverSaver` for covers it fetches. One `auth.Authenticator` owns OPDS
@@ -315,8 +338,8 @@ map the sync engine dispatches on, and `WithStatsObserver(catalogHandler)`
 lets the engine notify the handler when stats change so it invalidates its cached stats:
 
 ```go
-parser := ebook.NewDispatcher(ebook.NewEPUB(), ebook.NewFB2(), ebook.NewMOBI(), ebook.NewPDF())
-extractor := ingest.NewExtractor(database, log, cfg.DataDir, parser)
+parser := ebook.NewStandardDispatcher()
+extractor := ingest.NewExtractor(database, log, parser)
 coverStore, _ := covers.NewStore(cfg.DataDir, extractor)
 enricher := ingest.NewEnricher(database, googlebooks.NewClient(log, cfg.GoogleKey))
 authn := auth.New(log, database)
@@ -324,7 +347,7 @@ authn.WarnIfUnprotected(ctx)
 broker := events.NewBroker()
 catalogHandler := api.NewCatalog(log, database)
 syncEngine, _ := sync.New(
-    log, database, buildParsers(log, parser), coverStore, extractor,
+    log, database, buildParsers(log, parser), coverStore, extractor, // parsers get parser.Rank
     sync.WithEvents(broker), sync.WithStatsObserver(catalogHandler))
 syncEngine.Start()
 

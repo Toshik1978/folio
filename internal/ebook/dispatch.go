@@ -2,9 +2,11 @@ package ebook
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"path/filepath"
+	"slices"
 	"strings"
 )
 
@@ -12,7 +14,8 @@ import (
 // It replaces the former package-global parser registry: the composition root
 // builds one Dispatcher from an explicit parser list and injects it.
 type Dispatcher struct {
-	parsers map[string]Parser
+	parsers map[string]Parser // by extension key, e.g. ".fb2.zip"
+	labels  map[string]Parser // by stored format label, e.g. "fb2", "azw3"
 }
 
 // NewDispatcher builds a Dispatcher, indexing each parser by every extension it
@@ -20,56 +23,91 @@ type Dispatcher struct {
 // error caught at startup (consistent with config.MustParse).
 func NewDispatcher(parsers ...Parser) *Dispatcher {
 	m := make(map[string]Parser)
+	labels := make(map[string]Parser)
 	for _, p := range parsers {
 		for _, ext := range p.Extensions() {
 			if _, dup := m[ext]; dup {
 				panic(fmt.Sprintf("ebook: duplicate parser for extension %q", ext))
 			}
 			m[ext] = p
+			labels[formatLabel(ext)] = p
 		}
 	}
 
-	return &Dispatcher{parsers: m}
+	return &Dispatcher{parsers: m, labels: labels}
 }
 
-// Parse selects the parser for path's extension and runs it. Parsers run on
-// untrusted files; pdfcpu in particular can panic on malformed input. Recover so
-// one bad file becomes a skippable error instead of crashing the background
-// sync/warm goroutines (HTTP handlers are already shielded by net/http's
-// per-request recover).
-func (d *Dispatcher) Parse(ctx context.Context, log *slog.Logger, path string) (meta Metadata, err error) {
-	// Bail before touching the file when the caller (a background sync/warm
-	// goroutine) is already cancelled, so a shutdown drains the parse queue
-	// promptly instead of parsing every remaining file first.
-	if err = ctx.Err(); err != nil {
-		return Metadata{}, fmt.Errorf("parse %s: %w", path, err)
-	}
+// NewStandardDispatcher builds a Dispatcher over the standard parser set
+// (EPUB, FB2, MOBI family, PDF). The composition root and tests use it.
+func NewStandardDispatcher() *Dispatcher {
+	return NewDispatcher(epubParser{}, fb2Parser{}, mobiParser{}, pdfParser{})
+}
 
-	ext := d.fileExt(path)
-	p, ok := d.parsers[ext]
-	if !ok {
-		return Metadata{}, fmt.Errorf("unsupported format: %s", ext)
-	}
-	defer func() {
-		if r := recover(); r != nil {
-			meta, err = Metadata{}, fmt.Errorf("parse %s panicked: %v", path, r)
-		}
-	}()
-
-	log.Debug("--> parse book", slog.String("path", path))
-	defer log.Debug("<-- parsed book", slog.String("path", path))
-
-	meta, err = p.Parse(ctx, path)
+// Metadata selects the parser for src.Name's extension and reads src's
+// metadata. See run for the cancellation, panic and error-classification rules.
+func (d *Dispatcher) Metadata(ctx context.Context, log *slog.Logger, src Source) (Metadata, error) {
+	var meta Metadata
+	err := d.run(ctx, log, src, "metadata", func(p Parser) error {
+		var err error
+		meta, err = p.Metadata(ctx, src)
+		return err //nolint:wrapcheck // run classifies and wraps the parser error
+	})
 	if err != nil {
-		// The dispatcher contributes the format; callers add the file path, so
-		// don't restate it here (avoids a doubled path in propagated errors).
-		return Metadata{}, fmt.Errorf("%s parser: %w", d.Format(path), err)
+		return Metadata{}, err
 	}
 
 	return meta, nil
 }
 
-// Supported reports whether path has an extension a registered parser can parse.
+// Cover selects the parser for src.Name's extension and reads src's cover
+// image, returning (nil, nil) when the file has none. See run for the
+// cancellation, panic and error-classification rules.
+func (d *Dispatcher) Cover(ctx context.Context, log *slog.Logger, src Source) ([]byte, error) {
+	var cover []byte
+	err := d.run(ctx, log, src, "cover", func(p Parser) error {
+		var err error
+		cover, err = p.Cover(ctx, src)
+		return err //nolint:wrapcheck // run classifies and wraps the parser error
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return cover, nil
+}
+
+// Rank returns the preference rank of the stored format label (e.g. "epub",
+// "azw3"); higher is preferred among a book's files. Unknown labels rank 0.
+func (d *Dispatcher) Rank(format string) int {
+	if p, ok := d.labels[strings.ToLower(format)]; ok {
+		return p.Traits().Rank
+	}
+
+	return 0
+}
+
+// Describes reports whether files of the stored format label are read for
+// descriptions. Unknown labels report false.
+func (d *Dispatcher) Describes(format string) bool {
+	if p, ok := d.labels[strings.ToLower(format)]; ok {
+		return p.Traits().Describes
+	}
+
+	return false
+}
+
+// Extensions returns every registered extension key, sorted.
+func (d *Dispatcher) Extensions() []string {
+	exts := make([]string, 0, len(d.parsers))
+	for ext := range d.parsers {
+		exts = append(exts, ext)
+	}
+	slices.Sort(exts)
+
+	return exts
+}
+
+// Supported reports whether path has an extension a registered parser can read.
 func (d *Dispatcher) Supported(path string) bool {
 	_, ok := d.parsers[d.fileExt(path)]
 	return ok
@@ -83,12 +121,80 @@ func (d *Dispatcher) Format(path string) string {
 	if _, ok := d.parsers[ext]; !ok {
 		return ""
 	}
-	ext = strings.TrimPrefix(ext, ".")
-	if ext == "fb2.zip" {
-		return FormatFB2
+
+	return formatLabel(ext)
+}
+
+// run routes src to its parser and runs op on it. It returns a wrapped
+// ctx.Err() before touching src, recovers a parser panic into *PanicError,
+// passes ErrSourceIO, ErrTooLarge, context errors and errors that already match
+// ErrMalformed through, and wraps any other parser error so it matches
+// ErrMalformed. Parsers read untrusted bytes (pdfcpu in particular can panic on
+// malformed input), so one bad file must become a classifiable error rather
+// than crash a background goroutine.
+func (d *Dispatcher) run(
+	ctx context.Context,
+	log *slog.Logger,
+	src Source,
+	what string,
+	op func(Parser) error,
+) (err error) {
+	if err = ctx.Err(); err != nil {
+		return fmt.Errorf("read %s of %s: %w", what, src.Name, err)
 	}
 
-	return ext
+	ext := d.fileExt(src.Name)
+	p, ok := d.parsers[ext]
+	if !ok {
+		return fmt.Errorf("read %s of %s: unsupported format %q", what, src.Name, ext)
+	}
+	format := formatLabel(ext)
+	defer func() {
+		if r := recover(); r != nil {
+			err = &PanicError{Value: r}
+		}
+	}()
+
+	log.Debug("--> read book "+what, slog.String("name", src.Name))
+	defer log.Debug("<-- read book "+what, slog.String("name", src.Name))
+
+	err = op(p)
+	switch {
+	case err == nil:
+		return nil
+	case errors.Is(err, ErrSourceIO), errors.Is(err, ErrTooLarge), errors.Is(err, ErrMalformed),
+		errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+		return fmt.Errorf("%s parser: %w", format, err)
+	default:
+		return fmt.Errorf("%s parser: %w: %w", format, ErrMalformed, err)
+	}
+}
+
+// formatLabel maps a registered extension key to its stored format label:
+// the extension without its dot, except that the ".fb2.zip" wrapper is "fb2".
+func formatLabel(ext string) string {
+	if ext == extFB2Zip {
+		return formatFB2
+	}
+
+	return strings.TrimPrefix(ext, ".")
+}
+
+// ContentType maps a stored format label to its MIME type, falling back to
+// application/octet-stream for unknown labels.
+func ContentType(format string) string {
+	switch strings.ToLower(format) {
+	case formatEPUB:
+		return "application/epub+zip"
+	case formatFB2:
+		return "application/x-fictionbook+xml"
+	case formatMOBI, formatAZW, formatAZW3:
+		return "application/x-mobipocket-ebook"
+	case formatPDF:
+		return "application/pdf"
+	default:
+		return "application/octet-stream"
+	}
 }
 
 func (d *Dispatcher) fileExt(path string) string {

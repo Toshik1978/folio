@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<FictionBook xmlns="http://www.gribuser.ru/xml/fictionbook/2.0" xmlns:l="http://www.w3.org/1999/xlink">
+  <description>
+    <title-info>
+      <book-title>Odd Cover FB2 Book</book-title>
+      <author>
+        <first-name>Ivan</first-name>
+        <last-name>Testov</last-name>
+      </author>
+      <annotation><p>A description that stays readable.</p></annotation>
+      <lang>en</lang>
+      <coverpage><image l:href="#cover.jpg"/></coverpage>
+    </title-info>
+  </description>
+  <binary id="cover.jpg" content-type="image/jpeg">dGhpcyBpcyBwbGFpbiB0ZXh0LCBub3QgYW4gaW1hZ2U=</binary>
+</FictionBook>

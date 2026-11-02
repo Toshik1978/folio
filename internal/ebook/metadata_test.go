@@ -1,5 +1,7 @@
 package ebook
 
+import "strings"
+
 // metadataSuite covers the publishing-metadata fields (publisher, year,
 // identifiers) that are shared across formats, using in-memory inputs.
 type metadataSuite struct {
@@ -37,7 +39,7 @@ func (s *metadataSuite) TestFB2PublishInfo() {
   </description>
 </FictionBook>`
 
-	m, err := parseFB2XML([]byte(doc))
+	m, err := parseFB2Header(strings.NewReader(doc))
 	s.Require().NoError(err)
 	s.Equal("Chilton Books", m.Publisher)
 	s.Equal(1965, m.Year)
