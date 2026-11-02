@@ -7,9 +7,9 @@
   >
     <span class="loading loading-spinner loading-sm" aria-hidden="true" />
     <span>
-      Syncing "{{ currentName }}"<template v-if="queued.length">
-        — {{ queued.length }} queued</template
-      >
+      <template v-if="currentKind === 'deep_index'">Deep indexing…</template>
+      <template v-else>Syncing "{{ currentName }}"</template
+      ><template v-if="queued.length"> — {{ queued.length }} queued</template>
     </span>
     <span v-if="currentProgress">{{
       formatProgress(currentProgress.processed, currentProgress.total)
@@ -21,5 +21,5 @@
 import { useSyncStatus } from '@/composables/useSyncStatus';
 import { formatProgress } from '@/utils/format';
 
-const { running, currentName, queued, currentProgress } = useSyncStatus();
+const { running, currentKind, currentName, queued, currentProgress } = useSyncStatus();
 </script>

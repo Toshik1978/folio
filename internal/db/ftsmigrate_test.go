@@ -25,6 +25,7 @@ type ftsMigrationSuite struct {
 const (
 	versionBeforeFTSRowid = 4
 	versionFTSRowid       = 5
+	versionFTSContentless = 6
 )
 
 // SetupTest opens a database migrated only as far as 004, i.e. with books_fts
@@ -137,4 +138,103 @@ func (s *ftsMigrationSuite) TestDownRestoresBookIDKey() {
 	var n int
 	s.Require().NoError(s.db.QueryRowContext(ctx, `SELECT count(*) FROM books_fts`).Scan(&n))
 	s.Zero(n, "restored books_ad must still purge by book_id")
+}
+
+// seedRowidKeyed inserts a book and its post-005 FTS row (keyed by rowid), for
+// exercising the 006 contentless rebuild.
+func (s *ftsMigrationSuite) seedRowidKeyed(id int64, title, authors, annotation string) {
+	ctx := context.Background()
+
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO books (id, library_id, library_key, title, language, content_hash, added_at, imported_at)
+		 VALUES (?, 1, ?, ?, 'ru', ?, 0, 0)`,
+		id, "key-"+title, title, "hash-"+title)
+	s.Require().NoError(err)
+
+	_, err = s.db.ExecContext(ctx,
+		`INSERT INTO books_fts (rowid, title, authors, series, annotation) VALUES (?, ?, ?, '', ?)`,
+		id, title, authors, annotation)
+	s.Require().NoError(err)
+}
+
+func (s *ftsMigrationSuite) migrateToContentless() {
+	s.Require().NoError(goose.UpTo(s.db, "migrations", versionFTSRowid))
+	s.seedRowidKeyed(42, "Alpha", "Ivan Petrov", "A tale of zeppelins")
+	s.seedRowidKeyed(7, "Beta", "Anna Sidorova", "Zeppelins again")
+	s.Require().NoError(goose.UpTo(s.db, "migrations", versionFTSContentless))
+}
+
+func (s *ftsMigrationSuite) count(query string, args ...any) int {
+	var n int
+	s.Require().NoError(s.db.QueryRowContext(context.Background(), query, args...).Scan(&n))
+
+	return n
+}
+
+// TestContentlessPreservesRowsAndSearch checks the copy keeps every row, keyed
+// by rowid, and that title, author and annotation terms are still found.
+func (s *ftsMigrationSuite) TestContentlessPreservesRowsAndSearch() {
+	s.migrateToContentless()
+
+	s.Equal(2, s.count(`SELECT count(*) FROM books_fts`))
+	for _, term := range []string{"Alpha", "Petrov", "zeppelins"} {
+		s.Positive(s.count(`SELECT count(*) FROM books_fts WHERE books_fts MATCH ?`, term), term)
+	}
+	s.Equal(42, s.count(`SELECT rowid FROM books_fts WHERE books_fts MATCH 'Petrov'`))
+}
+
+func (s *ftsMigrationSuite) TestContentlessDeleteRemovesFTSRow() {
+	s.migrateToContentless()
+
+	_, err := s.db.ExecContext(context.Background(), `DELETE FROM books WHERE id = 42`)
+	s.Require().NoError(err)
+
+	s.Equal(1, s.count(`SELECT count(*) FROM books_fts`))
+	s.Zero(s.count(`SELECT count(*) FROM books_fts WHERE books_fts MATCH 'Petrov'`))
+}
+
+func (s *ftsMigrationSuite) TestContentlessHasNoContentTable() {
+	s.migrateToContentless()
+
+	s.Zero(s.count(`SELECT count(*) FROM sqlite_master WHERE name = 'books_fts_content'`))
+}
+
+func (s *ftsMigrationSuite) TestVocabReturnsDocumentFrequency() {
+	s.migrateToContentless()
+
+	s.Equal(2, s.count(`SELECT doc FROM books_fts_vocab WHERE term = 'zeppelins'`))
+	s.Equal(1, s.count(`SELECT doc FROM books_fts_vocab WHERE term = 'petrov'`))
+}
+
+// TestContentlessDownRebuildsFromBooks checks the Down leg restores a content
+// table from the books joins, dropping the vocab table.
+func (s *ftsMigrationSuite) TestContentlessDownRebuildsFromBooks() {
+	ctx := context.Background()
+	s.migrateToContentless()
+
+	for _, q := range []string{
+		`INSERT INTO authors (id, name, name_fold) VALUES (1, 'Ivan Petrov', 'IVAN PETROV'), (2, 'Co Author', 'CO AUTHOR')`,
+		`INSERT INTO book_authors (book_id, author_id) VALUES (42, 1), (42, 2)`,
+		`INSERT INTO series (id, name, name_fold) VALUES (1, 'Saga', 'SAGA')`,
+		`UPDATE books SET series_id = 1, annotation = '<p>A tale</p>' WHERE id = 42`,
+	} {
+		_, err := s.db.ExecContext(ctx, q)
+		s.Require().NoError(err)
+	}
+
+	s.Require().NoError(goose.DownTo(s.db, "migrations", versionFTSRowid))
+
+	s.Equal(2, s.count(`SELECT count(*) FROM books_fts`))
+	s.Zero(s.count(`SELECT count(*) FROM sqlite_master WHERE name = 'books_fts_vocab'`))
+
+	var authors, series, annotation string
+	s.Require().NoError(s.db.QueryRowContext(ctx,
+		`SELECT authors, series, annotation FROM books_fts WHERE rowid = 42`).Scan(&authors, &series, &annotation))
+	s.Equal("Ivan Petrov Co Author", authors)
+	s.Equal("Saga", series)
+	s.Equal("<p>A tale</p>", annotation)
+
+	_, err := s.db.ExecContext(ctx, `DELETE FROM books WHERE id = 42`)
+	s.Require().NoError(err)
+	s.Equal(1, s.count(`SELECT count(*) FROM books_fts`))
 }

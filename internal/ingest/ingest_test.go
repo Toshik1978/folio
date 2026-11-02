@@ -46,6 +46,9 @@ func TestIngest(t *testing.T) {
 	suite.Run(t, new(idMatchSuite))
 	suite.Run(t, new(identifierLookupSuite))
 	suite.Run(t, new(coverStateSuite))
+	suite.Run(t, new(deepIndexFixturesSuite))
+	suite.Run(t, new(deepIndexSuite))
+	suite.Run(t, new(deepIndexFolderSuite))
 }
 
 // nopReporter discards progress. The tests use it to drive a Sync without caring
@@ -181,16 +184,19 @@ func (s *baseSuite) authorsForBook(bookID int64) []string {
 	return names
 }
 
-// ftsRow returns the indexed title and authors for a book from books_fts.
-func (s *baseSuite) ftsRow(bookID int64) (title, authors string) {
+// ftsHas reports whether the book's books_fts row matches an FTS5 phrase in one
+// column. books_fts is contentless, so stored text cannot be read back; a MATCH
+// restricted to the book's rowid is the only way to observe its indexed terms.
+func (s *baseSuite) ftsHas(bookID int64, column, phrase string) bool {
+	var n int
 	err := s.db.QueryRowContext(
 		context.Background(),
-		"SELECT title, authors FROM books_fts WHERE rowid = ?",
-		bookID,
-	).Scan(&title, &authors)
+		"SELECT count(*) FROM books_fts WHERE books_fts MATCH ? AND rowid = ?",
+		column+`:"`+phrase+`"`, bookID,
+	).Scan(&n)
 	s.Require().NoError(err)
 
-	return title, authors
+	return n > 0
 }
 
 type helpersSuite struct {
@@ -281,8 +287,8 @@ func (s *helpersSuite) TestInsertBookDeduplicatesFTSAuthors() {
 	}, time.Now().Unix())
 	s.Require().NoError(err)
 
-	_, authors := s.ftsRow(bookID)
-	s.Equal("Asimov", authors, "duplicate author strings must not repeat in FTS")
+	s.True(s.ftsHas(bookID, "authors", "asimov"))
+	s.False(s.ftsHas(bookID, "authors", "asimov asimov"), "duplicate author strings must not repeat in FTS")
 }
 
 // TestContentHashIncludesRating guards that rating participates in the content

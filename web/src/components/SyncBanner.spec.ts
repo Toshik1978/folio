@@ -11,17 +11,42 @@ import { useSyncStatus } from '@/composables/useSyncStatus';
 
 describe('SyncBanner', () => {
   beforeEach(() => {
-    const { running, current, queued, currentProgress, disconnect } = useSyncStatus();
+    const { running, current, queued, currentProgress, currentKind, disconnect } = useSyncStatus();
     disconnect();
     running.value = false;
     current.value = 0;
     queued.value = [];
     currentProgress.value = null;
+    currentKind.value = null;
   });
 
   it('is hidden when idle', () => {
     const wrapper = mount(SyncBanner);
     expect(wrapper.find('[data-testid="sync-banner"]').exists()).toBe(false);
+  });
+
+  it('shows "Deep indexing…" with progress when a Deep Index run is active', async () => {
+    const { running, currentKind, currentProgress } = useSyncStatus();
+    running.value = true;
+    currentKind.value = 'deep_index';
+    currentProgress.value = { processed: 3, total: 10 };
+
+    const wrapper = mount(SyncBanner);
+    await wrapper.vm.$nextTick();
+
+    const text = wrapper.find('[data-testid="sync-banner"]').text();
+    expect(text).toContain('Deep indexing…');
+    expect(text).not.toContain('Syncing');
+    expect(text).toContain('3 / 10');
+  });
+
+  it('shows the sync text for a sync run', async () => {
+    const { running, currentKind } = useSyncStatus();
+    running.value = true;
+    currentKind.value = 'sync';
+    const wrapper = mount(SyncBanner);
+    await wrapper.vm.$nextTick();
+    expect(wrapper.find('[data-testid="sync-banner"]').text()).toContain('Syncing');
   });
 
   it('shows the queued count while running', async () => {

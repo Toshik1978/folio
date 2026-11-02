@@ -1,6 +1,7 @@
 package sync
 
 import (
+	"encoding/json"
 	stdsync "sync"
 
 	"github.com/stretchr/testify/suite"
@@ -51,7 +52,7 @@ func (s *engineEventsSuite) newEngine(p Publisher) *Engine {
 	return &Engine{
 		events: p,
 		wake:   make(chan struct{}, 1),
-		queued: map[int64]bool{},
+		queued: map[reqKey]bool{},
 	}
 }
 
@@ -93,4 +94,46 @@ func (s *engineEventsSuite) TestNilPublisherIsNoOp() {
 		e.emitStatus()
 		e.emitLibrary(1, "active")
 	})
+}
+
+func (s *engineEventsSuite) TestEnqueueDedupsPerKind() {
+	e := s.newEngine(nil)
+
+	e.enqueue(
+		syncReq{id: 7},
+		syncReq{id: 7, kind: kindDeepIndex},
+		syncReq{id: 7},
+		syncReq{id: 7, kind: kindDeepIndex},
+	)
+
+	s.Equal([]syncReq{{id: 7}, {id: 7, kind: kindDeepIndex}}, e.queue)
+	s.Equal([]int64{7, 7}, e.Status().Queued)
+}
+
+func (s *engineEventsSuite) TestForceUpgradeAppliesOnlyToSync() {
+	e := s.newEngine(nil)
+
+	e.enqueue(syncReq{id: 7, kind: kindDeepIndex}, syncReq{id: 7})
+	e.enqueue(syncReq{id: 7, force: true})
+
+	s.Equal([]syncReq{{id: 7, kind: kindDeepIndex}, {id: 7, force: true}}, e.queue)
+}
+
+func (s *engineEventsSuite) TestStatusKindInPayload() {
+	rec := &recordingPublisher{}
+	e := s.newEngine(rec)
+
+	e.current, e.currentKind = 2, kindDeepIndex
+	e.enqueue(syncReq{id: 1})
+
+	got := rec.events()
+	s.Require().Len(got, 1)
+	raw, err := json.Marshal(got[0].Data)
+	s.Require().NoError(err)
+	s.JSONEq(`{"running":true,"current":2,"kind":"deep_index","queued":[1]}`, string(raw))
+
+	e.current = 0
+	raw, err = json.Marshal(e.Status())
+	s.Require().NoError(err)
+	s.JSONEq(`{"running":false,"queued":[1]}`, string(raw), "kind is omitted when idle")
 }

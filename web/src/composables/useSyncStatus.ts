@@ -21,6 +21,8 @@ const SSE_RETRY_MS = 30000; // re-attempt SSE from fallback
 const running = ref(false);
 const current = ref(0);
 const queued = ref<number[]>([]);
+// What the current run is ("sync" or "deep_index"); null when idle.
+const currentKind = ref<SyncStatus['kind'] | null>(null);
 const currentProgress = ref<{ processed: number; total?: number } | null>(null);
 const currentName = computed<string>(() => {
   const lib = useLibrary().libraries.value.find((l) => l.id === current.value);
@@ -48,6 +50,7 @@ function applyStatus(status: SyncStatus): void {
   running.value = status.running;
   current.value = status.current ?? 0;
   queued.value = status.queued ?? [];
+  currentKind.value = status.running ? (status.kind ?? null) : null;
   if (!running.value || current.value !== prevCurrent) {
     currentProgress.value = null;
   }
@@ -186,6 +189,7 @@ export function useSyncStatus() {
     running,
     current,
     queued,
+    currentKind,
     currentProgress,
     currentName,
     isSyncing,

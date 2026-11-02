@@ -41,6 +41,17 @@
             <i class="pi pi-refresh" />
             Re-index All
           </button>
+          <button
+            v-if="libraries.length > 0"
+            type="button"
+            data-testid="deep-index-all"
+            class="btn btn-sm"
+            :disabled="syncRunning"
+            @click="actions.deepIndexAll"
+          >
+            <i class="pi pi-search" />
+            Deep Index All
+          </button>
         </template>
       </LibraryStats>
 
@@ -48,6 +59,7 @@
         :libraries="libraries"
         @sync="actions.syncLibrary"
         @reindex="actions.reindexLibrary"
+        @deep-index="actions.deepIndexLibrary"
         @edit="onEdit"
         @delete="actions.deleteLibrary"
         @reactivate="actions.reactivateLibrary"

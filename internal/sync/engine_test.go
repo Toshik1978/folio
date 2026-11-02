@@ -359,3 +359,348 @@ func (s *engineSuite) TestCheckpointPersistsWhenRunContextCancelled() {
 	s.True(got.LastSyncAt.Valid, "last-sync stamp must persist despite cancelled context")
 	s.Equal(fp, got.Checkpoint.String, "checkpoint must persist despite cancelled context")
 }
+
+// newDeepIndexEngine builds an engine over the suite's database and stub parser
+// with the given deep indexer wired, plus any extra options.
+func (s *engineSuite) newDeepIndexEngine(indexer DeepIndexer, opts ...Option) *Engine {
+	opts = append(opts, WithDeepIndexer(indexer))
+	eng, err := New(slog.New(slog.DiscardHandler), s.db, db.NewWriteGuard(),
+		map[string]Parser{"stub": s.parser}, s.store, opts...)
+	s.Require().NoError(err)
+
+	return eng
+}
+
+// runWorker starts eng's worker goroutine and stops it on cleanup.
+func (s *engineSuite) runWorker(eng *Engine) {
+	go eng.worker()
+	s.T().Cleanup(func() {
+		close(eng.stop)
+		<-eng.done
+	})
+}
+
+func (s *engineSuite) TestDeepIndexRunsIndexerWithAllScope() {
+	idx := &fakeDeepIndexer{}
+	rec := &recordingPublisher{}
+	eng := s.newDeepIndexEngine(idx, WithEvents(rec))
+	src := s.insertLibrary("stub", "/lib/deep")
+
+	eng.syncLibrary(syncReq{id: src.ID, kind: kindDeepIndex})
+
+	s.Equal([]int64{src.ID}, idx.runs())
+	s.Equal([]ingest.DeepIndexScope{ingest.DeepIndexAll()}, idx.scopes)
+	s.Zero(s.parser.callCount(), "a deep index run must not run the parser")
+	s.Equal([]int64{src.ID}, rec.libraryIDs(), "success emits a library event")
+	s.Equal("active", s.getLibrary(src.ID).Status)
+}
+
+func (s *engineSuite) TestDeepIndexIgnoresCheckpoint() {
+	s.parser.checkpoint = "cp-1"
+	s.parser.result = ingest.Result{} // no new books: keep the post-sync fill out of the count
+	idx := &fakeDeepIndexer{}
+	eng := s.newDeepIndexEngine(idx)
+	src := s.insertLibrary("stub", "/lib/deep-cp")
+
+	// A sync stores the checkpoint; an unchanged artifact would gate the next sync.
+	eng.syncLibrary(syncReq{id: src.ID})
+	s.Require().Equal("cp-1", s.getLibrary(src.ID).Checkpoint.String)
+
+	eng.syncLibrary(syncReq{id: src.ID, kind: kindDeepIndex})
+	eng.syncLibrary(syncReq{id: src.ID, kind: kindDeepIndex})
+
+	s.Equal([]int64{src.ID, src.ID}, idx.runs(), "deep index is never checkpoint-gated")
+	s.Equal(1, s.parser.callCount())
+}
+
+func (s *engineSuite) TestDeepIndexDoesNotHoldWriteGuard() {
+	guard := db.NewWriteGuard()
+	var lockedDuringRun bool
+	idx := &fakeDeepIndexer{onRun: func(context.Context, dbq.Library, ingest.Reporter) {
+		ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+		defer cancel()
+		if guard.Lock(ctx) == nil {
+			lockedDuringRun = true
+			guard.Unlock()
+		}
+	}}
+	eng, err := New(slog.New(slog.DiscardHandler), s.db, guard,
+		map[string]Parser{"stub": s.parser}, s.store, WithDeepIndexer(idx))
+	s.Require().NoError(err)
+	src := s.insertLibrary("stub", "/lib/deep-guard")
+
+	eng.syncLibrary(syncReq{id: src.ID, kind: kindDeepIndex})
+
+	s.True(lockedDuringRun, "the engine must not hold the write guard across a deep index run")
+}
+
+func (s *engineSuite) TestDeepIndexErrorMarksLibraryFailed() {
+	idx := &fakeDeepIndexer{err: errors.New("disk gone")}
+	eng := s.newDeepIndexEngine(idx)
+	src := s.insertLibrary("stub", "/lib/deep-err")
+
+	eng.syncLibrary(syncReq{id: src.ID, kind: kindDeepIndex})
+
+	got := s.getLibrary(src.ID)
+	s.Equal("error", got.Status)
+	s.Equal("deep index: disk gone", got.LastSyncError.String)
+}
+
+func (s *engineSuite) TestDeepIndexReportsProgress() {
+	idx := &fakeDeepIndexer{onRun: func(_ context.Context, _ dbq.Library, rep ingest.Reporter) {
+		rep.SetTotal(3)
+		rep.Add(3)
+	}}
+	rec := &recordingPublisher{}
+	eng := s.newDeepIndexEngine(idx, WithEvents(rec))
+	src := s.insertLibrary("stub", "/lib/deep-progress")
+
+	eng.syncLibrary(syncReq{id: src.ID, kind: kindDeepIndex})
+
+	var last progressEvent
+	for _, ev := range rec.events() {
+		if pe, ok := ev.Data.(progressEvent); ok {
+			last = pe
+		}
+	}
+	s.Equal(progressEvent{Library: src.ID, Processed: 3, Total: 3}, last)
+}
+
+func (s *engineSuite) TestDeepIndexSkipsPendingPurgeAtRunTime() {
+	idx := &fakeDeepIndexer{}
+	eng := s.newDeepIndexEngine(idx)
+	src := s.insertLibrary("stub", "/lib/deep-purge")
+	s.markPendingPurge(src.ID, sql.NullInt64{})
+
+	eng.syncLibrary(syncReq{id: src.ID, kind: kindDeepIndex})
+
+	s.Empty(idx.runs())
+}
+
+func (s *engineSuite) TestTriggerDeepIndexAllSkipsPendingPurge() {
+	idx := &fakeDeepIndexer{}
+	eng := s.newDeepIndexEngine(idx)
+	a := s.insertLibrary("stub", "/lib/deep-all-a")
+	b := s.insertLibrary("stub", "/lib/deep-all-b")
+	s.markPendingPurge(b.ID, sql.NullInt64{})
+
+	eng.TriggerDeepIndexAll()
+
+	s.Equal([]syncReq{{id: a.ID, kind: kindDeepIndex}}, eng.queue)
+}
+
+func (s *engineSuite) TestDeepIndexTriggersAreNoOpsWithoutIndexer() {
+	src := s.insertLibrary("stub", "/lib/deep-none")
+
+	s.engine.TriggerDeepIndex(src.ID)
+	s.engine.TriggerDeepIndexAll()
+
+	s.Empty(s.engine.Status().Queued)
+}
+
+func (s *engineSuite) TestDeepIndexAndSyncSameLibraryRunSequentially() {
+	var active, peak int
+	var mu stdsync.Mutex
+	enter := func() {
+		mu.Lock()
+		active++
+		peak = max(peak, active)
+		mu.Unlock()
+		time.Sleep(20 * time.Millisecond)
+		mu.Lock()
+		active--
+		mu.Unlock()
+	}
+	s.parser.onSync = func(context.Context, dbq.Library, *sql.DB, ingest.CoverStore) { enter() }
+	s.parser.result = ingest.Result{} // no new books: only the queued Deep Index runs the indexer
+	idx := &fakeDeepIndexer{onRun: func(context.Context, dbq.Library, ingest.Reporter) { enter() }}
+	eng := s.newDeepIndexEngine(idx)
+	src := s.insertLibrary("stub", "/lib/deep-seq")
+
+	// Queue both before the worker starts so they are pending side by side.
+	eng.TriggerLibrary(src.ID)
+	eng.TriggerDeepIndex(src.ID)
+	s.Equal([]int64{src.ID, src.ID}, eng.Status().Queued, "both kinds are queued for one library")
+	s.runWorker(eng)
+
+	s.Require().Eventually(func() bool {
+		return s.parser.callCount() == 1 && len(idx.runs()) == 1 && !eng.Status().Running
+	}, time.Second, 5*time.Millisecond)
+	mu.Lock()
+	defer mu.Unlock()
+	s.Equal(1, peak, "sync and deep index must not overlap")
+}
+
+func (s *engineSuite) TestStatusCarriesRunningKind() {
+	release := make(chan struct{})
+	idx := &fakeDeepIndexer{onRun: func(context.Context, dbq.Library, ingest.Reporter) { <-release }}
+	rec := &recordingPublisher{}
+	eng := s.newDeepIndexEngine(idx, WithEvents(rec))
+	src := s.insertLibrary("stub", "/lib/deep-kind")
+	s.runWorker(eng)
+
+	eng.TriggerDeepIndex(src.ID)
+	s.Require().Eventually(func() bool {
+		return eng.Status().Running
+	}, time.Second, 5*time.Millisecond)
+	s.Equal("deep_index", eng.Status().Kind)
+	close(release)
+
+	s.Require().Eventually(func() bool {
+		return !eng.Status().Running
+	}, time.Second, 5*time.Millisecond)
+	s.Empty(eng.Status().Kind)
+
+	eng.TriggerLibrary(src.ID)
+	s.Require().Eventually(func() bool {
+		return s.parser.callCount() == 1 && !eng.Status().Running
+	}, time.Second, 5*time.Millisecond)
+
+	var kinds []string
+	for _, ev := range rec.events() {
+		if st, ok := ev.Data.(Status); ok && st.Running {
+			kinds = append(kinds, st.Kind)
+		}
+	}
+	s.Contains(kinds, "deep_index")
+	s.Contains(kinds, "sync")
+}
+
+func (s *engineSuite) TestSyncFillsOnlyNewlyImportedBooks() {
+	s.parser.result = ingest.Result{Added: 2, ImportedAt: 1_700_000_000}
+	idx := &fakeDeepIndexer{}
+	eng := s.newDeepIndexEngine(idx)
+	src := s.insertLibrary("stub", "/lib/fill")
+
+	eng.syncLibrary(syncReq{id: src.ID})
+
+	s.Equal(1, s.parser.callCount())
+	s.Equal([]int64{src.ID}, idx.runs(), "the fill runs in the sync's queue turn")
+	s.Equal([]ingest.DeepIndexScope{ingest.DeepIndexImportedAt(1_700_000_000)}, idx.scopes,
+		"the fill visits only this run's books, never the backlog")
+	s.NotContains(idx.scopes, ingest.DeepIndexAll())
+}
+
+func (s *engineSuite) TestSyncWithoutAdditionsRunsNoFill() {
+	s.parser.result = ingest.Result{Removed: 3, ImportedAt: 1_700_000_000}
+	idx := &fakeDeepIndexer{}
+	eng := s.newDeepIndexEngine(idx)
+	src := s.insertLibrary("stub", "/lib/fill-none")
+
+	eng.syncLibrary(syncReq{id: src.ID})
+
+	s.Equal(1, s.parser.callCount())
+	s.Empty(idx.runs())
+}
+
+func (s *engineSuite) TestSkippedSyncRunsNoFill() {
+	s.parser.checkpoint = "cp-1"
+	s.parser.result = ingest.Result{Added: 1, ImportedAt: 1_700_000_000}
+	idx := &fakeDeepIndexer{}
+	eng := s.newDeepIndexEngine(idx)
+	src := s.insertLibrary("stub", "/lib/fill-skip")
+
+	eng.syncLibrary(syncReq{id: src.ID}) // runs, adds, fills
+	s.Require().Equal([]int64{src.ID}, idx.runs())
+
+	eng.syncLibrary(syncReq{id: src.ID}) // unchanged checkpoint: skipped
+
+	s.Equal(1, s.parser.callCount())
+	s.Equal([]int64{src.ID}, idx.runs(), "a checkpoint-skipped sync runs no fill")
+}
+
+func (s *engineSuite) TestFailedSyncRunsNoFill() {
+	s.parser.result = ingest.Result{Added: 1, ImportedAt: 1_700_000_000}
+	s.parser.err = errors.New("boom")
+	idx := &fakeDeepIndexer{}
+	eng := s.newDeepIndexEngine(idx)
+	src := s.insertLibrary("stub", "/lib/fill-failed")
+
+	eng.syncLibrary(syncReq{id: src.ID})
+
+	s.Empty(idx.runs())
+}
+
+func (s *engineSuite) TestSyncWithoutIndexerRunsNoFill() {
+	s.parser.result = ingest.Result{Added: 1, ImportedAt: 1_700_000_000}
+	src := s.insertLibrary("stub", "/lib/fill-noindexer")
+
+	s.NotPanics(func() { s.engine.syncLibrary(syncReq{id: src.ID}) })
+
+	s.True(s.getLibrary(src.ID).LastSyncAt.Valid)
+}
+
+func (s *engineSuite) TestPostSyncFillRunsAfterSyncGuardReleased() {
+	s.parser.result = ingest.Result{Added: 1, ImportedAt: 1_700_000_000}
+	guard := db.NewWriteGuard()
+	var lockedDuringFill bool
+	idx := &fakeDeepIndexer{onRun: func(context.Context, dbq.Library, ingest.Reporter) {
+		ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+		defer cancel()
+		if guard.Lock(ctx) == nil {
+			lockedDuringFill = true
+			guard.Unlock()
+		}
+	}}
+	eng, err := New(slog.New(slog.DiscardHandler), s.db, guard,
+		map[string]Parser{"stub": s.parser}, s.store, WithDeepIndexer(idx))
+	s.Require().NoError(err)
+	src := s.insertLibrary("stub", "/lib/fill-guard")
+
+	eng.syncLibrary(syncReq{id: src.ID})
+
+	s.Require().Equal([]int64{src.ID}, idx.runs())
+	s.True(lockedDuringFill, "the sync's write guard must be released before the fill runs")
+}
+
+func (s *engineSuite) TestPostSyncFillErrorKeepsSyncSuccess() {
+	s.parser.checkpoint = "cp-1"
+	s.parser.result = ingest.Result{Added: 1, ImportedAt: 1_700_000_000}
+	idx := &fakeDeepIndexer{err: errors.New("disk gone")}
+	eng := s.newDeepIndexEngine(idx)
+	src := s.insertLibrary("stub", "/lib/fill-err")
+
+	eng.syncLibrary(syncReq{id: src.ID})
+
+	got := s.getLibrary(src.ID)
+	s.Equal("active", got.Status)
+	s.False(got.LastSyncError.Valid, "a failed fill must not mark the library errored")
+	s.True(got.LastSyncAt.Valid)
+	s.Equal("cp-1", got.Checkpoint.String, "the sync's checkpoint still stands")
+}
+
+func (s *engineSuite) TestPostSyncFillReportsProgressAsDeepIndex() {
+	s.parser.result = ingest.Result{Added: 2, ImportedAt: 1_700_000_000}
+	rec := &recordingPublisher{}
+	var kindDuringFill string
+	var eng *Engine
+	idx := &fakeDeepIndexer{onRun: func(_ context.Context, _ dbq.Library, rep ingest.Reporter) {
+		kindDuringFill = eng.Status().Kind
+		rep.SetTotal(2)
+		rep.Add(2)
+	}}
+	eng = s.newDeepIndexEngine(idx, WithEvents(rec))
+	src := s.insertLibrary("stub", "/lib/fill-progress")
+	s.runWorker(eng)
+
+	eng.TriggerLibrary(src.ID)
+	s.Require().Eventually(func() bool {
+		return len(idx.runs()) == 1 && !eng.Status().Running
+	}, time.Second, 5*time.Millisecond)
+
+	s.Equal("deep_index", kindDuringFill, "the status names the fill while it runs")
+	var last progressEvent
+	var kinds []string
+	for _, ev := range rec.events() {
+		switch data := ev.Data.(type) {
+		case progressEvent:
+			last = data
+		case Status:
+			if data.Running {
+				kinds = append(kinds, data.Kind)
+			}
+		}
+	}
+	s.Equal(progressEvent{Library: src.ID, Processed: 2, Total: 2}, last)
+	s.Equal([]string{"sync", "deep_index"}, kinds, "status events announce the sync, then its fill")
+}

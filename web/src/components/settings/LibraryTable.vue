@@ -23,7 +23,7 @@
                 class="badge badge-sm whitespace-nowrap"
                 :class="statusClass(displayStatus(library))"
               >
-                {{ statusLabel(displayStatus(library)) }}
+                {{ badgeLabel(library) }}
               </span>
             </td>
             <td class="w-[1%] whitespace-nowrap">
@@ -107,6 +107,15 @@
                     data-testid="library-action"
                     class="btn btn-xs"
                     :disabled="rowBusy(library)"
+                    @click="$emit('deepIndex', library.id)"
+                  >
+                    Deep Index
+                  </button>
+                  <button
+                    type="button"
+                    data-testid="library-action"
+                    class="btn btn-xs"
+                    :disabled="rowBusy(library)"
                     @click="$emit('edit', library)"
                   >
                     Edit
@@ -142,13 +151,14 @@ defineProps<{ libraries: Library[] }>();
 defineEmits<{
   sync: [id: number];
   reindex: [library: Library];
+  deepIndex: [id: number];
   edit: [library: Library];
   delete: [id: number];
   reactivate: [id: number];
   purge: [id: number];
 }>();
 
-const { isSyncing, isQueued, currentProgress } = useSyncStatus();
+const { isSyncing, isQueued, currentProgress, currentKind } = useSyncStatus();
 
 // A row counts as syncing if the engine reports it current OR the persisted status
 // is already "syncing" (the effectiveStatus overlay from the API).
@@ -158,6 +168,13 @@ function rowSyncing(library: Library): boolean {
 
 function rowBusy(library: Library): boolean {
   return rowSyncing(library) || isQueued(library.id);
+}
+
+// badgeLabel is the status badge text; the row being deep-indexed reads
+// "Deep indexing…" instead of "Syncing".
+function badgeLabel(library: Library): string {
+  if (isSyncing(library.id) && currentKind.value === 'deep_index') return 'Deep indexing…';
+  return statusLabel(displayStatus(library));
 }
 
 function displayStatus(library: Library): string {

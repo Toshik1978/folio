@@ -101,6 +101,21 @@ SET annotation       = ?,
     metadata_checked = 1
 WHERE id = ?;
 
+-- SetBookAnnotationIfNull stores a file-recovered annotation only when the book
+-- has none, so manual, enriched or concurrently backfilled text is never
+-- overwritten. Zero affected rows means the book already had one (or is gone).
+-- name: SetBookAnnotationIfNull :execrows
+UPDATE books
+SET annotation = ?
+WHERE id = ?
+  AND annotation IS NULL;
+
+-- BookHasAnnotation reports whether the book already carries an annotation.
+-- name: BookHasAnnotation :one
+SELECT annotation IS NOT NULL AS has_annotation
+FROM books
+WHERE id = ?;
+
 -- MarkMetadataChecked records that the lazy local backfill ran (and found
 -- nothing, or skipped the source, e.g. a PDF), so it isn't re-attempted.
 -- name: MarkMetadataChecked :exec
@@ -277,3 +292,27 @@ WHERE id = ?;
 UPDATE books
 SET cover_state = ?
 WHERE id = ?;
+
+-- ListDeepIndexWork returns one preferred file per not-yet-checked book of a
+-- library (fb2, then epub, then mobi or any other format, PDF last), for the
+-- deep indexer. A NULL imported_at means every book; otherwise only books
+-- stamped by that sync run.
+-- name: ListDeepIndexWork :many
+SELECT ranked.book_id, ranked.file_id, ranked.file_format, ranked.source_path
+FROM (SELECT b.id                                                        AS book_id,
+             f.id                                                        AS file_id,
+             f.file_format                                               AS file_format,
+             f.source_path                                               AS source_path,
+             ROW_NUMBER() OVER (PARTITION BY b.id ORDER BY CASE LOWER(f.file_format)
+                                                               WHEN 'fb2' THEN 0
+                                                               WHEN 'epub' THEN 1
+                                                               WHEN 'pdf' THEN 3
+                                                               ELSE 2
+                                                           END, f.id) AS rn
+      FROM books b
+               JOIN book_files f ON f.book_id = b.id
+      WHERE b.library_id = sqlc.arg('library_id')
+        AND b.metadata_checked = 0
+        AND (CAST(sqlc.narg('imported_at') AS INTEGER) IS NULL OR b.imported_at = sqlc.narg('imported_at'))) AS ranked
+WHERE ranked.rn = 1
+ORDER BY ranked.source_path, ranked.book_id;

@@ -11,6 +11,9 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/stretchr/testify/suite"
+
+	"github.com/Toshik1978/folio/internal/api"
+	"github.com/Toshik1978/folio/internal/sync"
 )
 
 // stubRegistrar registers a single GET handler at the given path.
@@ -20,6 +23,17 @@ func (s stubRegistrar) Register(r chi.Router) {
 	r.Get(s.path, func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
 	r.Post(s.path, func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
 }
+
+// deepEngine is an api.SyncEngine whose only live methods are the ones the
+// real deep-index routes reach; the embedded nil interface panics on any other.
+type deepEngine struct {
+	api.SyncEngine
+
+	deepAll int
+}
+
+func (e *deepEngine) TriggerDeepIndexAll() { e.deepAll++ }
+func (e *deepEngine) Status() sync.Status  { return sync.Status{} }
 
 // stubOPDS is a minimal OPDS for tests.
 type stubOPDS struct{}
@@ -337,6 +351,36 @@ func (s *serverTestSuite) TestAPISameSiteGuardWiring() {
 	w = httptest.NewRecorder()
 	router.ServeHTTP(w, req)
 	s.Equal(http.StatusOK, w.Result().StatusCode, "same-origin POST to /api must pass")
+}
+
+func (s *serverTestSuite) TestDeepIndexRoutesRejectCrossSite() {
+	eng := &deepEngine{}
+	// A nil database is fine: the guard rejects before any handler touches it.
+	h := Handlers{
+		API: []Registrar{
+			api.NewSync(slog.New(slog.DiscardHandler), eng, nil),
+			api.NewLibraries(slog.New(slog.DiscardHandler), nil, nil, eng, ""),
+		},
+		OPDS: stubOPDS{},
+	}
+	router := newWithFS(slog.New(slog.DiscardHandler), h, "production", true, "", http.FS(s.testFS))
+
+	for _, path := range []string{"/api/libraries/1/deep-index", "/api/deep-index"} {
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, path, http.NoBody)
+		req.Header.Set("Sec-Fetch-Site", "cross-site")
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+		s.Equal(http.StatusForbidden, w.Result().StatusCode, "cross-site POST to %s must be blocked", path)
+	}
+	s.Zero(eng.deepAll, "a blocked request must not queue anything")
+
+	// Positive control: the same route is reachable same-origin.
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/deep-index", http.NoBody)
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	s.Equal(http.StatusAccepted, w.Result().StatusCode)
+	s.Equal(1, eng.deepAll)
 }
 
 func (s *serverTestSuite) TestFormBodyGuard() {

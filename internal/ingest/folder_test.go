@@ -127,7 +127,8 @@ func (s *folderSuite) TestSync() {
 	parser := FolderParser{log: s.log, parser: newTestDispatcher()}
 	res, err := parser.Sync(ctx, src, s.db, s.store, nopReporter{})
 	s.Require().NoError(err)
-	s.Equal(Result{Added: 2}, res)
+	s.Equal(2, res.Added)
+	s.Zero(res.Removed)
 
 	books := s.booksByLibrary(src.ID)
 	s.Require().Len(books, 2)
@@ -152,7 +153,8 @@ func (s *folderSuite) TestSync() {
 	// Second sync with no changes is a no-op (nothing re-parsed/inserted).
 	res, err = parser.Sync(ctx, src, s.db, s.store, nopReporter{})
 	s.Require().NoError(err)
-	s.Equal(Result{}, res)
+	s.Zero(res.Added)
+	s.Zero(res.Removed)
 
 	// Differential: change a, add c, remove b.
 	s.writeFB2(filepath.Join(dir, "a.fb2"), "Alpha Revised — now considerably longer to change the byte size",
@@ -351,9 +353,9 @@ func (s *folderSuite) TestMetadataFormatPriority() {
 	s.Equal([]string{"EPUB Author"}, s.authorsForBook(bookID))
 	// The FTS row mirrors the overwritten title and authors, so search stays
 	// consistent with what's displayed.
-	ftsTitle, ftsAuthors := s.ftsRow(bookID)
-	s.Equal("Title from EPUB", ftsTitle)
-	s.Equal("EPUB Author", ftsAuthors)
+	s.True(s.ftsHas(bookID, "title", "Title from EPUB"))
+	s.True(s.ftsHas(bookID, "authors", "EPUB Author"))
+	s.False(s.ftsHas(bookID, "title", "Title from PDF"))
 
 	// 3. Add a MOBI sibling (lower priority than EPUB: 2 vs 4)
 	mobiRec := bookRecord{
@@ -412,6 +414,29 @@ func (s *folderSuite) TestImportedAtIsRunTimeNotSourceDate() {
 	_, err = parser.Sync(ctx, src, s.db, s.store, nopReporter{})
 	s.Require().NoError(err)
 	s.Equal(firstImported, s.booksByLibrary(src.ID)["Dune"].ImportedAt, "re-sync must not restamp imported_at")
+}
+
+// TestResultImportedAtMatchesInsertedBooks proves Result.ImportedAt is the one
+// stamp shared by every book inserted in the run, so a post-sync Deep Index can
+// scope to exactly those books.
+func (s *folderSuite) TestResultImportedAtMatchesInsertedBooks() {
+	ctx := context.Background()
+	dir := s.T().TempDir()
+	s.writeFB2(filepath.Join(dir, "a.fb2"), "Dune", "Frank", "Herbert", "", nil)
+	s.writeFB2(filepath.Join(dir, "b.fb2"), "Emma", "Jane", "Austen", "", nil)
+
+	src := s.insertLibrary("folder", dir)
+	parser := FolderParser{log: s.log, parser: newTestDispatcher()}
+
+	res, err := parser.Sync(ctx, src, s.db, s.store, nopReporter{})
+	s.Require().NoError(err)
+
+	s.NotZero(res.ImportedAt)
+	books := s.booksByLibrary(src.ID)
+	s.Len(books, 2)
+	for title := range books {
+		s.Equal(res.ImportedAt, books[title].ImportedAt, title)
+	}
 }
 
 // TestCaseFoldedDedupAcrossRecords proves M8: the same author/series/genre named

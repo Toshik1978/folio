@@ -9,6 +9,13 @@ func (h *SyncHandler) triggerSync(w http.ResponseWriter, _ *http.Request) {
 	h.writeJSON(w, http.StatusAccepted, h.sync.Status())
 }
 
+// triggerDeepIndex handles POST /api/deep-index — queue a Deep Index run for
+// every library that is not pending purge.
+func (h *SyncHandler) triggerDeepIndex(w http.ResponseWriter, _ *http.Request) {
+	h.sync.TriggerDeepIndexAll()
+	h.writeJSON(w, http.StatusAccepted, h.sync.Status())
+}
+
 // syncStatus handles GET /api/sync/status — current engine state.
 func (h *SyncHandler) syncStatus(w http.ResponseWriter, _ *http.Request) {
 	h.writeJSON(w, http.StatusOK, h.sync.Status())

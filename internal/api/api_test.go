@@ -53,6 +53,8 @@ type fakeSync struct {
 	triggered          []int64 // non-forced TriggerLibrary calls
 	triggeredForced    []int64 // forced TriggerLibraryForced calls
 	purged             []int64
+	deepLibs           []int64 // TriggerDeepIndex calls
+	deepAll            int
 	rescheduled        int
 	rescheduleErr      error
 	status             sync.Status
@@ -62,6 +64,8 @@ func (f *fakeSync) TriggerAll()                   { f.triggeredAll++ }
 func (f *fakeSync) TriggerAllForced()             { f.triggeredAllForced++ }
 func (f *fakeSync) TriggerLibrary(id int64)       { f.triggered = append(f.triggered, id) }
 func (f *fakeSync) TriggerLibraryForced(id int64) { f.triggeredForced = append(f.triggeredForced, id) }
+func (f *fakeSync) TriggerDeepIndex(id int64)     { f.deepLibs = append(f.deepLibs, id) }
+func (f *fakeSync) TriggerDeepIndexAll()          { f.deepAll++ }
 func (f *fakeSync) Status() sync.Status           { return f.status }
 func (f *fakeSync) Reschedule(context.Context) error {
 	f.rescheduled++

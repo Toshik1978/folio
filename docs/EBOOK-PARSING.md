@@ -74,6 +74,15 @@ attribute and the EPUB `calibre:series_index` meta (see per-format notes).
   normalizes the `.fb2.zip` extension to the plain `fb2` format label, so the
   stored `book_files.file_format` — and the served Content-Type — match a bare
   FB2. Fixture: `testdata/test.fb2.zip`.
+- **Header-only parse** — `ParseFB2Description` (`internal/ebook/fb2.go`) reads
+  only the `<description>` header and returns as soon as its closing tag is
+  consumed, so the large base64 `<binary>` blocks that follow are never read or
+  decoded. It yields the same metadata as the full parser (title, authors,
+  annotation, genres, series, identifiers) but never a cover (`Metadata.Cover`
+  is always nil), and shares the full parser's input size cap and charset
+  handling. A stream with no `<description>` is an error. Used by Deep Index to
+  read INPX archive entries cheaply (see
+  [DATABASE.md](./DATABASE.md#deep-index-bulk-on-demand)).
 - **Series number** — read from the FB2 `<sequence name="…" number="N"/>`
   attribute.
 - **Genres** — every `<genre>` is extracted as a flibusta code (`sf_history`,

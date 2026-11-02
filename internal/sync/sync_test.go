@@ -174,3 +174,38 @@ func (p *stubParser) peakConcurrency() int {
 	defer p.mu.Unlock()
 	return p.maxInFlight
 }
+
+// fakeDeepIndexer is a configurable DeepIndexer that records the libraries and
+// scopes it ran for. onRun, when set, runs inside Run (before err is returned).
+type fakeDeepIndexer struct {
+	result ingest.DeepIndexResult
+	err    error
+	onRun  func(ctx context.Context, library dbq.Library, rep ingest.Reporter)
+
+	mu     stdsync.Mutex
+	ran    []int64
+	scopes []ingest.DeepIndexScope
+}
+
+func (f *fakeDeepIndexer) Run(
+	ctx context.Context, library dbq.Library, scope ingest.DeepIndexScope, rep ingest.Reporter,
+) (ingest.DeepIndexResult, error) {
+	f.mu.Lock()
+	f.ran = append(f.ran, library.ID)
+	f.scopes = append(f.scopes, scope)
+	f.mu.Unlock()
+	if f.onRun != nil {
+		f.onRun(ctx, library, rep)
+	}
+
+	return f.result, f.err
+}
+
+func (f *fakeDeepIndexer) runs() []int64 {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]int64, len(f.ran))
+	copy(out, f.ran)
+
+	return out
+}

@@ -78,6 +78,26 @@ func (s *metaSuite) TestGlobalCountsAndLettersExcludeOrphans() {
 	}
 }
 
+func (s *metaSuite) TestTriggerDeepIndexAll() {
+	s.sync.status.Running = true
+	s.sync.status.Kind = "deep_index"
+	s.sync.status.Current = 3
+
+	w := s.do(http.MethodPost, "/deep-index", nil)
+	s.Require().Equal(http.StatusAccepted, w.Code)
+	s.Equal(1, s.sync.deepAll)
+	s.Zero(s.sync.triggeredAllForced)
+	var status struct {
+		Running bool   `json:"running"`
+		Kind    string `json:"kind"`
+		Current int64  `json:"current"`
+	}
+	s.decode(w, &status)
+	s.True(status.Running)
+	s.Equal("deep_index", status.Kind)
+	s.Equal(int64(3), status.Current)
+}
+
 func (s *metaSuite) TestTriggerSyncAndStatus() {
 	s.sync.status.Running = true
 	s.sync.status.Current = 7

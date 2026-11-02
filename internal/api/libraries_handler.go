@@ -52,5 +52,6 @@ func (h *LibrariesHandler) Register(r chi.Router) {
 		r.Post("/{id}/purge", h.forcePurgeLibrary)
 		r.Post("/{id}/sync", h.syncLibraryNow)
 		r.Post("/{id}/reindex", h.reindexLibrary)
+		r.Post("/{id}/deep-index", h.deepIndexLibrary)
 	})
 }

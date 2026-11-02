@@ -31,6 +31,9 @@ type CoverStore interface {
 type Result struct {
 	Added   int
 	Removed int
+	// ImportedAt is the run's imported_at stamp, shared by every book the run
+	// inserted; it scopes a post-sync Deep Index to those books.
+	ImportedAt int64
 }
 
 // Reporter receives indexing progress during a Sync. Implementations are supplied

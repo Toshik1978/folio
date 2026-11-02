@@ -3,6 +3,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   createLibrary,
+  deepIndexAll,
+  deepIndexLibrary,
   deleteLibrary,
   fetchLibraries,
   fetchSettings,
@@ -44,6 +46,8 @@ vi.mock('@/api', () => ({
   reactivateLibrary: vi.fn(),
   forcePurgeLibrary: vi.fn(),
   triggerReindexAll: vi.fn(),
+  deepIndexAll: vi.fn(),
+  deepIndexLibrary: vi.fn(),
   fetchStats: vi.fn().mockResolvedValue({
     total_books: 0,
     total_size_bytes: 0,
@@ -72,6 +76,8 @@ describe('SettingsPage', () => {
     vi.mocked(reactivateLibrary).mockResolvedValue(undefined);
     vi.mocked(forcePurgeLibrary).mockResolvedValue(undefined);
     vi.mocked(triggerReindexAll).mockResolvedValue(undefined);
+    vi.mocked(deepIndexAll).mockResolvedValue(undefined);
+    vi.mocked(deepIndexLibrary).mockResolvedValue(undefined);
     vi.mocked(reindexLibrary).mockResolvedValue(undefined);
     vi.mocked(fetchSyncStatus).mockResolvedValue({ running: false, current: 0, queued: [] });
     const sync = useSyncStatus();
@@ -208,7 +214,7 @@ describe('SettingsPage', () => {
     await flushPromises();
     await wrapper.findAll('[role="tab"]')[1].trigger('click');
 
-    const editBtn = wrapper.findAll('[data-testid="library-action"]')[2];
+    const editBtn = wrapper.findAll('[data-testid="library-action"]')[3];
     expect(editBtn.text()).toBe('Edit');
     await editBtn.trigger('click');
 
@@ -305,6 +311,29 @@ describe('SettingsPage', () => {
     wrapper.unmount();
   });
 
+  it('queues Deep Index for all libraries from the header button', async () => {
+    const wrapper = mountPage();
+    await flushPromises();
+    await wrapper.findAll('[role="tab"]')[1].trigger('click');
+
+    const btn = wrapper.find('[data-testid="deep-index-all"]');
+    expect(btn.text()).toContain('Deep Index All');
+    await btn.trigger('click');
+    await flushPromises();
+    expect(deepIndexAll).toHaveBeenCalledOnce();
+    wrapper.unmount();
+  });
+
+  it('disables Deep Index All while a sync is running', async () => {
+    useSyncStatus().running.value = true;
+    const wrapper = mountPage();
+    await flushPromises();
+    await wrapper.findAll('[role="tab"]')[1].trigger('click');
+
+    expect(wrapper.find('[data-testid="deep-index-all"]').attributes('disabled')).toBeDefined();
+    wrapper.unmount();
+  });
+
   it('shows an empty-state placeholder when there are no libraries', async () => {
     vi.mocked(fetchLibraries).mockResolvedValue([]);
     const wrapper = mountPage();
@@ -339,12 +368,12 @@ describe('SettingsPage', () => {
 
     // Card 0 (syncing): Sync Now, Re-index, Edit, Delete all disabled.
     const card0Buttons = libraryCards[0].findAll('[data-testid="library-action"]');
-    expect(card0Buttons).toHaveLength(4);
+    expect(card0Buttons).toHaveLength(5);
     card0Buttons.forEach((b) => expect(b.attributes('disabled')).toBeDefined());
 
     // Card 1 (active): all enabled.
     const card1Buttons = libraryCards[1].findAll('[data-testid="library-action"]');
-    expect(card1Buttons).toHaveLength(4);
+    expect(card1Buttons).toHaveLength(5);
     card1Buttons.forEach((b) => expect(b.attributes('disabled')).toBeUndefined());
 
     wrapper.unmount();

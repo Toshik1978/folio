@@ -238,6 +238,17 @@ export function reindexLibrary(id: number): Promise<unknown> {
   return request(`/libraries/${id}/reindex`, { method: 'POST' });
 }
 
+// deepIndexLibrary queues a Deep Index run (local descriptions for every
+// unchecked book) for one library.
+export function deepIndexLibrary(id: number): Promise<unknown> {
+  return request(`/libraries/${id}/deep-index`, { method: 'POST' });
+}
+
+// deepIndexAll queues Deep Index for every library that is not pending purge.
+export function deepIndexAll(): Promise<unknown> {
+  return request('/deep-index', { method: 'POST' });
+}
+
 export function reactivateLibrary(id: number): Promise<unknown> {
   return request(`/libraries/${id}/reactivate`, { method: 'POST' });
 }

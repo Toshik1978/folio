@@ -124,13 +124,58 @@ func parseFB2XML(data []byte) (Metadata, error) {
 
 func parseFB2Reader(r io.Reader) (Metadata, error) {
 	var book fb2Book
-	dec := htmltext.NewDisplayDecoder(r)
-	dec.CharsetReader = charsetReader
+	dec := newFB2Decoder(r)
 	if err := dec.Decode(&book); err != nil {
 		return Metadata{}, fmt.Errorf("parse fb2 xml: %w", err)
 	}
 
-	ti := book.Description.TitleInfo
+	m := fb2DescMetadata(book.Description)
+	m.Cover = extractFB2Cover(book.Description.TitleInfo.Coverpage, book.Binaries)
+
+	return m, nil
+}
+
+// ParseFB2Description extracts metadata from the <description> header of an FB2
+// stream and stops reading at its closing tag, so the (potentially huge) base64
+// <binary> blocks that follow are never read or decoded. Metadata.Cover is
+// always nil. The input is capped at the same ceiling as the full parser.
+func ParseFB2Description(r io.Reader) (Metadata, error) {
+	dec := newFB2Decoder(io.LimitReader(r, maxArchiveTextBytes))
+
+	for {
+		tok, err := dec.Token()
+		if errors.Is(err, io.EOF) {
+			return Metadata{}, errors.New("parse fb2 xml: no description element")
+		}
+		if err != nil {
+			return Metadata{}, fmt.Errorf("parse fb2 xml: %w", err)
+		}
+
+		start, ok := tok.(xml.StartElement)
+		if !ok || start.Name.Local != "description" {
+			continue
+		}
+
+		var desc fb2Desc
+		if err := dec.DecodeElement(&desc, &start); err != nil {
+			return Metadata{}, fmt.Errorf("parse fb2 description: %w", err)
+		}
+
+		return fb2DescMetadata(desc), nil
+	}
+}
+
+func newFB2Decoder(r io.Reader) *xml.Decoder {
+	dec := htmltext.NewDisplayDecoder(r)
+	dec.CharsetReader = charsetReader
+
+	return dec
+}
+
+// fb2DescMetadata maps a decoded <description> onto Metadata (without the cover,
+// which lives in a <binary> outside the description).
+func fb2DescMetadata(desc fb2Desc) Metadata {
+	ti := desc.TitleInfo
 
 	m := Metadata{
 		Title:    strings.TrimSpace(ti.BookTitle),
@@ -148,7 +193,7 @@ func parseFB2Reader(r io.Reader) (Metadata, error) {
 		m.SeriesNumber = parseSeriesIndex(ti.Sequence.Number)
 	}
 
-	if pi := book.Description.PublishInfo; pi != nil {
+	if pi := desc.PublishInfo; pi != nil {
 		m.Publisher = strings.TrimSpace(pi.Publisher)
 		m.Year = ParseYear(pi.Year)
 		if isbn := strings.TrimSpace(pi.ISBN); isbn != "" {
@@ -156,9 +201,7 @@ func parseFB2Reader(r io.Reader) (Metadata, error) {
 		}
 	}
 
-	m.Cover = extractFB2Cover(ti.Coverpage, book.Binaries)
-
-	return m, nil
+	return m
 }
 
 // fb2AnnotationTags maps the FB2 annotation markup vocabulary onto the HTML

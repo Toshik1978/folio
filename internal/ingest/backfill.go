@@ -3,6 +3,7 @@ package ingest
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"log/slog"
 	"strconv"
 	"strings"
@@ -13,7 +14,6 @@ import (
 	"github.com/Toshik1978/folio/internal/db"
 	"github.com/Toshik1978/folio/internal/db/dbq"
 	"github.com/Toshik1978/folio/internal/ebook"
-	"github.com/Toshik1978/folio/internal/htmltext"
 )
 
 // backfillAcquireBudget bounds how long a backfill waits for the single-writer
@@ -115,16 +115,36 @@ func (b *LocalBackfiller) persistAnnotation(ctx context.Context, bookID int64, a
 	if strings.TrimSpace(annotation) == "" {
 		return
 	}
-	err := b.q.UpdateBookAnnotation(ctx, dbq.UpdateBookAnnotationParams{
+	if err := b.writeAnnotation(ctx, bookID, annotation); err != nil {
+		b.log.Warn("backfill: persist annotation", slog.Int64("book", bookID), slog.Any("error", err))
+	}
+}
+
+// writeAnnotation stores the annotation and refreshes the FTS row in one
+// transaction, so a failed refresh rolls the annotation back and the book is
+// retried instead of being left stored but unindexed. The caller holds the
+// write guard.
+func (b *LocalBackfiller) writeAnnotation(ctx context.Context, bookID int64, annotation string) error {
+	tx, err := b.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	err = b.q.WithTx(tx).UpdateBookAnnotation(ctx, dbq.UpdateBookAnnotationParams{
 		Annotation: sql.NullString{String: annotation, Valid: true}, ID: bookID,
 	})
 	if err != nil {
-		b.log.Warn("backfill: persist annotation", slog.Int64("book", bookID), slog.Any("error", err))
-		return
+		return fmt.Errorf("update annotation: %w", err)
 	}
-	if err := db.UpdateBookFTSAnnotation(ctx, b.db, bookID, htmltext.StripMarkup(annotation)); err != nil {
-		b.log.Warn("backfill: persist annotation fts", slog.Int64("book", bookID), slog.Any("error", err))
+	if err := db.RefreshBookFTS(ctx, tx, bookID); err != nil {
+		return fmt.Errorf("refresh fts: %w", err)
 	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit: %w", err)
+	}
+
+	return nil
 }
 
 // persistIdentifiers gap-fills cleaned identifiers (insert-if-absent), so a

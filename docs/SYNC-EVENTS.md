@@ -96,14 +96,16 @@ event sharing that key.
 
 | Event | Delivery | `CoalesceKey` | JSON `data` |
 | :--- | :--- | :--- | :--- |
-| `status` | reliable | `"status"` | `{"running":bool,"current":int,"queued":[int]}` |
+| `status` | reliable | `"status"` | `{"running":bool,"current":int,"kind":"sync"\|"deep_index","queued":[int]}` |
 | `library` | reliable | `""` | `{"id":int,"status":"active"\|"error"}` |
 | `progress` | best-effort | `"progress:<id>"` | `{"library":int,"processed":int,"total":int?}` |
 
 - `status` is `sync.Status` verbatim, so the frontend `SyncStatus` type matches.
   `current` is `omitempty`, so an idle snapshot omits it. Keyed `"status"` so a
   burst of rapid transitions collapses to the latest snapshot — what the banner
-  wants.
+  wants. `kind` names what the current run is doing — `"sync"` or `"deep_index"`
+  — and is omitted (like `current`) when nothing is running. `queued` stays a
+  plain list of library ids.
 - `library` carries only primitive fields (no API DTO) → keeps `sync` ↔ `api`
   decoupled. The client refetches the libraries list on receipt.
 - `progress` omits `total` when unknown → the frontend renders the indeterminate
@@ -113,7 +115,7 @@ event sharing that key.
 
 ```
 event: status
-data: {"running":true,"current":7,"queued":[9,3]}
+data: {"running":true,"current":7,"kind":"sync","queued":[9,3]}
 
 event: progress
 data: {"library":7,"processed":1200,"total":5000}
@@ -227,6 +229,24 @@ chokepoints — surgical instrumentation:
 
 Progress events are emitted from the per-run reporter (see [Progress](#progress)).
 
+**Request kinds.** The queue holds `syncReq{id, kind, force}`. `kind` is `sync`
+(read the source and reconcile) or `deep_index` (fill missing descriptions from
+the books' own files, see [DATABASE.md](./DATABASE.md#deep-index-bulk-on-demand)).
+Requests are deduplicated per `(library, kind)`, so a library can be queued once
+for each. `TriggerDeepIndex(id)` and `TriggerDeepIndexAll()` enqueue Deep Index
+runs; both are no-ops unless a deep indexer was wired with `WithDeepIndexer`.
+`Status.Kind` reports the kind of the running request.
+
+A Deep Index run emits the same events as a sync: `status` transitions,
+`progress {library, processed, total}` (total is the number of unchecked books,
+`processed` advances per committed batch), and at the end `library {id,"active"}`
+so the client refetches; on failure it emits `library {id,"error"}`. It is never
+checkpoint-gated, skips a `pending_purge` library at run time, and holds the write
+guard per batch rather than for the whole run. A cancelled run (shutdown) marks
+nothing as errored.
+
+**Post-sync fill.** A sync that added files runs a Deep Index over the books it inserted, in the same queue turn (only when a deep indexer is wired via `WithDeepIndexer`; otherwise a no-op), after its write guard is released (see [DATABASE.md](./DATABASE.md#sync-engine)). During the fill `status.kind` is `"deep_index"`, so the UI shows "Deep indexing…", and it emits the same `progress` frames. On success it emits `library {id,"active"}`. On failure it only logs a warning and emits no `library {id,"error"}`, because the sync itself succeeded.
+
 **Scope boundary (deliberate):** `library` events cover **background** row changes
 (scheduled / watcher syncs) — what the 5s poll existed to catch. User-initiated
 **add / purge** keep their existing client-side refetch-after-action. Accepted
@@ -281,7 +301,7 @@ client (see the watchdog rationale under *Frontend*).
 ## Frontend
 
 `useSyncStatus.ts` uses an `EventSource` instead of a poll; its public API
-(`running`/`current`/`queued`/`isSyncing`/`isBusy`/`currentName`/`currentProgress`)
+(`running`/`current`/`currentKind`/`queued`/`isSyncing`/`isBusy`/`currentName`/`currentProgress`)
 is consumed by `SyncBanner`, `LibraryStats`, and `SettingsPage`. `connect()` /
 `disconnect()` are driven by the app-shell lifecycle. SSE payloads are parsed
 through a guarded `parseEvent<T>` helper (a malformed frame is ignored, not
@@ -382,7 +402,10 @@ event matching `current`, cleared when `status` shows `current` changed or
 `running=false`. Rendered with DaisyUI `progress` — determinate (`value`/`max`)
 when `total` is present, indeterminate-animated otherwise — with a count label
 formatted by `formatProgress` (shared between the syncing row in `SettingsPage`
-and the one-line summary in `SyncBanner`).
+and the one-line summary in `SyncBanner`). A running Deep Index
+(`currentKind === 'deep_index'`) is labelled "Deep indexing…" in both the banner and
+the row's status badge instead of "Syncing"; it uses the
+same progress bar.
 
 ---
 

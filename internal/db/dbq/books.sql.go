@@ -11,6 +11,20 @@ import (
 	"strings"
 )
 
+const bookHasAnnotation = `-- name: BookHasAnnotation :one
+SELECT annotation IS NOT NULL AS has_annotation
+FROM books
+WHERE id = ?
+`
+
+// BookHasAnnotation reports whether the book already carries an annotation.
+func (q *Queries) BookHasAnnotation(ctx context.Context, id int64) (bool, error) {
+	row := q.db.QueryRowContext(ctx, bookHasAnnotation, id)
+	var has_annotation bool
+	err := row.Scan(&has_annotation)
+	return has_annotation, err
+}
+
 const countBooksByLibrary = `-- name: CountBooksByLibrary :one
 SELECT COUNT(*)
 FROM books
@@ -511,6 +525,71 @@ func (q *Queries) ListBooks(ctx context.Context, arg ListBooksParams) ([]Book, e
 	return items, nil
 }
 
+const listDeepIndexWork = `-- name: ListDeepIndexWork :many
+SELECT ranked.book_id, ranked.file_id, ranked.file_format, ranked.source_path
+FROM (SELECT b.id                                                        AS book_id,
+             f.id                                                        AS file_id,
+             f.file_format                                               AS file_format,
+             f.source_path                                               AS source_path,
+             ROW_NUMBER() OVER (PARTITION BY b.id ORDER BY CASE LOWER(f.file_format)
+                                                               WHEN 'fb2' THEN 0
+                                                               WHEN 'epub' THEN 1
+                                                               WHEN 'pdf' THEN 3
+                                                               ELSE 2
+                                                           END, f.id) AS rn
+      FROM books b
+               JOIN book_files f ON f.book_id = b.id
+      WHERE b.library_id = ?1
+        AND b.metadata_checked = 0
+        AND (CAST(?2 AS INTEGER) IS NULL OR b.imported_at = ?2)) AS ranked
+WHERE ranked.rn = 1
+ORDER BY ranked.source_path, ranked.book_id
+`
+
+type ListDeepIndexWorkParams struct {
+	LibraryID  int64
+	ImportedAt sql.NullInt64
+}
+
+type ListDeepIndexWorkRow struct {
+	BookID     int64
+	FileID     int64
+	FileFormat string
+	SourcePath string
+}
+
+// ListDeepIndexWork returns one preferred file per not-yet-checked book of a
+// library (fb2, then epub, then mobi or any other format, PDF last), for the
+// deep indexer. A NULL imported_at means every book; otherwise only books
+// stamped by that sync run.
+func (q *Queries) ListDeepIndexWork(ctx context.Context, arg ListDeepIndexWorkParams) ([]ListDeepIndexWorkRow, error) {
+	rows, err := q.db.QueryContext(ctx, listDeepIndexWork, arg.LibraryID, arg.ImportedAt)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListDeepIndexWorkRow
+	for rows.Next() {
+		var i ListDeepIndexWorkRow
+		if err := rows.Scan(
+			&i.BookID,
+			&i.FileID,
+			&i.FileFormat,
+			&i.SourcePath,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listDistinctFormats = `-- name: ListDistinctFormats :many
 SELECT DISTINCT bf.file_format
 FROM book_files bf
@@ -878,6 +957,29 @@ func (q *Queries) PublisherFirstChars(ctx context.Context, libraryID int64) ([]s
 		return nil, err
 	}
 	return items, nil
+}
+
+const setBookAnnotationIfNull = `-- name: SetBookAnnotationIfNull :execrows
+UPDATE books
+SET annotation = ?
+WHERE id = ?
+  AND annotation IS NULL
+`
+
+type SetBookAnnotationIfNullParams struct {
+	Annotation sql.NullString
+	ID         int64
+}
+
+// SetBookAnnotationIfNull stores a file-recovered annotation only when the book
+// has none, so manual, enriched or concurrently backfilled text is never
+// overwritten. Zero affected rows means the book already had one (or is gone).
+func (q *Queries) SetBookAnnotationIfNull(ctx context.Context, arg SetBookAnnotationIfNullParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, setBookAnnotationIfNull, arg.Annotation, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 const setCoverState = `-- name: SetCoverState :exec

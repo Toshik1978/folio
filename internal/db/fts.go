@@ -2,13 +2,15 @@ package db
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 
 	"github.com/stephenafamo/bob/dialect/sqlite"
 	"github.com/stephenafamo/bob/dialect/sqlite/im"
-	"github.com/stephenafamo/bob/dialect/sqlite/um"
 
 	"github.com/Toshik1978/folio/internal/db/dbq"
+	"github.com/Toshik1978/folio/internal/htmltext"
 )
 
 // books_fts writes live here rather than in sqlc because sqlc cannot generate
@@ -55,44 +57,57 @@ func InsertBookFTS(ctx context.Context, x dbq.DBTX, row BookFTSRow) error {
 	return nil
 }
 
-// UpdateBookFTSTitle mirrors a changed title into the full-text index.
-func UpdateBookFTSTitle(ctx context.Context, x dbq.DBTX, bookID int64, title string) error {
-	return updateBookFTSColumn(ctx, x, bookID, "title", title)
-}
-
-// UpdateBookFTSAuthors mirrors a book's relinked authors into the full-text
-// index. The value is the space-joined author list, not a single name.
-func UpdateBookFTSAuthors(ctx context.Context, x dbq.DBTX, bookID int64, authors string) error {
-	return updateBookFTSColumn(ctx, x, bookID, "authors", authors)
-}
-
-// UpdateBookFTSSeries mirrors a changed series name into the full-text index.
-func UpdateBookFTSSeries(ctx context.Context, x dbq.DBTX, bookID int64, series string) error {
-	return updateBookFTSColumn(ctx, x, bookID, "series", series)
-}
-
-// UpdateBookFTSAnnotation mirrors a changed annotation into the full-text index.
-// The caller strips markup first (htmltext.StripMarkup) so the indexed tokens
-// match what a reader sees.
-func UpdateBookFTSAnnotation(ctx context.Context, x dbq.DBTX, bookID int64, annotation string) error {
-	return updateBookFTSColumn(ctx, x, bookID, "annotation", annotation)
-}
-
-// updateBookFTSColumn sets one column of a book's full-text row. col is a
-// package-internal constant at every call site, never user input; the value is
-// parameterized.
-func updateBookFTSColumn(ctx context.Context, x dbq.DBTX, bookID int64, col, value string) error {
-	query, args, err := sqlite.Update(
-		um.Table("books_fts"),
-		um.SetCol(col).To(sqlite.Arg(value)),
-		um.Where(sqlite.Quote("rowid").EQ(sqlite.Arg(bookID))),
-	).Build(ctx)
+// RefreshBookFTS recomputes a book's whole full-text row from books, its author
+// links, its series and its annotation, and writes it: a full-row UPDATE when the
+// row exists, an INSERT when it does not.
+//
+// books_fts is contentless, so a partial-column UPDATE is rejected and column
+// values cannot be read back; callers change books/joins first, then call this
+// inside the same transaction. Existence is probed by rowid (a seek, which
+// contentless tables support) rather than DELETE+INSERT, so the common refresh is
+// one in-place rewrite and the books_ad delete trigger is never involved.
+func RefreshBookFTS(ctx context.Context, x dbq.DBTX, bookID int64) error {
+	row := BookFTSRow{BookID: bookID}
+	var annotation sql.NullString
+	err := x.QueryRowContext(ctx, gatherBookFTSSQL, bookID).Scan(
+		&row.Title, &row.Authors, &row.Series, &annotation,
+	)
 	if err != nil {
-		return fmt.Errorf("build fts %s update: %w", col, err)
+		return fmt.Errorf("gather fts row for book %d: %w", bookID, err)
 	}
-	if _, err := x.ExecContext(ctx, query, args...); err != nil {
-		return fmt.Errorf("exec fts %s update: %w", col, err)
+	row.Annotation = htmltext.StripMarkup(annotation.String)
+
+	var one int
+	err = x.QueryRowContext(ctx, `SELECT 1 FROM books_fts WHERE rowid = ?`, bookID).Scan(&one)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		return InsertBookFTS(ctx, x, row)
+	case err != nil:
+		return fmt.Errorf("probe fts row: %w", err)
+	}
+
+	_, err = x.ExecContext(ctx,
+		`UPDATE books_fts SET title = ?, authors = ?, series = ?, annotation = ? WHERE rowid = ?`,
+		row.Title, row.Authors, row.Series, row.Annotation, bookID)
+	if err != nil {
+		return fmt.Errorf("exec fts update: %w", err)
 	}
 
 	return nil
 }
+
+// gatherBookFTSSQL reads the four indexed values. book_authors has no position
+// column, so link order is its rowid order.
+const gatherBookFTSSQL = `
+SELECT b.title,
+       COALESCE((SELECT group_concat(name, ' ')
+                 FROM (SELECT a.name
+                       FROM book_authors ba
+                                JOIN authors a ON a.id = ba.author_id
+                       WHERE ba.book_id = b.id
+                       ORDER BY ba.rowid)), ''),
+       COALESCE(s.name, ''),
+       b.annotation
+FROM books b
+         LEFT JOIN series s ON s.id = b.series_id
+WHERE b.id = ?`

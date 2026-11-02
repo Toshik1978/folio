@@ -31,19 +31,58 @@ const (
 	defaultProgressInterval = 250 * time.Millisecond
 )
 
-// syncReq is a queued unit of work: a library to sync and whether the run is
-// forced (bypassing checkpoint gating).
+// reqKind says what a queued request runs against its library.
+type reqKind uint8
+
+const (
+	kindSync      reqKind = iota // read the library source and reconcile the catalog
+	kindDeepIndex                // fill missing descriptions from the books' own files
+)
+
+// String returns the kind's wire name, as carried by Status.Kind.
+func (k reqKind) String() string {
+	if k == kindDeepIndex {
+		return "deep_index"
+	}
+
+	return "sync"
+}
+
+// syncReq is a queued unit of work: a library, what to run against it, and
+// whether a sync is forced (bypassing checkpoint gating; sync only).
 type syncReq struct {
 	id    int64
+	kind  reqKind
 	force bool
 }
 
+// reqKey is the queue dedup key: one pending request per library and kind.
+type reqKey struct {
+	id   int64
+	kind reqKind
+}
+
+func (r syncReq) key() reqKey { return reqKey{id: r.id, kind: r.kind} }
+
 // Status is a snapshot of the engine's live work, surfaced by GET /api/sync/status.
 type Status struct {
-	Running bool    `json:"running"`           // a sync is in progress
-	Current int64   `json:"current,omitempty"` // library ID being synced (0 if idle)
+	Running bool    `json:"running"`           // a run is in progress
+	Current int64   `json:"current,omitempty"` // library ID being worked on (0 if idle)
+	Kind    string  `json:"kind,omitempty"`    // "sync" | "deep_index" while running, else empty
 	Queued  []int64 `json:"queued"`            // library IDs waiting their turn
 }
+
+// DeepIndexer fills a library's missing book descriptions from the books' own
+// files. *ingest.DeepIndexer satisfies it. It takes the write guard per batch
+// itself, so the engine does not hold the guard across a run.
+type DeepIndexer interface {
+	Run(
+		ctx context.Context, library dbq.Library, scope ingest.DeepIndexScope, rep ingest.Reporter,
+	) (ingest.DeepIndexResult, error)
+}
+
+// The production indexer satisfies the consumer interface.
+var _ DeepIndexer = (*ingest.DeepIndexer)(nil)
 
 // Publisher is the minimal surface the sync engine depends on. *Broker satisfies
 // it. A nil Publisher is treated as a no-op by callers.
@@ -84,12 +123,14 @@ type Engine struct {
 	// RequestPurge) so Stop can wait for an in-flight teardown to finish cleanly.
 	bg stdsync.WaitGroup
 
-	events Publisher // optional; nil disables event emission
+	events      Publisher   // optional; nil disables event emission
+	deepIndexer DeepIndexer // optional; nil makes deep index triggers no-ops
 
-	mu      stdsync.Mutex
-	queue   []syncReq      // pending work, FIFO
-	queued  map[int64]bool // membership set for dedupe
-	current int64          // library ID being synced, 0 when idle
+	mu          stdsync.Mutex
+	queue       []syncReq       // pending work, FIFO
+	queued      map[reqKey]bool // membership set for dedupe, per (library, kind)
+	current     int64           // library ID being worked on, 0 when idle
+	currentKind reqKind         // kind of the current run; meaningful only when current != 0
 
 	scheduler *scheduler
 	watcher   *watcher
@@ -120,7 +161,7 @@ func New(
 		wake:       make(chan struct{}, 1),
 		stop:       make(chan struct{}),
 		done:       make(chan struct{}),
-		queued:     make(map[int64]bool),
+		queued:     make(map[reqKey]bool),
 	}
 
 	sched, err := newScheduler(log, e.TriggerLibrary)
@@ -142,6 +183,12 @@ type Option func(*Engine)
 // WithEvents wires a publisher the Engine emits status/library/progress events to.
 func WithEvents(p Publisher) Option {
 	return func(e *Engine) { e.events = p }
+}
+
+// WithDeepIndexer wires the indexer that Deep Index runs use. Without one,
+// TriggerDeepIndex and TriggerDeepIndexAll are no-ops.
+func WithDeepIndexer(d DeepIndexer) Option {
+	return func(e *Engine) { e.deepIndexer = d }
 }
 
 // WithStatsObserver wires an observer the Engine notifies when catalog stats change.
@@ -215,11 +262,41 @@ func (e *Engine) TriggerLibraryForced(libraryID int64) {
 	e.enqueue(syncReq{id: libraryID, force: true})
 }
 
+// TriggerDeepIndex enqueues a Deep Index run over every unchecked book of one
+// library. A library already queued for Deep Index is not queued twice; a
+// pending_purge library is accepted here and skipped at run time.
+func (e *Engine) TriggerDeepIndex(libraryID int64) {
+	if !e.deepIndexEnabled() {
+		return
+	}
+	e.enqueue(syncReq{id: libraryID, kind: kindDeepIndex})
+}
+
+// TriggerDeepIndexAll enqueues a Deep Index run for every library that is not
+// awaiting deletion.
+func (e *Engine) TriggerDeepIndexAll() {
+	if !e.deepIndexEnabled() {
+		return
+	}
+	e.enqueueAll(kindDeepIndex, false)
+}
+
 // Status reports the engine's current work.
 func (e *Engine) Status() Status {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	return e.statusLocked()
+}
+
+// deepIndexEnabled reports whether a deep indexer is wired, logging a skipped
+// trigger when it is not.
+func (e *Engine) deepIndexEnabled() bool {
+	if e.deepIndexer == nil {
+		e.log.Debug("deep index trigger ignored: no deep indexer configured")
+		return false
+	}
+
+	return true
 }
 
 // statusLocked builds the status snapshot; the caller must hold e.mu.
@@ -229,11 +306,16 @@ func (e *Engine) statusLocked() Status {
 		queued[i] = e.queue[i].id
 	}
 
-	return Status{
+	st := Status{
 		Running: e.current != 0,
 		Current: e.current,
 		Queued:  queued,
 	}
+	if st.Running {
+		st.Kind = e.currentKind.String()
+	}
+
+	return st
 }
 
 // libraryEvent is the payload of a TypeLibrary event: a single library row
@@ -271,7 +353,11 @@ func (e *Engine) emitLibrary(id int64, status string) {
 	})
 }
 
-func (e *Engine) triggerAll(force bool) {
+func (e *Engine) triggerAll(force bool) { e.enqueueAll(kindSync, force) }
+
+// enqueueAll queues a request of the given kind for every library that is not
+// awaiting deletion.
+func (e *Engine) enqueueAll(kind reqKind, force bool) {
 	srcs, err := dbq.New(e.db).ListLibraries(context.Background())
 	if err != nil {
 		e.log.Error("list libraries for trigger", slog.Any("error", err))
@@ -282,22 +368,22 @@ func (e *Engine) triggerAll(force bool) {
 		if srcs[i].Status == statusPendingPurge {
 			continue
 		}
-		reqs = append(reqs, syncReq{id: srcs[i].ID, force: force})
+		reqs = append(reqs, syncReq{id: srcs[i].ID, kind: kind, force: force})
 	}
 	e.enqueue(reqs...)
 }
 
 // enqueue appends unseen requests to the queue and wakes the worker. A library
-// already queued is not duplicated, but a forced request upgrades the pending
-// one to forced. It never blocks, so it is safe to call from HTTP handlers and
-// scheduler callbacks.
+// already queued for the same kind is not duplicated, but a forced sync request
+// upgrades the pending sync to forced. It never blocks, so it is safe to call
+// from HTTP handlers and scheduler callbacks.
 func (e *Engine) enqueue(reqs ...syncReq) {
 	e.mu.Lock()
 	for _, req := range reqs {
-		if e.queued[req.id] {
-			if req.force {
+		if e.queued[req.key()] {
+			if req.force && req.kind == kindSync {
 				for i := range e.queue {
-					if e.queue[i].id == req.id {
+					if e.queue[i].key() == req.key() {
 						e.queue[i].force = true
 					}
 				}
@@ -305,7 +391,7 @@ func (e *Engine) enqueue(reqs ...syncReq) {
 
 			continue
 		}
-		e.queued[req.id] = true
+		e.queued[req.key()] = true
 		e.queue = append(e.queue, req)
 	}
 	e.mu.Unlock()
@@ -327,8 +413,9 @@ func (e *Engine) dequeue() (syncReq, bool) {
 	}
 	req := e.queue[0]
 	e.queue = e.queue[1:]
-	delete(e.queued, req.id)
+	delete(e.queued, req.key())
 	e.current = req.id
+	e.currentKind = req.kind
 
 	return req, true
 }
@@ -378,12 +465,10 @@ func (e *Engine) safeSync(req syncReq) {
 	e.syncLibrary(req)
 }
 
-// syncLibrary runs the parser for one library and records the outcome. When the
-// parser is a Checkpointer and the run is not forced, an unchanged checkpoint
-// skips the read+reconcile entirely.
-func (e *Engine) syncLibrary(req syncReq) {
+// runContext returns the context one queued run executes under: it is
+// cancelled when the engine stops or when the returned cancel is called.
+func (e *Engine) runContext() (context.Context, context.CancelFunc) {
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 	go func() {
 		select {
 		case <-e.stop:
@@ -392,13 +477,42 @@ func (e *Engine) syncLibrary(req syncReq) {
 		}
 	}()
 
+	return ctx, cancel
+}
+
+// syncLibrary runs one queued request. A sync runs the parser for the library
+// and records the outcome; when the parser is a Checkpointer and the run is not
+// forced, an unchanged checkpoint skips the read+reconcile entirely. A sync
+// that inserted books then fills descriptions for just those books, in the
+// same queue turn. A deep index run is delegated to deepIndexLibrary.
+func (e *Engine) syncLibrary(req syncReq) {
+	ctx, cancel := e.runContext()
+	defer cancel()
+
+	if req.kind == kindDeepIndex {
+		e.deepIndexLibrary(ctx, req.id)
+		return
+	}
+
+	// The fill runs only once guardedSync has returned and so released the
+	// whole-run write guard: the indexer takes the guard per batch itself.
+	src, res, ok := e.guardedSync(ctx, req)
+	if ok && res.Added > 0 {
+		e.fillImported(ctx, src, res.ImportedAt)
+	}
+}
+
+// guardedSync runs one sync request under the whole-run write guard. ok is true
+// only when the parser ran and succeeded; a skipped, refused, or failed sync
+// reports false.
+func (e *Engine) guardedSync(ctx context.Context, req syncReq) (dbq.Library, ingest.Result, bool) {
 	// Hold the single-writer guard for the whole run so a concurrent library
 	// purge (HTTP "Purge Now" or the deadline sweep) — and any API write — waits
 	// rather than racing the sync at the SQLite layer. The acquire honors ctx, so a
 	// shutdown signalled while we are still queued behind another writer cancels the
 	// run cleanly instead of blocking teardown.
 	if err := e.writeGuard.Lock(ctx); err != nil {
-		return
+		return dbq.Library{}, ingest.Result{}, false
 	}
 	defer e.writeGuard.Unlock()
 
@@ -406,20 +520,19 @@ func (e *Engine) syncLibrary(req syncReq) {
 
 	src, err := q.GetLibrary(ctx, req.id)
 	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return // library was deleted before its turn
+		if !errors.Is(err, sql.ErrNoRows) { // a missing library was deleted before its turn
+			e.log.Error("load library", slog.Int64("library", req.id), slog.Any("error", err))
 		}
-		e.log.Error("load library", slog.Int64("library", req.id), slog.Any("error", err))
-		return
+		return dbq.Library{}, ingest.Result{}, false
 	}
 	if src.Status == statusPendingPurge {
-		return // do not sync libraries awaiting deletion
+		return src, ingest.Result{}, false // do not sync libraries awaiting deletion
 	}
 
 	parser, ok := e.parsers[src.Type]
 	if !ok {
 		e.markError(ctx, req.id, fmt.Errorf("no parser for library type %q", src.Type))
-		return
+		return src, ingest.Result{}, false
 	}
 
 	// Fingerprint the artifact once, before reading it. Storing this pre-read
@@ -433,15 +546,20 @@ func (e *Engine) syncLibrary(req syncReq) {
 		// catalog moved, so busting the stats cache or emitting a library event
 		// would make every connected client refetch on each unchanged cycle.
 		e.stampLastSync(ctx, req.id)
-		return // unchanged artifact: skip read + reconcile
+		return src, ingest.Result{}, false // unchanged artifact: skip read + reconcile
 	}
 
-	e.runSync(ctx, parser, src, req, fp)
+	res, ok := e.runSync(ctx, parser, src, req, fp)
+
+	return src, res, ok
 }
 
 // runSync executes the parser for one library, records the outcome, and stores
-// the pre-read checkpoint fingerprint on success.
-func (e *Engine) runSync(ctx context.Context, parser Parser, src dbq.Library, req syncReq, fp string) {
+// the pre-read checkpoint fingerprint on success. ok reports whether the sync
+// succeeded.
+func (e *Engine) runSync(
+	ctx context.Context, parser Parser, src dbq.Library, req syncReq, fp string,
+) (ingest.Result, bool) {
 	e.log.Info(
 		"sync start",
 		slog.Int64("library", req.id),
@@ -454,12 +572,12 @@ func (e *Engine) runSync(ctx context.Context, parser Parser, src dbq.Library, re
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
 			e.log.Info("sync interrupted by shutdown", slog.Int64("library", req.id))
-			return
+			return res, false
 		}
 		e.log.Error("sync failed", slog.Int64("library", req.id), slog.Any("error", err))
 		e.markError(context.Background(), req.id, err)
 
-		return
+		return res, false
 	}
 
 	persistCtx := context.WithoutCancel(ctx) // keep values, drop cancellation
@@ -467,6 +585,94 @@ func (e *Engine) runSync(ctx context.Context, parser Parser, src dbq.Library, re
 	e.storeCheckpoint(persistCtx, src.ID, fp)
 	e.log.Info("sync done",
 		slog.Int64("library", req.id), slog.Int("added", res.Added), slog.Int("removed", res.Removed))
+
+	return res, true
+}
+
+// fillImported fills descriptions for the books one sync run inserted (those
+// stamped with its imported_at), never the library's backlog. It runs in the
+// sync's queue turn but after the sync's write guard is released, and reports
+// progress as a deep index run. A failure is logged and leaves the library's
+// status alone: the sync itself succeeded, and the books stay unchecked for a
+// later Deep Index. Without a deep indexer it does nothing.
+func (e *Engine) fillImported(ctx context.Context, src dbq.Library, stamp int64) {
+	if e.deepIndexer == nil {
+		return
+	}
+	e.setCurrentKind(kindDeepIndex)
+
+	reporter, finish := e.beginProgress(src.ID)
+	err := e.runDeepIndex(ctx, src, ingest.DeepIndexImportedAt(stamp), reporter)
+	finish() // emit the final frame even if the run errored
+	if err != nil {
+		if !errors.Is(err, context.Canceled) {
+			e.log.Warn("post-sync fill failed; the sync result stands",
+				slog.Int64("library", src.ID), slog.Any("error", err))
+		}
+		return
+	}
+	e.emitLibrary(src.ID, "active") // descriptions changed: clients refetch
+}
+
+// setCurrentKind relabels the current run (a sync's post-sync fill reports as
+// a deep index) and publishes the new status.
+func (e *Engine) setCurrentKind(kind reqKind) {
+	e.mu.Lock()
+	e.currentKind = kind
+	e.mu.Unlock()
+	e.emitStatus()
+}
+
+// deepIndexLibrary runs the "Deep Index" action for one library: every
+// unchecked book, with progress streamed like a sync. It is never
+// checkpoint-gated and does not hold the whole-run write guard, because the
+// indexer takes the guard per batch. On success it emits library{id,"active"}
+// so clients refetch; on failure it marks the library errored.
+func (e *Engine) deepIndexLibrary(ctx context.Context, id int64) {
+	src, err := dbq.New(e.db).GetLibrary(ctx, id)
+	if err != nil {
+		if !errors.Is(err, sql.ErrNoRows) {
+			e.log.Error("load library", slog.Int64("library", id), slog.Any("error", err))
+		}
+		return // a missing library was deleted before its turn
+	}
+	if src.Status == statusPendingPurge {
+		return // do not index libraries awaiting deletion
+	}
+
+	reporter, finish := e.beginProgress(id)
+	err = e.runDeepIndex(ctx, src, ingest.DeepIndexAll(), reporter)
+	finish() // emit the final frame even if the run errored
+	if err != nil {
+		if !errors.Is(err, context.Canceled) {
+			e.log.Error("deep index failed", slog.Int64("library", id), slog.Any("error", err))
+			e.markError(context.Background(), id, err)
+		}
+		return
+	}
+	e.emitLibrary(id, "active")
+}
+
+// runDeepIndex runs the deep indexer over one library with the given scope and
+// logs its start, completion, or shutdown interruption; the caller logs a
+// failure and decides what it means for the library. The caller must not hold
+// the write guard: the indexer takes it per batch.
+func (e *Engine) runDeepIndex(
+	ctx context.Context, src dbq.Library, scope ingest.DeepIndexScope, rep ingest.Reporter,
+) error {
+	e.log.Info("deep index start", slog.Int64("library", src.ID), slog.String("type", src.Type))
+	res, err := e.deepIndexer.Run(ctx, src, scope, rep)
+	if err != nil {
+		if errors.Is(err, context.Canceled) {
+			e.log.Info("deep index interrupted by shutdown", slog.Int64("library", src.ID))
+		}
+		return fmt.Errorf("deep index: %w", err)
+	}
+	e.log.Info("deep index done", slog.Int64("library", src.ID),
+		slog.Int("checked", res.Checked), slog.Int("filled", res.Filled),
+		slog.Int("skipped", res.Skipped), slog.Int("errors", res.Errors))
+
+	return nil
 }
 
 // shouldSkip reports whether a sync pass can be skipped because the artifact

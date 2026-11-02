@@ -1,5 +1,7 @@
 import {
   createLibrary as apiCreateLibrary,
+  deepIndexAll as apiDeepIndexAll,
+  deepIndexLibrary as apiDeepIndexLibrary,
   deleteLibrary as apiDeleteLibrary,
   forcePurgeLibrary as apiForcePurgeLibrary,
   reactivateLibrary as apiReactivateLibrary,
@@ -18,7 +20,7 @@ import type { Library, NewLibrary } from '@/types';
 // confirm, toast, and list/sync refresh that wrap it. The page wires component
 // events to these so no component performs its own mutations.
 export function useLibraryActions() {
-  const { refreshLibraries } = useLibrary();
+  const { libraries, refreshLibraries } = useLibrary();
   const { refresh: refreshSyncStatus } = useSyncStatus();
   const { confirm } = useConfirm();
   const toast = useToast();
@@ -29,6 +31,27 @@ export function useLibraryActions() {
       await refreshSyncStatus();
     } catch (err) {
       toast.error(`Failed to trigger sync: ${(err as Error).message}`);
+    }
+  }
+
+  async function deepIndexLibrary(id: number): Promise<void> {
+    const name = libraries.value.find((l) => l.id === id)?.name;
+    try {
+      await apiDeepIndexLibrary(id);
+      await refreshSyncStatus();
+      toast.success(name ? `Deep Index queued for ${name}` : 'Deep Index queued');
+    } catch (err) {
+      toast.error(`Failed to queue Deep Index: ${(err as Error).message}`);
+    }
+  }
+
+  async function deepIndexAll(): Promise<void> {
+    try {
+      await apiDeepIndexAll();
+      await refreshSyncStatus();
+      toast.success('Deep Index queued for all libraries');
+    } catch (err) {
+      toast.error(`Failed to queue Deep Index: ${(err as Error).message}`);
     }
   }
 
@@ -131,6 +154,8 @@ export function useLibraryActions() {
   return {
     syncLibrary,
     reindexLibrary,
+    deepIndexLibrary,
+    deepIndexAll,
     deleteLibrary,
     reactivateLibrary,
     forcePurgeLibrary,

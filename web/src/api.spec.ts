@@ -2,6 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   createLibrary,
+  deepIndexAll,
+  deepIndexLibrary,
   deleteLibrary,
   fetchAuthorLetters,
   fetchAuthors,
@@ -202,6 +204,20 @@ describe('api', () => {
       fetchMock.mockResolvedValue(res({ status: 'queued' }, { status: 202 }));
       await reindexLibrary(5);
       expect(calledUrl()).toBe('/api/libraries/5/reindex');
+      expect(calledInit().method).toBe('POST');
+    });
+
+    it('deepIndexLibrary POSTs to the per-library deep-index path', async () => {
+      fetchMock.mockResolvedValue(res({ status: 'queued' }, { status: 202 }));
+      await deepIndexLibrary(5);
+      expect(calledUrl()).toBe('/api/libraries/5/deep-index');
+      expect(calledInit().method).toBe('POST');
+    });
+
+    it('deepIndexAll POSTs to /api/deep-index', async () => {
+      fetchMock.mockResolvedValue(res({ running: true, current: 1, queued: [] }, { status: 202 }));
+      await deepIndexAll();
+      expect(calledUrl()).toBe('/api/deep-index');
       expect(calledInit().method).toBe('POST');
     });
 

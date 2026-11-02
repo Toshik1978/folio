@@ -194,8 +194,7 @@ func (s *calibreSuite) TestResyncAppliesInPlaceEdits() {
 	s.Equal(int64(1865), after.Year.Int64, "edited year must propagate")
 	s.Contains(s.authorsForBook(after.ID), "Lev Tolstoy", "edited author must re-link")
 
-	_, ftsAuthors := s.ftsRow(after.ID)
-	s.Contains(ftsAuthors, "Lev Tolstoy", "FTS authors must reflect the edit")
+	s.True(s.ftsHas(after.ID, "authors", "Lev Tolstoy"), "FTS authors must reflect the edit")
 
 	// The hash was restamped, so a subsequent unchanged sync is a clean no-op.
 	res, err := parser.Sync(ctx, src, s.db, s.store, nopReporter{})

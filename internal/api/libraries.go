@@ -412,6 +412,18 @@ func (h *LibrariesHandler) syncLibraryNow(w http.ResponseWriter, r *http.Request
 	h.writeJSON(w, http.StatusAccepted, map[string]string{statusKey: queuedStatus})
 }
 
+// deepIndexLibrary handles POST /api/libraries/{id}/deep-index — queue a Deep
+// Index run over every unchecked book. A pending_purge library is accepted and
+// skipped by the engine at run time, like syncLibraryNow.
+func (h *LibrariesHandler) deepIndexLibrary(w http.ResponseWriter, r *http.Request) {
+	id, ok := h.requireLibrary(w, r)
+	if !ok {
+		return
+	}
+	h.sync.TriggerDeepIndex(id)
+	h.writeJSON(w, http.StatusAccepted, map[string]string{statusKey: queuedStatus})
+}
+
 // reindexLibrary handles POST /api/libraries/{id}/reindex — a forced full
 // re-read that bypasses checkpoint gating, even when the source fingerprint is
 // unchanged. The cheap, checkpoint-respecting variant is syncLibraryNow.

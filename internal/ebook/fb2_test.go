@@ -2,6 +2,7 @@ package ebook
 
 import (
 	"context"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -167,4 +168,80 @@ func (s *fb2Suite) TestParseNoCover() {
 	s.Empty(m.Cover)
 	s.Empty(m.Annotation)
 	s.Empty(m.Series)
+}
+
+// countingReader counts the bytes handed to the consumer.
+type countingReader struct {
+	r io.Reader
+	n int64
+}
+
+func (c *countingReader) Read(p []byte) (int, error) {
+	n, err := c.r.Read(p)
+	c.n += int64(n)
+
+	return n, err //nolint:wrapcheck // transparent passthrough
+}
+
+func (s *fb2Suite) TestParseFB2DescriptionMatchesParse() {
+	for _, name := range []string{"test.fb2", "test_win1251.fb2", "test_nocover.fb2", "test_entities.fb2"} {
+		s.Run(name, func() {
+			full, err := s.d.Parse(context.Background(), s.log, s.fixture(name))
+			s.Require().NoError(err)
+
+			f, err := os.Open(s.fixture(name))
+			s.Require().NoError(err)
+			defer func() { _ = f.Close() }()
+
+			got, err := ParseFB2Description(f)
+			s.Require().NoError(err)
+
+			full.Cover = nil // header-only parse never decodes <binary>
+			s.Equal(full, got)
+		})
+	}
+}
+
+func (s *fb2Suite) TestParseFB2DescriptionIdentifiers() {
+	const doc = `<FictionBook><description><title-info><book-title>T</book-title></title-info>` +
+		`<publish-info><isbn> 978-1 </isbn><year>1999</year></publish-info></description></FictionBook>`
+
+	m, err := ParseFB2Description(strings.NewReader(doc))
+	s.Require().NoError(err)
+	s.Equal([]Identifier{{Type: IdentifierISBN, Value: "978-1"}}, m.Identifiers)
+	s.Equal(1999, m.Year)
+}
+
+func (s *fb2Suite) TestParseFB2DescriptionNoAnnotation() {
+	m, err := ParseFB2Description(strings.NewReader(
+		`<FictionBook><description><title-info><book-title>T</book-title></title-info></description></FictionBook>`,
+	))
+	s.Require().NoError(err)
+	s.Equal("T", m.Title)
+	s.Empty(m.Annotation)
+}
+
+func (s *fb2Suite) TestParseFB2DescriptionMalformed() {
+	_, err := ParseFB2Description(strings.NewReader(
+		`<FictionBook><description><title-info><book-title>T</title-info></description></FictionBook>`,
+	))
+	s.Require().Error(err)
+}
+
+func (s *fb2Suite) TestParseFB2DescriptionMissing() {
+	_, err := ParseFB2Description(strings.NewReader(`<FictionBook><body/></FictionBook>`))
+	s.Require().Error(err)
+}
+
+func (s *fb2Suite) TestParseFB2DescriptionStopsAtEndOfDescription() {
+	const binSize = 8 << 20
+	doc := `<?xml version="1.0" encoding="UTF-8"?><FictionBook><description><title-info>` +
+		`<book-title>Big</book-title></title-info></description>` +
+		`<binary id="c" content-type="image/png">` + strings.Repeat("A", binSize) + `</binary></FictionBook>`
+
+	cr := &countingReader{r: strings.NewReader(doc)}
+	m, err := ParseFB2Description(cr)
+	s.Require().NoError(err)
+	s.Equal("Big", m.Title)
+	s.Less(cr.n, int64(binSize/8), "must not read the <binary> block (read %d of %d)", cr.n, len(doc))
 }

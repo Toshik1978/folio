@@ -95,6 +95,7 @@ export interface Library {
 export interface SyncStatus {
   running: boolean;
   current: number; // library id being synced, 0 when idle
+  kind?: 'sync' | 'deep_index'; // what the current run is; omitted when idle
   queued: number[]; // library ids waiting their turn
 }
 

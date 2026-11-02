@@ -81,6 +81,11 @@ These rules apply to every task. Non-negotiable.
      query; hand-concatenating SQL there would risk injection. bob keeps every
      value parameterized. All other queries remain sqlc-generated. Approved
      2026-07-11.
+   * `github.com/modelcontextprotocol/go-sdk` (v1.8.0) — official MCP Go SDK
+     implementing the Streamable-HTTP MCP server for `/mcp`
+     (`internal/mcpserver`). The standard library has no MCP implementation, and
+     hand-rolling one would mean owning protocol spec compliance across revisions.
+     Approved 2026-11-02.
 
 3. **Testing with testify suites**: All Go tests use `github.com/stretchr/testify`, organised as suites. Three non-negotiable rules:
    1. **One entry point per package** — exactly one top-level `func Test<Package>(t *testing.T)`. No other top-level `Test*` function may exist in the package.

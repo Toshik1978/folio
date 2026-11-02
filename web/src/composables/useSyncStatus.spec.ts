@@ -72,6 +72,19 @@ describe('useSyncStatus', () => {
     s.disconnect();
   });
 
+  it('exposes currentKind from the status event and clears it when idle', () => {
+    const s = useSyncStatus();
+    s.connect();
+    const es = MockEventSource.instances[MockEventSource.instances.length - 1]!;
+
+    es.emit('status', { running: true, current: 5, kind: 'deep_index', queued: [] });
+    expect(s.currentKind.value).toBe('deep_index');
+
+    es.emit('status', { running: false, current: 0, queued: [] });
+    expect(s.currentKind.value).toBeNull();
+    s.disconnect();
+  });
+
   it('refreshes the library list on a library event', () => {
     const s = useSyncStatus();
     s.connect();

@@ -3,12 +3,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   createLibrary,
+  deepIndexAll as apiDeepIndexAll,
+  deepIndexLibrary as apiDeepIndexLibrary,
   deleteLibrary as apiDeleteLibrary,
   fetchLibraries,
   reindexLibrary as apiReindexLibrary,
   syncLibrary as apiSyncLibrary,
 } from '@/api';
 import { useConfirm } from '@/composables/useConfirm';
+import { useLibrary } from '@/composables/useLibrary';
 import { useLibraryActions } from '@/composables/useLibraryActions';
 import { useToast } from '@/composables/useToast';
 import { makeLibrary } from '@/test/factories';
@@ -19,6 +22,8 @@ vi.mock('@/api', () => ({
   deleteLibrary: vi.fn().mockResolvedValue(undefined),
   reactivateLibrary: vi.fn().mockResolvedValue(undefined),
   forcePurgeLibrary: vi.fn().mockResolvedValue(undefined),
+  deepIndexLibrary: vi.fn().mockResolvedValue(undefined),
+  deepIndexAll: vi.fn().mockResolvedValue(undefined),
   triggerReindexAll: vi.fn().mockResolvedValue(undefined),
   createLibrary: vi.fn().mockResolvedValue({
     id: 1,
@@ -48,6 +53,8 @@ vi.mock('@/api', () => ({
   fetchSyncStatus: vi.fn().mockResolvedValue({ running: false, current: 0, queued: [] }),
 }));
 
+const toastMessages = () => useToast().toasts.value.map((t) => t.message);
+
 describe('useLibraryActions', () => {
   beforeEach(() => vi.clearAllMocks());
   afterEach(() => vi.clearAllMocks());
@@ -55,6 +62,26 @@ describe('useLibraryActions', () => {
   it('triggers a sync without confirming', async () => {
     await useLibraryActions().syncLibrary(5);
     expect(apiSyncLibrary).toHaveBeenCalledWith(5);
+  });
+
+  it('queues Deep Index for a library without confirming and toasts', async () => {
+    useLibrary().libraries.value = [makeLibrary({ id: 7, name: 'Main' })];
+    await useLibraryActions().deepIndexLibrary(7);
+    expect(apiDeepIndexLibrary).toHaveBeenCalledWith(7);
+    expect(useConfirm().state.value.open).toBe(false);
+    expect(toastMessages()).toContain('Deep Index queued for Main');
+  });
+
+  it('queues Deep Index for all libraries and toasts', async () => {
+    await useLibraryActions().deepIndexAll();
+    expect(apiDeepIndexAll).toHaveBeenCalledOnce();
+    expect(toastMessages()).toContain('Deep Index queued for all libraries');
+  });
+
+  it('toasts an error when Deep Index fails', async () => {
+    vi.mocked(apiDeepIndexLibrary).mockRejectedValueOnce(new Error('boom'));
+    await useLibraryActions().deepIndexLibrary(7);
+    expect(toastMessages()).toContain('Failed to queue Deep Index: boom');
   });
 
   it('re-indexes a library only after the confirm resolves true', async () => {

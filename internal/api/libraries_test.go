@@ -234,6 +234,31 @@ func (s *librariesSuite) TestSyncLibraryNow() {
 	s.Equal(http.StatusNotFound, s.do(http.MethodPost, "/libraries/9999/sync", nil).Code)
 }
 
+func (s *librariesSuite) TestDeepIndexLibrary() {
+	id := s.seedLibrary("folder", "/lib")
+
+	w := s.do(http.MethodPost, "/libraries/"+itoa(id)+"/deep-index", nil)
+	s.Require().Equal(http.StatusAccepted, w.Code)
+	s.JSONEq(`{"status":"queued"}`, w.Body.String())
+	s.Equal([]int64{id}, s.sync.deepLibs)
+	s.Empty(s.sync.triggered)
+	s.Empty(s.sync.triggeredForced)
+
+	s.Equal(http.StatusNotFound, s.do(http.MethodPost, "/libraries/9999/deep-index", nil).Code)
+	s.Equal(http.StatusBadRequest, s.do(http.MethodPost, "/libraries/abc/deep-index", nil).Code)
+	s.Equal([]int64{id}, s.sync.deepLibs, "rejected requests queue nothing")
+}
+
+func (s *librariesSuite) TestDeepIndexPendingPurgeLibraryAccepted() {
+	id := s.seedLibrary("folder", "/lib")
+	s.Require().Equal(http.StatusOK, s.do(http.MethodDelete, "/libraries/"+itoa(id), nil).Code)
+
+	w := s.do(http.MethodPost, "/libraries/"+itoa(id)+"/deep-index", nil)
+	s.Require().Equal(http.StatusAccepted, w.Code, "engine skips pending_purge at run time")
+	s.JSONEq(`{"status":"queued"}`, w.Body.String())
+	s.Equal([]int64{id}, s.sync.deepLibs)
+}
+
 func (s *librariesSuite) TestReindexLibrary() {
 	id := s.seedLibrary("folder", "/lib")
 

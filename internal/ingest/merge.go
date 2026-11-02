@@ -9,7 +9,6 @@ import (
 	dbf "github.com/Toshik1978/folio/internal/db"
 	"github.com/Toshik1978/folio/internal/db/dbq"
 	"github.com/Toshik1978/folio/internal/ebook"
-	"github.com/Toshik1978/folio/internal/htmltext"
 )
 
 // bookView is the merged book as the reconcile decision sees it: every books
@@ -228,7 +227,7 @@ func applyPlan(
 			return fmt.Errorf("update book: %w", err)
 		}
 	}
-	if err := applyFTS(ctx, x, book.ID, upd, rec, plan); err != nil {
+	if err := applyFTS(ctx, x, book.ID, plan); err != nil {
 		return err
 	}
 	if plan.relations {
@@ -244,25 +243,14 @@ func applyPlan(
 	return linkIdentifiers(ctx, q, book.ID, rec.Identifiers, plan.relations)
 }
 
-// applyFTS mirrors the changed scalar fields into the book's books_fts row so
-// search matches what was just written.
-func applyFTS(
-	ctx context.Context, x dbq.DBTX, bookID int64, upd dbq.UpdateBookParams, rec bookRecord, plan mergePlan,
-) error {
-	if plan.titleFTS {
-		if err := dbf.UpdateBookFTSTitle(ctx, x, bookID, upd.Title); err != nil {
-			return fmt.Errorf("update fts title: %w", err)
-		}
+// applyFTS rewrites the book's books_fts row when a scalar that feeds it
+// (title, series, annotation) changed, so search matches what was just written.
+func applyFTS(ctx context.Context, x dbq.DBTX, bookID int64, plan mergePlan) error {
+	if !plan.titleFTS && !plan.seriesFTS && !plan.annFTS {
+		return nil
 	}
-	if plan.seriesFTS {
-		if err := dbf.UpdateBookFTSSeries(ctx, x, bookID, rec.Series); err != nil {
-			return fmt.Errorf("update fts series: %w", err)
-		}
-	}
-	if plan.annFTS {
-		if err := dbf.UpdateBookFTSAnnotation(ctx, x, bookID, htmltext.StripMarkup(rec.Annotation)); err != nil {
-			return fmt.Errorf("gap-fill annotation fts: %w", err)
-		}
+	if err := dbf.RefreshBookFTS(ctx, x, bookID); err != nil {
+		return fmt.Errorf("refresh fts: %w", err)
 	}
 
 	return nil
@@ -362,8 +350,8 @@ func relinkAuthors(ctx context.Context, q *dbq.Queries, x dbq.DBTX, bookID int64
 	if err := linkAuthors(ctx, q, bookID, authors); err != nil {
 		return err
 	}
-	if err := dbf.UpdateBookFTSAuthors(ctx, x, bookID, strings.Join(authors, " ")); err != nil {
-		return fmt.Errorf("update fts authors: %w", err)
+	if err := dbf.RefreshBookFTS(ctx, x, bookID); err != nil {
+		return fmt.Errorf("refresh fts: %w", err)
 	}
 
 	return nil

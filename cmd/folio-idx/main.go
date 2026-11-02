@@ -106,6 +106,8 @@ func run() int { //revive:disable:function-length
 
 	catalogHandler := api.NewCatalog(log, database, ingest.CanonicalGenres())
 
+	deepIndexer := ingest.NewDeepIndexer(log, database, writeGuard, extractor)
+
 	syncEngine, err := sync.New(
 		log,
 		database,
@@ -118,6 +120,7 @@ func run() int { //revive:disable:function-length
 		coverStore,
 		sync.WithEvents(broker),
 		sync.WithStatsObserver(catalogHandler),
+		sync.WithDeepIndexer(deepIndexer),
 	)
 	if err != nil {
 		log.Error("sync engine init failed", slog.Any("error", err))

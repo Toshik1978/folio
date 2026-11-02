@@ -31,7 +31,8 @@ func runReconcile(
 	im := newImporter(log, db, covers, 1000)
 	defer im.rollback()
 
-	rc, err := newReconciler(ctx, im, library.ID, time.Now().Unix(), r)
+	now := time.Now().Unix()
+	rc, err := newReconciler(ctx, im, library.ID, now, r)
 	if err != nil {
 		return Result{}, err
 	}
@@ -47,5 +48,5 @@ func runReconcile(
 		return Result{}, fmt.Errorf("commit sync: %w", err)
 	}
 
-	return Result{Added: rc.added, Removed: removed}, nil
+	return Result{Added: rc.added, Removed: removed, ImportedAt: now}, nil
 }

@@ -12,7 +12,6 @@ import (
 	dbf "github.com/Toshik1978/folio/internal/db"
 	"github.com/Toshik1978/folio/internal/db/dbq"
 	"github.com/Toshik1978/folio/internal/ebook"
-	"github.com/Toshik1978/folio/internal/htmltext"
 	"github.com/Toshik1978/folio/internal/ingest"
 )
 
@@ -165,7 +164,7 @@ func (h *BooksHandler) applyEnrichmentTx(
 	}
 
 	b.ContentHash = newEnrichmentHash(b.ContentHash)
-	if pErr := h.persistEnrichedScalars(ctx, q, x, b, meta, overwrite); pErr != nil {
+	if pErr := h.persistEnrichedScalars(ctx, q, x, b, overwrite); pErr != nil {
 		return false, pErr
 	}
 
@@ -328,17 +327,16 @@ func (h *BooksHandler) applyGenres(
 }
 
 // persistEnrichedScalars writes the merged scalar fields (and, in overwrite mode,
-// title/series + the title/author/series FTS rows) and the annotation FTS row.
+// title/series) and refreshes the book's FTS row.
 func (h *BooksHandler) persistEnrichedScalars(
 	ctx context.Context,
 	q *dbq.Queries,
 	x dbq.DBTX,
 	book *dbq.Book,
-	meta ebook.Metadata,
 	overwrite bool,
 ) error {
 	if overwrite {
-		if err := h.persistMatchScalars(ctx, q, x, book, meta); err != nil {
+		if err := h.persistMatchScalars(ctx, q, book); err != nil {
 			return err
 		}
 	} else {
@@ -351,28 +349,18 @@ func (h *BooksHandler) persistEnrichedScalars(
 		}
 	}
 
-	if book.Annotation.Valid {
-		err := dbf.UpdateBookFTSAnnotation(
-			ctx, x, book.ID, htmltext.StripMarkup(book.Annotation.String),
-		)
-		if err != nil {
-			return fmt.Errorf("enrichment fts: %w", err)
-		}
+	// The books row and (in overwrite mode) author/series links are already
+	// written, so one refresh rewrites the whole FTS row.
+	if err := dbf.RefreshBookFTS(ctx, x, book.ID); err != nil {
+		return fmt.Errorf("enrichment fts: %w", err)
 	}
 
 	return nil
 }
 
 // persistMatchScalars writes the overwrite (Fix Match) book row — title and series
-// alongside the enrichment scalars — and keeps the title/author/series FTS rows in
-// sync. Authors/series FTS are only touched when the volume carried them.
-func (h *BooksHandler) persistMatchScalars(
-	ctx context.Context,
-	q *dbq.Queries,
-	x dbq.DBTX,
-	book *dbq.Book,
-	meta ebook.Metadata,
-) error {
+// alongside the enrichment scalars. The caller refreshes the FTS row afterwards.
+func (h *BooksHandler) persistMatchScalars(ctx context.Context, q *dbq.Queries, book *dbq.Book) error {
 	err := q.UpdateBookMatch(ctx, dbq.UpdateBookMatchParams{
 		Title: book.Title, SeriesID: book.SeriesID, SeriesNumber: book.SeriesNumber,
 		Language:   book.Language,
@@ -381,19 +369,6 @@ func (h *BooksHandler) persistMatchScalars(
 	})
 	if err != nil {
 		return fmt.Errorf("persist match: %w", err)
-	}
-	if err := dbf.UpdateBookFTSTitle(ctx, x, book.ID, book.Title); err != nil {
-		return fmt.Errorf("match fts title: %w", err)
-	}
-	if len(meta.Authors) > 0 {
-		if err := dbf.UpdateBookFTSAuthors(ctx, x, book.ID, strings.Join(meta.Authors, " ")); err != nil {
-			return fmt.Errorf("match fts authors: %w", err)
-		}
-	}
-	if strings.TrimSpace(meta.Series) != "" {
-		if err := dbf.UpdateBookFTSSeries(ctx, x, book.ID, meta.Series); err != nil {
-			return fmt.Errorf("match fts series: %w", err)
-		}
 	}
 
 	return nil

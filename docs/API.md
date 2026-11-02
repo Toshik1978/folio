@@ -63,14 +63,23 @@
 | `POST` | `/api/libraries/{id}/reactivate` | Cancel pending purge, resume syncing | JSON acknowledgement |
 | `POST` | `/api/libraries/{id}/purge` | Force-purge now (skip the 7-day grace): stamps `pending_purge` + `purge_at=now`, then tears down asynchronously; retried by the minute-interval deadline sweep if the async teardown fails | `202 {"status":"purging"}` |
 | `POST` | `/api/libraries/{id}/sync` | Trigger an incremental sync for this library (respects checkpoint gating; skips an unchanged source) | `202 {"status":"queued"}` |
+| `POST` | `/api/libraries/{id}/deep-index` | Queue a Deep Index run for this library: fill missing descriptions from the books' own local files and make them full-text searchable (see [DATABASE.md](./DATABASE.md#deep-index-bulk-on-demand)). Already queued for Deep Index → no-op | `202 {"status":"queued"}` |
 | `POST` | `/api/libraries/{id}/reindex` | Force a full re-read of this library, bypassing checkpoint gating (the per-library "Re-index" action) | `202 {"status":"queued"}` |
 
 `name` and `path` are required on `POST`/`PUT` (empty → `400`). A duplicate
 `path` returns `409 Conflict` (not a generic `500`). `DELETE`, `PUT`,
-`reactivate`, `purge`, `sync`, and `reindex` on an unknown id return `404 Not Found`. A
+`reactivate`, `purge`, `sync`, `deep-index`, and `reindex` on an unknown id return `404 Not Found`. A
 `PUT` updates only name/path/schedule — it never resets `status`, `purge_at`, or
 `last_sync_error`, so editing a library mid-purge does not silently cancel the
 purge.
+
+A `deep-index` request for a `pending_purge` library is accepted (`202`) but the
+engine skips it at run time, as it does for `sync`. `POST /api/deep-index` queues
+Deep Index for every library that is not `pending_purge` and returns the current
+sync `Status` body (`202`), like `POST /api/sync`. Both are state-changing and
+pass the same-site and form-body guards. Progress and the running `kind`
+(`"sync"` or `"deep_index"`) arrive over the SSE stream, see
+[SYNC-EVENTS.md](./SYNC-EVENTS.md).
 
 #### Library Object (JSON)
 

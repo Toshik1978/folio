@@ -41,7 +41,10 @@ Goose expects numbered SQL files in a migrations directory:
 internal/db/migrations/
 ├── 001_create_schema.sql              # libraries, books, book_files, authors, series, genres, … + indexes
 ├── 002_create_fts5.sql                # books_fts virtual table + delete trigger
-└── 003_book_identifiers_lookup.sql    # idx_book_identifiers_lookup on book_identifiers(type, value) — accelerates identifier-based lookups (ISBN / Amazon / Goodreads) used by metasearch enrichment
+├── 003_book_identifiers_lookup.sql    # idx_book_identifiers_lookup on book_identifiers(type, value) — accelerates identifier-based lookups (ISBN / Amazon / Goodreads) used by metasearch enrichment
+├── 004_book_cover_state.sql           # cover state columns on books
+├── 005_fts_rowid_key.sql              # books_fts keyed by rowid (= books.id) instead of a book_id column
+└── 006_fts_contentless.sql            # books_fts becomes contentless-delete; adds the books_fts_vocab view
 ```
 
 The migration files are embedded into the binary (`go:embed`) and run
@@ -213,24 +216,44 @@ CREATE INDEX idx_books_language ON books (language);                            
 
 ```sql
 CREATE VIRTUAL TABLE books_fts USING fts5(
-    book_id UNINDEXED,
     title,
     authors,
     series,
     annotation,
+    content = '',
+    contentless_delete = 1,
     tokenize = 'unicode61 remove_diacritics 1'
 );
+
+CREATE VIRTUAL TABLE books_fts_vocab USING fts5vocab (books_fts, 'row');
 ```
 
-- `book_id UNINDEXED` stores the FK without indexing it for search.
+- **Keyed by rowid.** An index row's `rowid` is `books.id`; there is no `book_id`
+  column. FTS5 can seek only by rowid or `MATCH`, so every write goes by rowid.
+- **Contentless (migration 006).** `content=''` keeps the inverted index but not a
+  second copy of the text, which already lives in `books` / `authors` / `series`.
+  `contentless_delete=1` still allows `DELETE` by rowid and full-row `UPDATE`.
+  Consequences: a partial-column `UPDATE` is rejected by SQLite and column values
+  cannot be read back, so a row must always be rewritten whole.
+- **`RefreshBookFTS`** (`internal/db/fts.go`) is the single way to change an
+  existing row. It re-reads title, authors (in `book_authors` rowid order),
+  series and annotation (markup stripped) from the relational tables, then does a
+  full-row `UPDATE` if the rowid exists or an `INSERT` if not. Callers change
+  `books` / joins first and call it inside the same transaction. `InsertBookFTS`
+  writes the row for a new book. Both are built with `bob` rather than sqlc
+  (sqlc cannot parse a table with a `rowid` column).
+- **`books_fts_vocab`** is an `fts5vocab` `row` view over the index; it exposes
+  the document frequency of each term.
 - `unicode61 remove_diacritics 1` normalizes accented characters for multilingual search.
-- FTS sync is managed by triggers on `DELETE` and explicitly inside transactions on `INSERT`.
+- The up leg of 006 re-tokenizes every row once, on the first startup that carries it.
+  The down leg is lossy: it rebuilds rows from `books` with the raw (unstripped)
+  annotation until the next refresh.
 
 ### Sync Trigger
 
 ```sql
 CREATE TRIGGER books_ad AFTER DELETE ON books BEGIN
-    DELETE FROM books_fts WHERE book_id = old.id;
+    DELETE FROM books_fts WHERE rowid = old.id;
 END;
 ```
 
@@ -330,6 +353,7 @@ different book (see [Stable identity](#stable-identity-library_key)).
    call on an already-deleted library is a clean no-op, and the minute-interval
    deadline sweep retries automatically if the async teardown fails.
 6. **Cover Extraction & Caching** — The sync engine extracts a cover during ingestion (preferring richer formats: epub→fb2→mobi/azw3→pdf), normalizes it to JPEG (`covers.Save` → `convertToJPEG`), and caches it keyed to the **logical** `books.id` under `/data/covers/{id/1000}/{id}.jpeg`. Every cached cover is therefore a JPEG, so serving and the OPDS feed declare `image/jpeg` without sniffing each file (see [API.md](./API.md#cover-image-serving--security)). The priority of the format whose cover is cached is **persisted** in `books.cover_prio`, so the "prefer richer formats" rule holds *across* runs, not just within one — a partial re-sync (e.g. only the PDF changed) can never downgrade a richer edition's cover. `covers.Save` skips a write when the new bytes are byte-identical to the cached file, so the on-disk mtime — and thus the `?v=` cache-buster — only changes when the image actually changes. Lazy extraction negative-caches a *missing* cover only after a **successful** parse that found none; a parse **error** is never cached, so a transient failure retries on the next view.
+7. **Post-sync description fill** — A sync that added files (`Result.Added > 0`) then runs the Deep Index over just the books that run inserted, in the same queue turn. It runs only when a deep indexer is wired (`WithDeepIndexer`, as `cmd/folio-idx` does); otherwise it is a no-op. It releases the whole-run write guard first, so the indexer takes the guard per batch like a Deep Index run. The scope is `ingest.DeepIndexImportedAt(stamp)`, where `stamp` is the run's `imported_at` (`Result.ImportedAt`): unchecked books stamped with that value, never the backlog. The backlog is the Deep Index button's job. A checkpoint-skipped sync and a sync with no additions run no fill. On a library's first sync every book is new, so the fill is a full Deep Index for that library in that turn. A fill failure is logged as a warning and does not mark the library errored; the books stay unchecked for a later Deep Index.
 
 ---
 
@@ -455,6 +479,41 @@ row, and the persisted result shows on the next view.
    [NETWORKING.md](./NETWORKING.md#outbound-connections)). Implemented by `ingest.Enricher` behind the api
    `MetadataEnricher` interface; see [BACKEND.md](./BACKEND.md) and
    [EBOOK-PARSING.md](./EBOOK-PARSING.md#metadata-coverage-by-format).
+
+#### Deep Index (bulk, on demand)
+
+The lazy tiers above fill one book at a time on view. **Deep Index** does the
+local-backfill tier in bulk so descriptions become full-text searchable without
+opening each book. It is a sync-engine request kind (see
+[SYNC-EVENTS.md](./SYNC-EVENTS.md)) triggered from Settings → Libraries, and is
+implemented by `ingest.DeepIndexer` (`internal/ingest/deepindex.go`). It reads
+local files only, never calls the network, and never writes to a library source.
+
+- **Work list.** Books of the library with `metadata_checked = 0`, one file per
+  book (preferring fb2, then epub, then other formats, PDF last), ordered by
+  `source_path` so an INPX archive's entries are contiguous.
+- **Reading.** INPX libraries are processed one job per archive: the zip is opened
+  once (lazily, so a PDF-only archive is never opened) and each FB2 entry gets a
+  header-only parse (`ebook.ParseFB2Description`, see
+  [EBOOK-PARSING.md](./EBOOK-PARSING.md#fb2)). Other library types, and non-FB2
+  entries inside an INPX archive, go per book through the local `FileExtractor`
+  (`Backfill`). PDFs are marked checked without being parsed. A bounded worker
+  pool (`GOMAXPROCS`) reads; a single writer commits.
+- **Annotation only when NULL.** The annotation is written with
+  `SetBookAnnotationIfNull` (`... WHERE annotation IS NULL`), so an existing
+  description — including one from enrichment or a manual edit — is never
+  replaced. Only when a row was actually changed is `RefreshBookFTS` called, in
+  the same transaction. Identifiers are insert-if-absent. Then `metadata_checked`
+  is set.
+- **Per-batch guard.** The writer commits 500 books per transaction and takes the
+  shared `db.WriteGuard` for each batch only (`guard.WithTx`), not for the whole
+  run. Other writers (edits, syncs, API writes) interleave between batches
+  instead of waiting for the run to end.
+- **Failures and cancellation.** A book whose file is unreadable, missing or
+  fails to parse is left unchecked and retried by the next run. On cancellation
+  the batches already committed stay; the rest is picked up next time.
+- **Result.** `DeepIndexResult` counts `Checked`, `Filled` (annotation newly
+  set), `Skipped` (already had one) and `Errors`; it is logged at the end of a run.
 
 Online enrichment restamps `content_hash` so the `?v=<content_hash>-<cover
 mtime>` cache-buster changes (the second component, `covers.Store.Version`,

@@ -17,6 +17,8 @@ type SyncEngine interface {
 	TriggerAllForced()
 	TriggerLibrary(libraryID int64)
 	TriggerLibraryForced(libraryID int64)
+	TriggerDeepIndex(libraryID int64)
+	TriggerDeepIndexAll()
 	Status() sync.Status
 	Reschedule(ctx context.Context) error
 	RequestPurge(id int64)
@@ -44,6 +46,7 @@ func NewSync(log *slog.Logger, syncEngine SyncEngine, broker EventBroker) *SyncH
 
 func (h *SyncHandler) Register(r chi.Router) {
 	r.Post("/sync", h.triggerSync)
+	r.Post("/deep-index", h.triggerDeepIndex)
 	r.Get("/sync/status", h.syncStatus)
 	r.Get("/sync/events", h.syncEvents)
 }

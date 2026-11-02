@@ -402,6 +402,16 @@ filter. Covered by `SearchInput.spec.ts` (real memory-router tests).
   `triggerReindexAll` → `POST /api/sync`, which forces a full re-read of every
   library, bypassing checkpoint gating. Per-library **Sync Now** is forced the
   same way; automatic (scheduled/watcher) syncs stay gated.
+- **Deep Index.** Each library row has a **Deep Index** button (disabled while
+  the row is busy) next to Re-index, and the table header has **Deep Index All**
+  (shown when at least one library exists, disabled while a run is active) next
+  to Re-index All. They call `deepIndexLibrary` / `deepIndexAll` in `api.ts` →
+  `POST /api/libraries/{id}/deep-index` and `POST /api/deep-index`, through
+  `useLibraryActions`, and toast on queue or failure. Neither asks for
+  confirmation: the run only fills missing descriptions. While one runs, the
+  `SyncBanner` and the row's status badge read "Deep indexing…" (from
+  `status.kind`) and show its progress. Covered by `LibraryTable.spec.ts`,
+  `SettingsPage.spec.ts`, `SyncBanner.spec.ts`, and `useLibraryActions.spec.ts`.
 - **`LibraryStats` is deliberately global.** The catalog-overview card at the top
   of the tab (`LibraryStats.vue` → `fetchStats()` with no `library` arg) always
   reports whole-catalog totals and **ignores the header library selector**
