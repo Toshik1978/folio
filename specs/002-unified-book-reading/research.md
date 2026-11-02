@@ -39,6 +39,7 @@ These decisions were taken with the maintainer during brainstorming, or follow f
   - EPUB (central directory at the end), PDF (xref at the end) and MOBI cover records have to inflate further, which is inherent to those formats.
   - The cap counts inflated bytes, not the declared size: a large FB2 still has its description read, while an oversized EPUB fails cleanly (US1 scenario 5).
   - The same constructor serves `.fb2.zip` wrapper files, so wrappers and archive collections share one path.
+  - *Later addition:* the FB2 XML itself, plain file or wrapper, is read through a 64 MiB cap (`maxArchiveTextBytes`) that fails with `ErrTooLarge`, so a document read past the cap is `too_large` rather than a truncated, i.e. `corrupt`, file. A header read stops long before it.
 - **Alternatives considered**:
   - *Temp files*: forbidden by FR-005.
   - *Rejecting up front on `UncompressedSize64 > cap`*: it would make large FB2s unreadable for descriptions, and the declared size is untrusted anyway.
@@ -54,6 +55,7 @@ These decisions were taken with the maintainer during brainstorming, or follow f
   - When the reconciler sees a new or changed file (`rc.prev` size/mtime) whose rank is ≥ the book's `cover_prio`, and the record has no cover bytes, the importer queues a post-commit invalidation: delete the cached cover and thumbnail, then set `cover_state = 0` and `cover_prio = 0`. Manual covers (prio 1000) are never invalidated.
 - **Rationale**: one flow, and broken-cover outcomes handled in one place. The invalidation keeps today's "a better or changed edition refreshes the cover" behaviour without reading the cover at import.
 - **Cost accepted**: a second read per book. On the first browse after a folder import, covers appear as they are extracted.
+- **Superseded (invalidation rule)**: the "rank ≥ `cover_prio`" test alone would also wipe an online-enrichment cover (`cover_prio = 0`) that nothing would fetch again. What shipped marks a lazily extracted cover as file-derived (`cover_state = 1`, `cover_prio = 1`, via `MarkFileCover` on `covers.CoverState`) and invalidates only state a file produced: `cover_state = 2`, or `cover_state = 1` with `1 <= cover_prio < 1000`. The trigger also covers a file newly joined to an existing book, and a file that moves between books (an INPX index fix changed its grouping key) resets the book it left too, along with that book's read-failure rows. A brand-new book, and a book that already had a cover saved in the same run, queue nothing.
 - **Alternatives considered**:
   - *Keep import-time covers for folders*: a library-type special case, plus a second place to classify cover failures.
 
@@ -78,12 +80,14 @@ These decisions were taken with the maintainer during brainstorming, or follow f
 | Source of error | Outcome | Reason |
 |---|---|---|
 | Parser content error (XML, zip format, MOBI/PDF structure, checksum, early EOF of an entry); the Dispatcher wraps it as `ebook.ErrMalformed` | broken | `corrupt` |
-| `ebook.ErrTooLarge` | broken | `too_large` |
+| `ebook.ErrTooLarge` (an entry over `MaxEntryBytes`, an FB2 document over its 64 MiB read cap, a declared cover over the 10 MiB cover cap) | broken | `too_large` |
 | Recovered panic (`*ebook.PanicError`) | broken | `crashed` |
 | Entry absent from an archive that opened fine | broken | `missing_entry` |
+| Archive that opens but whose zip container `zip.NewReader` rejects (not a source I/O error) | broken | `corrupt` |
 | `os.Open`/`os.Stat` error on a plain file, an archive or the library root (missing, permission, unmounted) | retryable | — |
 | Read error from the underlying file (`ebook.ErrSourceIO`, set by `ebook.TagIO` around the `*os.File`) | retryable | — |
 | `context.Canceled`/`DeadlineExceeded`, write-guard acquire timeout | retryable | — |
+| A broken read whose fingerprint cannot be computed (a stat or open failure), so it cannot be recorded | retryable | — |
 | No supported or describing format among the book's files | done (nothing found) | — |
 
 - **Rationale**:
@@ -103,6 +107,7 @@ These decisions were taken with the maintainer during brainstorming, or follow f
   - It is cheap for every source type.
   - It changes when any candidate changes, or when a file is added to or removed from the book (the multi-file edge case).
   - One TEXT column keeps the comparison opaque to SQL.
+- **Superseded (archive entries)**: the zip header alone is shared by a damaged archive and a good copy of the same release, so replacing the archive never lifted a `corrupt` record. What shipped appends the archive's own `os.Stat` size and mtime to each present entry's stamp (`UncompressedSize64|Modified|archive size|archive mtime`). An entry missing from its archive, or held by an archive whose container is corrupt, stamps the archive's `os.Stat` alone. Each candidate contributes one line, `source_path|stamp` followed by a newline.
 - **Alternatives considered**:
   - *Content hash*: it would read the file, which defeats SC-004.
   - *Stored `book_files.file_size/mtime` only*: archive entries have no reliable mtime there, and a replaced archive goes unseen until the next sync.
@@ -155,13 +160,18 @@ These decisions were taken with the maintainer during brainstorming, or follow f
 - **Decision**: the cover flow is broken (row, `corrupt`) only when the file declares a cover whose payload cannot be extracted: FB2 base64 that is invalid or truncated, or an EPUB manifest cover entry that is missing or fails to inflate. No declared cover, a reference pointing nowhere, or extracted bytes that are not a decodable image all stay "none" (`cover_state = 2`).
   - This changes `decodeBase64Binary` and `extractEPUBCover`, which today swallow these errors as "no cover".
 - **Rationale**: "none" already stops re-reads and is the right answer for a valid file whose image is odd. A payload that cannot be extracted means the file is damaged, which is what US2 scenario 7 describes.
+- **Later refinements** (same rule, more cases):
+  - a declared cover over the 10 MiB cover cap is `too_large` in every parser (FB2, EPUB, MOBI); a MOBI cover record over the cap no longer falls back to the first-image scan;
+  - a failed MOBI cover-record read is returned instead of being taken for "no cover": source I/O stays retryable, anything else is `corrupt`;
+  - an EPUB cover href's `./` and `../` segments are cleaned before the entry lookup, so a valid book is not reported `corrupt`;
+  - a MOBI `FirstImageIndex` outside the records falls back to the first-image scan.
 
 ## R10. Deep Index after unification
 
 - **Decision**:
   - `ListDeepIndexWork` returns every file of each unchecked book, plus that book's metadata-flow failure record (fingerprint, version), ordered by `source_path`.
   - Go groups files by book, ranks them, and groups books into jobs by `resolver.group` of the top-ranked file (the archive for archive-backed books, otherwise one book per job).
-  - Each worker owns an `archiveCache`, so an archive is opened once per job, and a fallback file in another archive is opened through the same cache.
+  - Each job runs in its own read session with its own `archiveCache`, so an archive is opened once per job, and a fallback file in another archive is opened through the same cache.
   - The worker calls the shared `readBook`, so Deep Index, the on-view fill and the cover flow cannot diverge.
   - The writer batch, in the same transaction:
     - upserts records for new broken outcomes;
@@ -173,6 +183,7 @@ These decisions were taken with the maintainer during brainstorming, or follow f
   - Re-run: known-broken books cost one central-directory or stat lookup each.
 - **Alternatives considered**:
   - *Excluding known-broken books in SQL by version alone*: it skips the fingerprint check that FR-015 requires.
+- **Superseded (one work list)**: loading every unchecked book's files up front held about 170 MB on a 580k-book library, and a large library's first sync runs a full Deep Index automatically. What shipped counts the work once (`CountDeepIndexWork`, the progress total), then reads `ListDeepIndexWork` 5,000 books at a time in book-id order (`after_id`, `lim`), each page through the same jobs, workers and writer. Paging by book keeps a book's files on one page; moving forward by id means a book left unchecked is not picked up again in the same run. Within a page, rows stay ordered by `source_path`.
 
 ## R11. Keeping counts honest when files change
 
@@ -183,6 +194,7 @@ These decisions were taken with the maintainer during brainstorming, or follow f
     2. Every read path re-checks the fingerprint before honouring a record, and the book page runs that check synchronously on view.
 - **Rationale**: SQL cannot stat files. Sync covers the common case, and the read paths cover changes sync cannot see (an archive replaced without an index change).
 - **Residual**: a file changed behind sync's back keeps counting on the library row until it is next viewed or Deep-Indexed. Accepted.
+- **Superseded (residual)**: the residual was closed rather than accepted. After every sync commits, still under its write guard, `recheckReadFailures` recomputes the fingerprint of each book with a current-version `metadata` row (stat or zip directory only, nothing inflated) and deletes the rows that no longer match; a row whose fingerprint cannot be computed is kept. A sync the engine skips on an unchanged `.inpx` or `metadata.db` runs the same re-check through `RecheckReadFailures` (`sync.ReadFailureRechecker`) and emits a `library` event when it lifts rows. A changed file now stops counting by the next sync at the latest. The reconciler also clears a book's rows when a file joins or leaves it.
 
 ## R12. Non-regression measurement
 

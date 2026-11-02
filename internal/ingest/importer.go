@@ -184,8 +184,9 @@ func (im *importer) getQueries(ctx context.Context) (*dbq.Queries, error) {
 // gap-filling missing metadata) or creating a new book otherwise. It returns the
 // logical book id and, on success, caches the cover if this file's format
 // outranks any already saved. changed reports that rec's file is new or its
-// size or mod time moved; on an existing book it may invalidate the book's
-// file-derived cover (see invalidateCoverIfChanged).
+// size or mod time moved; on an existing book it, like a file joining the book
+// (even with unchanged bytes), may invalidate the book's file-derived cover
+// (see invalidateCoverIfChanged) and drops its read-failure records.
 func (im *importer) add(ctx context.Context, rec bookRecord, addedAt int64, changed bool) (int64, error) {
 	b, err := im.upsertBook(ctx, rec, addedAt)
 	if err != nil {
@@ -193,8 +194,11 @@ func (im *importer) add(ctx context.Context, rec bookRecord, addedAt int64, chan
 	}
 
 	im.saveCoverIfBetter(ctx, b.id, b.coverPrio, rec)
-	if changed && !b.inserted { // a brand-new book has no cover to invalidate
+	if (changed || b.joined) && !b.inserted { // a brand-new book has no cover or failure records
 		im.invalidateCoverIfChanged(b.id, b.coverState, b.coverPrio, rec)
+		if err := im.dropReadFailures(ctx, b.id); err != nil {
+			return 0, err
+		}
 	}
 
 	im.count++
@@ -208,13 +212,30 @@ func (im *importer) add(ctx context.Context, rec bookRecord, addedAt int64, chan
 	return b.id, nil
 }
 
+// dropReadFailures deletes bookID's remembered read failures in the import
+// transaction: a changed file may now be readable, so the next read must open
+// it rather than trust a record of the old bytes.
+func (im *importer) dropReadFailures(ctx context.Context, bookID int64) error {
+	q, err := im.getQueries(ctx)
+	if err != nil {
+		return err
+	}
+	if err := q.DeleteReadFailuresForBook(ctx, bookID); err != nil {
+		return fmt.Errorf("delete read failures: %w", err)
+	}
+
+	return nil
+}
+
 // upsertedBook is the logical book add persisted a record onto, with the cover
 // state and prio it had before this record (zero for a book just inserted).
+// joined reports that the record's file was new to an existing book.
 type upsertedBook struct {
 	id         int64
 	coverState int64
 	coverPrio  int64
 	inserted   bool
+	joined     bool
 }
 
 // upsertBook groups rec onto the existing logical book for its match key,
@@ -244,11 +265,14 @@ func (im *importer) upsertBook(ctx context.Context, rec bookRecord, addedAt int6
 	case err != nil:
 		return upsertedBook{}, fmt.Errorf("find book by key: %w", err)
 	}
-	if err := mergeExisting(ctx, q, im.tx, existing, rec, im.rank); err != nil {
+	joined, err := mergeExisting(ctx, q, im.tx, existing, rec, im.rank)
+	if err != nil {
 		return upsertedBook{}, err
 	}
 
-	return upsertedBook{id: existing.ID, coverState: existing.CoverState, coverPrio: existing.CoverPrio}, nil
+	return upsertedBook{
+		id: existing.ID, coverState: existing.CoverState, coverPrio: existing.CoverPrio, joined: joined,
+	}, nil
 }
 
 // resolveMatchKey returns the library_key to use when looking up an existing book.
@@ -358,15 +382,46 @@ func (im *importer) saveCoverIfBetter(_ context.Context, bookID, persistedPrio i
 // first of a book's format rows). Like every cover op it runs only after the
 // batch commits.
 func (im *importer) invalidateCoverIfChanged(bookID, coverState, persistedPrio int64, rec bookRecord) {
+	if len(rec.Cover) > 0 || int64(im.rank(rec.FileFormat)) < persistedPrio {
+		return
+	}
+	im.invalidateFileCover(bookID, coverState, persistedPrio)
+}
+
+// invalidateFileCover queues an invalidation of bookID's cover when its state
+// is file-produced (see invalidateCoverIfChanged) and no cover was saved for
+// the book this run.
+func (im *importer) invalidateFileCover(bookID, coverState, persistedPrio int64) {
 	fileState := coverState == coverStateNone ||
 		(coverState == coverStateHas && persistedPrio >= fileCoverPrio && persistedPrio < manualCoverPrio)
-	if !fileState || len(rec.Cover) > 0 || int64(im.rank(rec.FileFormat)) < persistedPrio {
+	if !fileState {
 		return
 	}
 	if _, saved := im.coverPrio[bookID]; saved {
 		return
 	}
 	im.pendingCovers = append(im.pendingCovers, coverOp{bookID: bookID, invalidate: true})
+}
+
+// fileLeft resets what bookID derived from a file that moved to another book
+// (its grouping key changed): a file-derived cover or none marker may describe
+// the file it no longer has, and a read-failure record may be about that file.
+// A book left with no files is pruned later anyway; the reset is harmless.
+func (im *importer) fileLeft(ctx context.Context, bookID int64) error {
+	q, err := im.getQueries(ctx)
+	if err != nil {
+		return err
+	}
+	book, err := q.GetBook(ctx, bookID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("load book %d: %w", bookID, err)
+	}
+	im.invalidateFileCover(bookID, book.CoverState, book.CoverPrio)
+
+	return im.dropReadFailures(ctx, bookID)
 }
 
 // remove deletes a book by id (cascading authors/genres/FTS) and evicts its

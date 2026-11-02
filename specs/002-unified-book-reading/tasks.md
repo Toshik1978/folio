@@ -270,7 +270,7 @@ description: "Task list for Unified Book Reading"
 
 **Independent Test**: The corrupt fixture is recorded once. A re-run reports `errors = 0`, `broken = 0`, `known_broken ≥ 1` without opening the entry. A changed fingerprint re-reads it. A missing archive and a cancelled run record nothing. A `badcover.fb2` cover is recorded once and not re-read.
 
-- [ ] T015 [US2] Add migration `internal/db/migrations/007_book_read_failures.sql` and `internal/db/queries/readfailures.sql` (new), then run `task generate`. The DDL, verbatim from data-model.md:
+- [x] T015 [US2] Add migration `internal/db/migrations/007_book_read_failures.sql` and `internal/db/queries/readfailures.sql` (new), then run `task generate`. The DDL, verbatim from data-model.md:
 
   ```sql
   CREATE TABLE book_read_failures
@@ -305,7 +305,7 @@ description: "Task list for Unified Book Reading"
   - the `CHECK` constraints reject an unknown flow or reason;
   - an upsert replaces the row;
   - deleting a book and purging its library both cascade.
-- [ ] T016 [US2] Add outcome classification and fingerprints in `internal/ingest/outcome.go` (new) and `internal/ingest/source.go`.
+- [x] T016 [US2] Add outcome classification and fingerprints in `internal/ingest/outcome.go` (new) and `internal/ingest/source.go`.
   - Exported types:
     - `type ReadStatus int`, with `ReadDone`, `ReadBroken`, `ReadRetryable`;
     - `type ReadResult struct{ Status ReadStatus; Reason ebook.Reason; Detail string; Fingerprint string; Known bool; Err error }`.
@@ -325,7 +325,7 @@ description: "Task list for Unified Book Reading"
   - `classify` table over every row of research.md R6;
   - `combine` cases;
   - the fingerprint is stable, changes on an mtime change, on a replaced entry, and on a file added to the book, and reads no entry data (counting `ReaderAt`).
-- [ ] T017 [US2] Add the record gate to `readBook`, and make reads return `ReadResult`.
+- [x] T017 [US2] Add the record gate to `readBook`, and make reads return `ReadResult`.
   - `internal/ingest/extract.go`:
     - `readBook` loads `GetReadFailure(book, flow)` first. If `reader_version == ebook.ReaderVersion` and the recomputed fingerprint is equal, it returns `ReadResult{Status: ReadBroken, Known: true, Reason: …}` without opening any candidate. Otherwise it reads, classifies each candidate, combines the results, and sets `Fingerprint`.
     - `Description(ctx, bookID) (ebook.Metadata, ReadResult)`, and `(*readSession).description(ctx, library, files) (ebook.Metadata, ReadResult)`.
@@ -344,7 +344,7 @@ description: "Task list for Unified Book Reading"
   - `resolver.entryLimit = 1024` on `7.epub` → broken `too_large`;
   - a missing entry → `missing_entry`;
   - a renamed-away archive → retryable.
-- [ ] T018 [US2] Make the on-view fill outcome-aware in `internal/ingest/backfill.go`. `LocalBackfiller.fill` handles each result:
+- [x] T018 [US2] Make the on-view fill outcome-aware in `internal/ingest/backfill.go`. `LocalBackfiller.fill` handles each result:
   - **done**: as today (annotation if NULL, identifiers, `MarkMetadataChecked`), plus `DeleteReadFailure(book, metadata)` in the same guarded section.
   - **broken, not `Known`**: under the guard with `backfillAcquireBudget`, call `UpsertReadFailure` (flow `metadata`, the reason, the detail, the fingerprint, `ebook.ReaderVersion`, `time.Now().Unix()`). Log one `Warn("unreadable book file", book, flow, reason)`. The book stays unchecked.
   - **broken, `Known`**: nothing, and no log line.
@@ -357,7 +357,7 @@ description: "Task list for Unified Book Reading"
   - a second `Fill` reads nothing and logs nothing (captured slog handler);
   - after the file is fixed, the row is deleted and the book is checked;
   - retryable → no row.
-- [ ] T019 [US2] Make Deep Index outcome-aware and count it.
+- [x] T019 [US2] Make Deep Index outcome-aware and count it.
   - `internal/db/queries/books.sql` + `task generate`: `ListDeepIndexWork` LEFT JOINs `book_read_failures` (`flow = 'metadata'`) and returns the nullable `failure_fingerprint` and `failure_reader_version`. Callers: `internal/ingest/deepindex.go`, `internal/db/deepindex_test.go`.
   - `internal/ingest/deepindex.go`:
     - the worker passes those columns into the gate, so there is no query per book;
@@ -371,7 +371,7 @@ description: "Task list for Unified Book Reading"
   - an archive replaced with a fixed `4.fb2` → re-read, filled, row deleted;
   - a missing archive → `Errors > 0` and no rows;
   - cancellation adds no rows.
-- [ ] T020 [US2] Record cover-flow failures in `Extractor.Cover` (`internal/ingest/extract.go`), with `NewExtractor(db, log, reader, guard *db.WriteGuard)`. Callers: `cmd/folio-idx/main.go`, `internal/ingest/extractor_test.go`, `internal/ingest/deepindex_test.go`, `internal/ingest/backfill_test.go`.
+- [x] T020 [US2] Record cover-flow failures in `Extractor.Cover` (`internal/ingest/extract.go`), with `NewExtractor(db, log, reader, guard *db.WriteGuard)`. Callers: `cmd/folio-idx/main.go`, `internal/ingest/extractor_test.go`, `internal/ingest/deepindex_test.go`, `internal/ingest/backfill_test.go`.
   - `Cover` runs `readBook(flowCover)`:
     - done → delete any `cover` row (guarded, best-effort) and return the bytes (`(nil, false, nil)` when there is no cover);
     - new broken → upsert a `cover` row (guarded, best-effort, one Warn) and return an error wrapping `ebook.ErrMalformed`;
@@ -385,7 +385,7 @@ description: "Task list for Unified Book Reading"
   - `badcover.epub` → one `cover` row;
   - `oddcover.fb2` → no row and `cover_state = 2`;
   - touching `badcover.fb2` (new fingerprint) re-reads it.
-- [ ] T021 [US2] Drop stale records when sync sees a file change, in `internal/ingest/importer.go`. When `changed` (T012) is true for an upserted file, call `DeleteReadFailuresForBook(bookID)` in the import transaction.
+- [x] T021 [US2] Drop stale records when sync sees a file change, in `internal/ingest/importer.go`. When `changed` (T012) is true for an upserted file, call `DeleteReadFailuresForBook(bookID)` in the import transaction.
 
   Tests (`importerSuite`): a book with metadata and cover rows loses both when its folder file's mtime changes; an unchanged re-sync keeps them.
 
@@ -399,7 +399,7 @@ description: "Task list for Unified Book Reading"
 
 **Independent Test**: With one broken fixture book, the library row shows "⚠ 1 unreadable". The link lists exactly that book. Its page shows the notice. After the file is fixed and re-read, both disappear.
 
-- [ ] T022 [US3] Add `unreadable_count` to library responses, using new queries only (existing query signatures are unchanged).
+- [x] T022 [US3] Add `unreadable_count` to library responses, using new queries only (existing query signatures are unchanged).
   - `internal/db/queries/libraries.sql` + `task generate`:
     - `ListUnreadableCounts(reader_version)`: `SELECT b.library_id, COUNT(*) AS unreadable_count FROM book_read_failures f JOIN books b ON b.id = f.book_id WHERE f.flow = 'metadata' AND f.reader_version = ? GROUP BY b.library_id`;
     - `CountUnreadableBooks(library_id, reader_version)`.
@@ -413,7 +413,7 @@ description: "Task list for Unified Book Reading"
   - another library's rows are ignored;
   - the field is present (0) on every library response;
   - the `mcpserver` suite still passes.
-- [ ] T023 [US3] Add the `unreadable` book-list filter.
+- [x] T023 [US3] Add the `unreadable` book-list filter.
   - `internal/db/booksfilter.go`: `BookFilter` gains `Unreadable bool` and `ReaderVersion int64`. When `Unreadable` is set, add `EXISTS (SELECT 1 FROM book_read_failures f WHERE f.book_id = b.id AND f.flow = 'metadata' AND f.reader_version = ?)` with a bound parameter, in both `FilterBooks` and `CountFilteredBooks`. Existing `BookFilter{…}` literals (`internal/api/books.go`, `internal/opds/feeds.go`, `internal/mcpserver/tools.go`) compile unchanged, because the zero value means off.
   - `internal/api/books.go`: `listBooks` sets `Unreadable: qp.Get("unreadable") == "1"` and `ReaderVersion: ebook.ReaderVersion`.
   - Doc: in `docs/API.md`, the query parameter.
@@ -423,7 +423,7 @@ description: "Task list for Unified Book Reading"
   - cover-only and stale-version rows are excluded;
   - the filter combines with `q` and `format`;
   - any other value is ignored.
-- [ ] T024 [US3] Add the book-detail `unreadable` field, and make the on-view fill re-check.
+- [x] T024 [US3] Add the book-detail `unreadable` field, and make the on-view fill re-check.
   - `internal/api/bookview.go`: `bookView` gains `Unreadable *unreadableView` (`json:"unreadable,omitempty"`), with `type unreadableView struct{ Reason string \`json:"reason"\` }`.
   - `internal/api/books.go`:
     - `getBook` loads `GetReadFailure(id, 'metadata')` before `runLazyTiers`;
@@ -437,7 +437,7 @@ description: "Task list for Unified Book Reading"
   - when the fake now returns `ReadDone` (file fixed), the same `GET` omits the field and the row is gone (US3 scenario 5);
   - stale version → omitted;
   - cover-only row → omitted.
-- [ ] T025 [US3] Add the SPA types and the list filter.
+- [x] T025 [US3] Add the SPA types and the list filter.
   - `web/src/types.ts`:
     - `Library.unreadable_count: number`;
     - `type UnreadableReason = 'corrupt' | 'missing_entry' | 'too_large' | 'crashed'`;
@@ -450,12 +450,12 @@ description: "Task list for Unified Book Reading"
   - Doc: in `docs/FRONTEND.md`, the `Unreadable` chip and filter.
 
   Vitest: `api.spec.ts`, `BooksPage.spec.ts`, `SearchInput.spec.ts` (emitted only when true, reaches `fetchBooks`, the chip renders and can be removed).
-- [ ] T026 [US3] Add the library-row warning link in `web/src/components/settings/LibraryTable.vue`. When `library.unreadable_count > 0`, render under the book count a link `⚠ {N} unreadable` (`text-warning text-xs`, `data-testid="library-unreadable"`). On click, call `setLibrary(library.id)` from `useLibrary`, then `router.push({ path: '/', query: { unreadable: '1' } })`. Render nothing for 0, and keep the link enabled while the library syncs.
+- [x] T026 [US3] Add the library-row warning link in `web/src/components/settings/LibraryTable.vue`. When `library.unreadable_count > 0`, render under the book count a link `⚠ {N} unreadable` (`text-warning text-xs`, `data-testid="library-unreadable"`). On click, call `setLibrary(library.id)` from `useLibrary`, then `router.push({ path: '/', query: { unreadable: '1' } })`. Render nothing for 0, and keep the link enabled while the library syncs.
 
   Doc: in `docs/FRONTEND.md`, the Settings → Libraries warning link.
 
   Vitest (`LibraryTable.spec.ts`): shown for N > 0 with the right text; hidden for 0; a click sets the library and navigates with `unreadable=1`.
-- [ ] T027 [US3] Add the book-page notice in `web/src/components/BookDetail.vue`. When `book.unreadable` is set, render in the description section, above any annotation, a `role="status"` element `data-testid="unreadable-notice"` with plain-text interpolation (no `v-html`): "Folio couldn't read this book's file: {label}. Downloading it may still work." The labels:
+- [x] T027 [US3] Add the book-page notice in `web/src/components/BookDetail.vue`. When `book.unreadable` is set, render in the description section, above any annotation, a `role="status"` element `data-testid="unreadable-notice"` with plain-text interpolation (no `v-html`): "Folio couldn't read this book's file: {label}. Downloading it may still work." The labels:
   - `corrupt` → "The file is damaged or not a valid ebook."
   - `missing_entry` → "The file is missing from its archive."
   - `too_large` → "The file is too large to read."
@@ -524,3 +524,11 @@ description: "Task list for Unified Book Reading"
 4. **Polish**: Phase 5. Residual docs, gates, and the final real-data performance check.
 
 Phase headings follow `## Phase N: …` for the beads import; each phase is one feature commit.
+
+## Phase 6: Convergence
+
+- [x] T031 Make the MOBI cover read return its read errors instead of treating them as "no cover". In `internal/ebook/mobi.go`, change `readRecordImage` and `findFirstImageRecord`, and through them `extractCover`/`mobiReadCover`, so that a `ReadAt` error matching `ebook.ErrSourceIO`, `ebook.ErrTooLarge` or `ebook.ErrMalformed` is returned. The Dispatcher then classifies it: retryable for source I/O, broken `too_large`/`corrupt` otherwise. Only a record that reads cleanly but is out of range or not an image stays `(nil, nil)`. Add `mobiSuite` tests: `Cover` over a `TagIO`-wrapped failing `ReaderAt` returns an error matching `ErrSourceIO`; `Cover` over `OpenZipEntry(entries.zip/book.mobi, <limit below the cover record>)` returns `ErrTooLarge`. Add an `extractorSuite` test showing that a retryable MOBI cover error leaves `cover_state = 0` and writes no row. Per FR-012, FR-016 (contradicts).
+- [x] T032 Classify an oversized declared cover the same way in every parser. Make the EPUB `epubCover`/`readZipEntry` over-limit error wrap `ebook.ErrTooLarge` (`internal/ebook/epub.go:296`). Make the MOBI `recordBounds` over-`maxCoverBytes` case for the EXTH-201 cover record return an `ErrTooLarge` error instead of falling back to the first-image scan (`internal/ebook/mobi.go:398`). Keep FB2 as it is (`fb2.go:431,438`). Add one test per parser asserting `ebook.ReasonOf(err) == ReasonTooLarge` for an oversized cover, and update `contracts`-aligned docs in `docs/EBOOK-PARSING.md` (cover-payload error rule). Per FR-011 (partial).
+- [x] T033 Add an end-to-end folder-sync test for read-failure cleanup in `internal/ingest` (`importerSuite` or `folderSuite`). Sync a folder library, seed `metadata` and `cover` rows for the book with `UpsertReadFailure`, run `os.Chtimes` on the book file, and re-sync through the real `FolderParser`/`reconciler.upsert` path. Assert that both rows are gone. In a sibling test, an untouched re-sync keeps both rows. Per T021, FR-015 (partial).
+- [x] T034 Make `ebookSuite.TestOversizedCoverIsBounded` (`internal/ebook/epub_test.go:50-104`) pass under `go test -race ./internal/ebook/`. Keep the zip-bomb assertion, so that the 128 MiB inflated cover is not loaded, but measure only the cover read, or derive the bound from `maxCoverBytes` with explicit race-detector headroom instead of the fixed 32 MiB. Verify with `go test -race -count=1 ./internal/ebook/`. Per T004 (partial).
+- [x] T035 Re-check stale metadata failure records after each library sync, so the library `unreadable_count` and the `unreadable` filter stop counting books whose file changed even when sync's size/mtime signal did not move (an archive replaced under an unchanged `.inpx`, or a folder file changed between syncs). After the reconcile, inside the existing sync run and under its write guard, load the library's current-version `metadata` rows. Recompute each book's fingerprint with `resolver.fingerprint` (stat or zip header only, no inflate) and delete the rows whose fingerprint differs; a stat error leaves the row. Add a test that replaces an archive entry, re-syncs, and asserts `CountUnreadableBooks` drops to 0 while an unchanged broken book stays counted. Document the rule in `docs/DATABASE.md`. Per US3/AC5, FR-020 (partial).

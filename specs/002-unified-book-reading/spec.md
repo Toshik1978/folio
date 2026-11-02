@@ -165,6 +165,8 @@ the file is replaced and re-read successfully, the link and the notice disappear
   every book in it, never recorded as unreadable.
 - An entry listed in the index no longer exists inside a readable archive: recorded as unreadable
   ("missing from archive") — retrying cannot help until the archive changes.
+- An archive opens but is not a valid archive (its directory is damaged): recorded as unreadable
+  ("corrupt") for the books read from it, until the archive changes.
 - A file is readable but contains no description: done, not unreadable (no notice, no count).
 - A file is readable but the cover is absent: done for covers (placeholder), not unreadable.
 - A reader crashes on hostile input: treated as broken for that flow, never crashes Folio.
@@ -207,8 +209,9 @@ the file is replaced and re-read successfully, the link and the notice disappear
 - **FR-010**: Each local read for a flow (metadata or cover) MUST end in exactly one of: done,
   broken, or retryable.
 - **FR-011**: Broken MUST cover failures that retrying the same file with the same reader cannot
-  fix: malformed or corrupt content, an entry missing from a readable archive, an oversized entry,
-  a reader crash.
+  fix: malformed or corrupt content (including an archive that opens but is not a valid archive),
+  an entry missing from a readable archive, an entry, document or cover over its size cap, a
+  reader crash.
 - **FR-012**: Retryable MUST cover failures that may resolve on their own: the library or archive
   is unreachable, a permission or I/O error opening the source, cancellation or shutdown, a
   write-lock timeout.
@@ -280,7 +283,9 @@ the file is replaced and re-read successfully, the link and the notice disappear
 ## Assumptions
 
 - File fingerprint = size + modification time, which every source type can provide cheaply;
-  archive entries use their own recorded size and modification time.
+  archive entries use their own recorded size and modification time plus the size and
+  modification time of the archive file itself, so replacing a damaged archive with a good copy
+  of the same release re-checks its books.
 - The reader version starts at 1 and is bumped by developers as part of a reader fix; there is
   no automatic detection.
 - The size cap for in-memory archive entries is a code constant generous enough for normal books
@@ -289,7 +294,10 @@ the file is replaced and re-read successfully, the link and the notice disappear
   libraries; the first browse of newly imported books shows covers as they are extracted.
 - Existing per-book flags (`read` for descriptions, has/none for covers) keep their meaning; the
   read-failure record is additional.
-- Reason categories shown to users are few and plain (e.g. corrupt file, missing from archive,
-  too large, unsupported content); details stay in logs and the record.
+- Reason categories shown to users are few and plain (corrupt file, missing from archive, too
+  large, reader crash); details stay in logs and the record.
+- A record that no longer applies stops counting on the library row at the latest after the
+  library's next sync (a scheduled sync skipped because the library index is unchanged re-checks
+  too), the next Deep Index run, or the next view of the book; the book page re-checks on view.
 - Calibre libraries keep using their own cover image files; they still use the shared flow for
   descriptions and outcomes.

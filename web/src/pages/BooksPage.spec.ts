@@ -92,6 +92,19 @@ describe('BooksPage', () => {
     );
   });
 
+  it('forwards unreadable=1 to the API as a true filter, and ignores other values', async () => {
+    route.query = { unreadable: '1' };
+    mount(BooksPage, opts);
+    await flushPromises();
+    expect(fetchBooks).toHaveBeenCalledWith(expect.objectContaining({ unreadable: true }));
+
+    vi.mocked(fetchBooks).mockClear();
+    route.query = { unreadable: 'yes' };
+    mount(BooksPage, opts);
+    await flushPromises();
+    expect(fetchBooks).toHaveBeenCalledWith(expect.objectContaining({ unreadable: false }));
+  });
+
   it('forwards format and language filters to the API', async () => {
     route.query = { format: 'epub', lang: 'ru' };
     vi.mocked(fetchBooks).mockResolvedValue({ items: [], total: 0, page: 1, limit: 24 });

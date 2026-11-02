@@ -1,14 +1,18 @@
 package ingest
 
 import (
+	"archive/zip"
 	"bytes"
 	"context"
+	"database/sql"
 	"errors"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"slices"
 	"sync"
+	"time"
 
 	"github.com/Toshik1978/folio/internal/db"
 	"github.com/Toshik1978/folio/internal/db/dbq"
@@ -74,12 +78,15 @@ func (s *deepIndexSuite) SetupTest() {
 	}
 
 	s.lib = s.insertLibrary("inpx", filepath.Join(s.dir, "library.inpx"))
-	res, err := NewINPXParser(s.log, testRank).Sync(context.Background(), s.lib, s.db, s.store, nopReporter{})
+	res, err := NewINPXParser(
+		s.log,
+		newTestDispatcher(),
+	).Sync(context.Background(), s.lib, s.db, s.store, nopReporter{})
 	s.Require().NoError(err)
 	s.Require().Equal(10, res.Added)
 
 	s.reader = &countingReader{Dispatcher: newTestDispatcher()}
-	s.ext = NewExtractor(s.db, s.log, s.reader)
+	s.ext = NewExtractor(s.db, s.log, s.reader, db.NewWriteGuard())
 }
 
 // indexer builds a DeepIndexer over the suite's Extractor.
@@ -117,7 +124,7 @@ func (s *deepIndexSuite) TestCountsAreCorrect() {
 	res, err := s.indexer().Run(context.Background(), s.lib, DeepIndexAll(), rep)
 	s.Require().NoError(err)
 
-	s.Equal(DeepIndexResult{Checked: 8, Filled: 6, Skipped: 0, Errors: 2}, res)
+	s.Equal(DeepIndexResult{Checked: 8, Filled: 6, Skipped: 0, Broken: 2}, res)
 	s.Equal(10, rep.total)
 	s.Equal(10, rep.added)
 
@@ -193,7 +200,7 @@ func (s *deepIndexSuite) TestExistingAnnotationIsNotOverwritten() {
 	res, err := s.indexer().Run(context.Background(), s.lib, DeepIndexAll(), nopReporter{})
 	s.Require().NoError(err)
 
-	s.Equal(DeepIndexResult{Checked: 8, Filled: 5, Skipped: 1, Errors: 2}, res)
+	s.Equal(DeepIndexResult{Checked: 8, Filled: 5, Skipped: 1, Broken: 2}, res)
 	got := s.book(diUTF8)
 	s.Equal("Ручное описание", got.Annotation.String)
 	s.Equal(int64(1), got.MetadataChecked, "a skipped book is still marked checked")
@@ -212,12 +219,19 @@ func (s *deepIndexSuite) TestCorruptEntryStaysUnchecked() {
 	res, err := s.indexer().Run(context.Background(), s.lib, DeepIndexAll(), nopReporter{})
 	s.Require().NoError(err)
 
-	s.Equal(2, res.Errors)
+	s.Equal(2, res.Broken)
+	s.Zero(res.Errors)
 	for _, title := range []string{diCorrupt, diBadEPUB} {
 		b := s.book(title)
 		s.Equal(int64(0), b.MetadataChecked, title)
 		s.False(b.Annotation.Valid, title)
+		rec, ok := s.failure(title)
+		s.Require().True(ok, "a broken book is recorded: %s", title)
+		s.Equal(int64(ebook.ReaderVersion), rec.ReaderVersion, title)
+		s.NotEmpty(rec.Fingerprint, title)
+		s.NotEmpty(rec.Reason, title)
 	}
+	s.Equal(2, s.failureCount())
 }
 
 func (s *deepIndexSuite) TestRerunDoesNoParsing() {
@@ -231,8 +245,94 @@ func (s *deepIndexSuite) TestRerunDoesNoParsing() {
 	res, err := s.indexer().Run(context.Background(), s.lib, DeepIndexAll(), nopReporter{})
 	s.Require().NoError(err)
 
-	s.Equal(DeepIndexResult{Errors: 2}, res)
-	s.ElementsMatch([]string{"4.fb2", "9.epub"}, s.reads(), "only the still-unchecked entries are retried")
+	s.Equal(DeepIndexResult{KnownBroken: 2}, res, "SC-002: no errors, nothing newly broken")
+	s.Empty(s.reads(), "SC-004: no entry is opened for a book known to be broken")
+	s.Equal(2, s.failureCount())
+}
+
+// TestFixedEntryIsReread replaces archive a with one whose 4.fb2 parses: the
+// changed fingerprint lifts the record, so the book is re-read, filled and
+// its record deleted.
+func (s *deepIndexSuite) TestFixedEntryIsReread() {
+	_, err := s.indexer().Run(context.Background(), s.lib, DeepIndexAll(), nopReporter{})
+	s.Require().NoError(err)
+	_, ok := s.failure(diCorrupt)
+	s.Require().True(ok)
+
+	s.fixArchiveA()
+	res, err := s.indexer().Run(context.Background(), s.lib, DeepIndexAll(), nopReporter{})
+	s.Require().NoError(err)
+
+	s.Equal(DeepIndexResult{Checked: 1, Filled: 1, KnownBroken: 1}, res)
+	fixed := s.book(diCorrupt)
+	s.Equal(int64(1), fixed.MetadataChecked)
+	s.Contains(fixed.Annotation.String, "Уникальнаяаннотация")
+	_, ok = s.failure(diCorrupt)
+	s.False(ok, "the record of a book read since is deleted")
+	_, ok = s.failure(diBadEPUB)
+	s.True(ok, "an unchanged broken book keeps its record")
+}
+
+// fixArchiveA rewrites archive a with 4.fb2 replaced by a copy of the valid
+// 1.fb2, under a newer entry mtime.
+func (s *deepIndexSuite) fixArchiveA() {
+	s.replaceEntry("a.fb2-000001-000004.zip", "4.fb2", "1.fb2")
+}
+
+// replaceEntry rewrites the fixture archive with entry target replaced by a
+// copy of entry source, every entry under a newer mtime. The .inpx is left
+// untouched.
+func (s *deepIndexSuite) replaceEntry(archive, target, source string) {
+	path := filepath.Join(s.dir, archive)
+	zr, err := zip.OpenReader(path)
+	s.Require().NoError(err)
+	entries := map[string][]byte{}
+	names := make([]string, 0, len(zr.File))
+	for _, f := range zr.File {
+		rc, openErr := f.Open()
+		s.Require().NoError(openErr)
+		data, readErr := io.ReadAll(rc)
+		s.Require().NoError(readErr)
+		_ = rc.Close()
+		entries[f.Name] = data
+		names = append(names, f.Name)
+	}
+	s.Require().NoError(zr.Close())
+	entries[target] = entries[source]
+
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	for _, name := range names {
+		w, createErr := zw.CreateHeader(&zip.FileHeader{
+			Name: name, Method: zip.Deflate, Modified: time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC),
+		})
+		s.Require().NoError(createErr)
+		_, err = w.Write(entries[name])
+		s.Require().NoError(err)
+	}
+	s.Require().NoError(zw.Close())
+	s.Require().NoError(os.WriteFile(path, buf.Bytes(), 0o644))
+}
+
+// failure returns the metadata-flow read failure record of the titled book.
+func (s *deepIndexSuite) failure(title string) (dbq.BookReadFailure, bool) {
+	rec, err := dbq.New(s.db).GetReadFailure(context.Background(),
+		dbq.GetReadFailureParams{BookID: s.book(title).ID, Flow: string(flowMetadata)})
+	if errors.Is(err, sql.ErrNoRows) {
+		return dbq.BookReadFailure{}, false
+	}
+	s.Require().NoError(err)
+
+	return rec, true
+}
+
+// failureCount returns the number of stored read failure records.
+func (s *deepIndexSuite) failureCount() int {
+	var n int
+	s.Require().NoError(s.db.QueryRowContext(context.Background(),
+		`SELECT COUNT(*) FROM book_read_failures`).Scan(&n))
+
+	return n
 }
 
 func (s *deepIndexSuite) TestCancelledRunKeepsEarlierBatches() {
@@ -255,11 +355,50 @@ func (s *deepIndexSuite) TestCancelledRunKeepsEarlierBatches() {
 	s.Equal(res.Checked, checked, "result reflects the committed batch")
 	s.Positive(checked, "the first batch stays committed")
 	s.Less(checked, 8, "later batches were not committed")
+	s.Equal(res.Broken, s.failureCount(), "only the committed batch records broken books")
 
 	// A later run resumes and finishes the remaining books.
 	res2, err := s.indexer().Run(context.Background(), s.lib, DeepIndexAll(), nopReporter{})
 	s.Require().NoError(err)
 	s.Equal(8, checked+res2.Checked)
+}
+
+// TestPagedRunMatchesOneRun runs with pages of three books, so the ten books
+// span four pages and archives straddle page boundaries: the result, the
+// progress and the checked books are those of a single-page run.
+func (s *deepIndexSuite) TestPagedRunMatchesOneRun() {
+	d := s.indexer()
+	d.pageSize = 3
+	rep := &recordingReporter{}
+	res, err := d.Run(context.Background(), s.lib, DeepIndexAll(), rep)
+	s.Require().NoError(err)
+
+	s.Equal(DeepIndexResult{Checked: 8, Filled: 6, Broken: 2}, res)
+	s.Equal(10, rep.total)
+	s.Equal(10, rep.added)
+	s.Equal(map[string]bool{
+		diUTF8: true, diCP1251: true, diNoAnn: true, diCorrupt: false, diBig: true, diPDF: true,
+		diEPUB: true, diMOBI: true, diBadEPUB: false, diHuge: true,
+	}, s.checkedTitles())
+	s.Len(s.reads(), 9, "every book is read once; the PDF-only book is checked unread")
+}
+
+// TestCancelBetweenPagesStopsTheRun cancels after the first page's batch: the
+// next page is not loaded, and a later run finishes the rest.
+func (s *deepIndexSuite) TestCancelBetweenPagesStopsTheRun() {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	d := s.indexer()
+	d.pageSize = 3
+	rep := &recordingReporter{onAdd: cancel}
+	res, err := d.Run(ctx, s.lib, DeepIndexAll(), rep)
+	s.Require().ErrorIs(err, context.Canceled)
+	s.Equal(3, rep.added, "only the first page committed")
+
+	res2, err := s.indexer().Run(context.Background(), s.lib, DeepIndexAll(), nopReporter{})
+	s.Require().NoError(err)
+	s.Equal(8, res.Checked+res2.Checked)
 }
 
 func (s *deepIndexSuite) TestImportedAtScopeTouchesOnlyMatchingBooks() {
@@ -325,9 +464,26 @@ func (s *deepIndexSuite) TestMissingArchiveCountsAsErrors() {
 
 	// Archive b holds book 5 (FB2, unreadable now) and book 6 (PDF-only, which
 	// needs no read and is still marked checked).
-	s.Equal(DeepIndexResult{Checked: 7, Filled: 5, Errors: 3}, res)
+	s.Equal(DeepIndexResult{Checked: 7, Filled: 5, Broken: 2, Errors: 1}, res)
 	s.False(s.checkedTitles()[diBig])
 	s.True(s.checkedTitles()[diPDF])
+	_, ok := s.failure(diBig)
+	s.False(ok, "an unreadable archive is retryable and records nothing")
+	s.Equal(2, s.failureCount())
+}
+
+// TestCancelledBeforeReadAddsNoRows cancels the run before any batch commits.
+func (s *deepIndexSuite) TestCancelledBeforeReadAddsNoRows() {
+	ctx, cancel := context.WithCancel(context.Background())
+	d := s.indexer()
+	rep := &recordingReporter{}
+	s.ext.onArchiveOpen = func(string) { cancel() }
+
+	res, err := d.Run(ctx, s.lib, DeepIndexAll(), rep)
+	s.Require().ErrorIs(err, context.Canceled)
+
+	s.Equal(DeepIndexResult{}, res)
+	s.Zero(s.failureCount(), "a cancelled run records no broken book")
 }
 
 // deepIndexFolderSuite covers non-archive libraries, which go one book per job
@@ -392,7 +548,7 @@ func (s *deepIndexFolderSuite) TestFolderLibraryReadsThroughExtractor() {
 		},
 		errFor: map[string]error{"Broken Book.fb2": errors.New("unreadable")},
 	}
-	d := NewDeepIndexer(s.log, s.db, db.NewWriteGuard(), NewExtractor(s.db, s.log, reader))
+	d := NewDeepIndexer(s.log, s.db, db.NewWriteGuard(), NewExtractor(s.db, s.log, reader, db.NewWriteGuard()))
 	res, err := d.Run(context.Background(), src, DeepIndexAll(), nopReporter{})
 	s.Require().NoError(err)
 
@@ -415,4 +571,30 @@ func (s *deepIndexFolderSuite) TestFolderLibraryReadsThroughExtractor() {
 	got, err = q.GetBook(context.Background(), broken)
 	s.Require().NoError(err)
 	s.Equal(int64(0), got.MetadataChecked)
+}
+
+func (s *deepIndexSuite) TestBrokenLogCarriesDetail() {
+	log, recs := capturedLog()
+	d := NewDeepIndexer(log, s.db, db.NewWriteGuard(), s.ext)
+	res, err := d.Run(context.Background(), s.lib, DeepIndexAll(), nopReporter{})
+	s.Require().NoError(err)
+	s.Require().Equal(2, res.Broken)
+
+	n := 0
+	for i := range *recs {
+		if (*recs)[i].Message != "unreadable book file" {
+			continue
+		}
+		n++
+		var detail string
+		(*recs)[i].Attrs(func(a slog.Attr) bool {
+			if a.Key == "detail" {
+				detail = a.Value.String()
+			}
+
+			return true
+		})
+		s.NotEmpty(detail, "the unreadable-file log must carry the failure detail")
+	}
+	s.Equal(2, n, "one log per broken book")
 }

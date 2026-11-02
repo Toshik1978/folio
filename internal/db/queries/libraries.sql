@@ -15,6 +15,24 @@ FROM libraries s
 GROUP BY s.id
 ORDER BY s.created_at;
 
+-- name: ListUnreadableCounts :many
+-- Per-library number of books whose metadata read currently fails: rows recorded
+-- by an older reader version are stale and ignored. Libraries with none are absent.
+SELECT b.library_id, COUNT(*) AS unreadable_count
+FROM book_read_failures f
+         JOIN books b ON b.id = f.book_id
+WHERE f.flow = 'metadata'
+  AND f.reader_version = ?
+GROUP BY b.library_id;
+
+-- name: CountUnreadableBooks :one
+SELECT COUNT(*)
+FROM book_read_failures f
+         JOIN books b ON b.id = f.book_id
+WHERE b.library_id = ?
+  AND f.flow = 'metadata'
+  AND f.reader_version = ?;
+
 -- name: InsertLibrary :one
 INSERT INTO libraries (name, type, path, sync_interval_seconds, status, created_at)
 VALUES (?, ?, ?, ?, 'active', ?)

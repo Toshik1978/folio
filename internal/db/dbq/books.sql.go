@@ -38,6 +38,30 @@ func (q *Queries) CountBooksByLibrary(ctx context.Context, libraryID int64) (int
 	return count, err
 }
 
+const countDeepIndexWork = `-- name: CountDeepIndexWork :one
+SELECT COUNT(*)
+FROM books b
+WHERE b.library_id = ?1
+  AND b.metadata_checked = 0
+  AND (CAST(?2 AS INTEGER) IS NULL OR b.imported_at = ?2)
+  AND EXISTS (SELECT 1 FROM book_files f WHERE f.book_id = b.id)
+`
+
+type CountDeepIndexWorkParams struct {
+	LibraryID  int64
+	ImportedAt sql.NullInt64
+}
+
+// CountDeepIndexWork counts the books ListDeepIndexWork pages through: the
+// library's not-yet-checked books that have a file, in the same imported_at
+// scope. The deep indexer reports it as its progress total.
+func (q *Queries) CountDeepIndexWork(ctx context.Context, arg CountDeepIndexWorkParams) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countDeepIndexWork, arg.LibraryID, arg.ImportedAt)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const deleteBook = `-- name: DeleteBook :exec
 DELETE
 FROM books
@@ -526,36 +550,61 @@ func (q *Queries) ListBooks(ctx context.Context, arg ListBooksParams) ([]Book, e
 }
 
 const listDeepIndexWork = `-- name: ListDeepIndexWork :many
-SELECT b.id          AS book_id,
-       f.id          AS file_id,
-       f.file_format AS file_format,
-       f.source_path AS source_path
-FROM books b
+SELECT b.id              AS book_id,
+       f.id              AS file_id,
+       f.file_format     AS file_format,
+       f.source_path     AS source_path,
+       rf.fingerprint    AS failure_fingerprint,
+       rf.reader_version AS failure_reader_version
+FROM (SELECT p.id
+      FROM books p
+      WHERE p.library_id = ?1
+        AND p.metadata_checked = 0
+        AND (CAST(?2 AS INTEGER) IS NULL OR p.imported_at = ?2)
+        AND p.id > ?3
+        AND EXISTS (SELECT 1 FROM book_files pf WHERE pf.book_id = p.id)
+      ORDER BY p.id
+      LIMIT ?4) page
+         JOIN books b ON b.id = page.id
          JOIN book_files f ON f.book_id = b.id
-WHERE b.library_id = ?1
-  AND b.metadata_checked = 0
-  AND (CAST(?2 AS INTEGER) IS NULL OR b.imported_at = ?2)
+         LEFT JOIN book_read_failures rf ON rf.book_id = b.id AND rf.flow = 'metadata'
 ORDER BY f.source_path, b.id
 `
 
 type ListDeepIndexWorkParams struct {
 	LibraryID  int64
 	ImportedAt sql.NullInt64
+	AfterID    int64
+	Lim        int64
 }
 
 type ListDeepIndexWorkRow struct {
-	BookID     int64
-	FileID     int64
-	FileFormat string
-	SourcePath string
+	BookID               int64
+	FileID               int64
+	FileFormat           string
+	SourcePath           string
+	FailureFingerprint   sql.NullString
+	FailureReaderVersion sql.NullInt64
 }
 
-// ListDeepIndexWork returns every file of each not-yet-checked book of a
-// library, for the deep indexer, which ranks a book's files in Go. Rows are
-// ordered by source_path so the entries of one archive are contiguous. A NULL
-// imported_at means every book; otherwise only books stamped by that sync run.
+// ListDeepIndexWork returns one page of the deep indexer's work: every file of
+// the next lim not-yet-checked books of a library with an id above after_id,
+// taken in id order (pass 0 for the first page, then the page's largest
+// book_id). Paging by book keeps all of a book's files on one page, and
+// moving forward by id means a book the run left unchecked is not picked up
+// again by a later page. Within the page, rows are ordered by source_path so
+// the entries of one archive are contiguous. A NULL imported_at means every
+// book; otherwise only books stamped by that sync run. Each row carries the
+// book's metadata-flow broken-read record (NULL when there is none), joined on
+// its (book_id, flow) primary key, so the deep indexer's read gate needs no
+// query per book.
 func (q *Queries) ListDeepIndexWork(ctx context.Context, arg ListDeepIndexWorkParams) ([]ListDeepIndexWorkRow, error) {
-	rows, err := q.db.QueryContext(ctx, listDeepIndexWork, arg.LibraryID, arg.ImportedAt)
+	rows, err := q.db.QueryContext(ctx, listDeepIndexWork,
+		arg.LibraryID,
+		arg.ImportedAt,
+		arg.AfterID,
+		arg.Lim,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -568,6 +617,8 @@ func (q *Queries) ListDeepIndexWork(ctx context.Context, arg ListDeepIndexWorkPa
 			&i.FileID,
 			&i.FileFormat,
 			&i.SourcePath,
+			&i.FailureFingerprint,
+			&i.FailureReaderVersion,
 		); err != nil {
 			return nil, err
 		}

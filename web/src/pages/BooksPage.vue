@@ -80,6 +80,7 @@ const filters = computed<BookFilters>(() => ({
   publisher: asString(route.query.publisher) || undefined,
   format: asString(route.query.format) || undefined,
   lang: asString(route.query.lang) || undefined,
+  unreadable: route.query.unreadable === '1',
   sort: sort.value || undefined,
   library: libraryId.value ?? undefined,
 }));

@@ -44,7 +44,7 @@ func (f *FolderParser) Sync(
 		library,
 		r,
 		f.log,
-		f.parser.Rank,
+		f.parser,
 		func(ctx context.Context, rc *reconciler) error {
 			w := &folderWalk{log: f.log, parser: f.parser, rc: rc, root: library.Path, libraryID: library.ID}
 			err := filepath.WalkDir(library.Path, func(path string, d fs.DirEntry, err error) error {
@@ -99,10 +99,22 @@ func (w *folderWalk) visit(ctx context.Context, path string, d fs.DirEntry, err 
 
 	meta, err := w.readMetadata(ctx, path)
 	if err != nil {
-		return nil //nolint:nilerr // skip unparseable files, keep walking the tree
+		w.keepOnRetryable(rel, err)
+
+		return nil // skip unreadable files, keep walking the tree
 	}
 
 	return w.rc.upsert(ctx, recordFromMeta(w.libraryID, rel, path, info.Size(), mtime, w.parser.Format(path), meta))
+}
+
+// keepOnRetryable marks a known file seen when its read failed for a retryable
+// reason (open/permission error, I/O blip), which says nothing about the file:
+// its book is kept rather than pruned with its covers and edits. Its stored
+// size and mod time still differ, so the next sync reads it again.
+func (w *folderWalk) keepOnRetryable(rel string, err error) {
+	if _, known := w.rc.prev[rel]; known && classify(err).Status == ReadRetryable {
+		w.rc.markSeen(rel)
+	}
 }
 
 // readMetadata opens the file at path read-only and reads its metadata. The

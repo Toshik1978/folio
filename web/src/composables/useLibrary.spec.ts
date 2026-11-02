@@ -61,5 +61,6 @@ function makeLib(id: number) {
     last_sync_at: null,
     last_sync_error: null,
     book_count: 0,
+    unreadable_count: 0,
   };
 }

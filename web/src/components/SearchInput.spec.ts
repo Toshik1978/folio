@@ -161,6 +161,27 @@ describe('SearchInput', () => {
     expect(router.currentRoute.value.query).toEqual({});
   });
 
+  it('renders a fixed-label Unreadable warning chip and removes it', async () => {
+    const router = makeRouter();
+    const wrapper = await mountAt(router, '/?unreadable=1&sort=title');
+    const chip = wrapper
+      .findAll('[data-testid="chip"]')
+      .find((c) => c.text().includes('Unreadable'))!;
+    expect(chip.text()).toContain('Unreadable');
+    expect(chip.text()).not.toContain('Unreadable:');
+    expect(chip.classes()).toContain('badge-warning');
+    await chip.find('button').trigger('click');
+    await flushPromises();
+    expect(router.currentRoute.value.query).toEqual({ sort: 'title' });
+  });
+
+  it('shows no Unreadable chip unless the value is 1', async () => {
+    for (const v of ['0', 'yes']) {
+      const wrapper = await mountAt(makeRouter(), `/?unreadable=${v}`);
+      expect(wrapper.findAll('[data-testid="chip"]')).toHaveLength(0);
+    }
+  });
+
   it('clears chips when navigating to a page with no filters', async () => {
     const router = makeRouter();
     const wrapper = await mountAt(router, '/?q=dune');

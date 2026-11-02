@@ -289,7 +289,7 @@ func readZipEntry(f *zip.File, limit int64) ([]byte, error) {
 		return nil, fmt.Errorf("read zip entry %s: %w", f.Name, err)
 	}
 	if int64(len(data)) > limit {
-		return nil, fmt.Errorf("zip entry %s exceeds %d byte limit", f.Name, limit)
+		return nil, fmt.Errorf("%w: zip entry %s exceeds %d byte limit", ErrTooLarge, f.Name, limit)
 	}
 
 	return data, nil

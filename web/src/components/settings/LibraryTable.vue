@@ -51,6 +51,16 @@
             </td>
             <td class="text-base-content/70 w-[1%] text-xs whitespace-nowrap">
               {{ library.book_count }}
+              <div v-if="library.unreadable_count > 0">
+                <a
+                  href="/?unreadable=1"
+                  data-testid="library-unreadable"
+                  class="text-warning text-xs"
+                  @click.prevent="showUnreadable(library.id)"
+                >
+                  ⚠ {{ library.unreadable_count }} unreadable
+                </a>
+              </div>
             </td>
             <td class="text-base-content/70 w-[1%] text-xs whitespace-nowrap">
               <span
@@ -141,6 +151,9 @@
 </template>
 
 <script setup lang="ts">
+import { useRouter } from 'vue-router';
+
+import { useLibrary } from '@/composables/useLibrary';
 import { useSyncStatus } from '@/composables/useSyncStatus';
 import type { Library } from '@/types';
 import { formatProgress, formatTime } from '@/utils/format';
@@ -157,6 +170,16 @@ defineEmits<{
   reactivate: [id: number];
   purge: [id: number];
 }>();
+
+const router = useRouter();
+const { setLibrary } = useLibrary();
+
+// showUnreadable scopes the books page to the library and opens it filtered to
+// unreadable books. Deliberately not gated on sync state.
+function showUnreadable(id: number): void {
+  setLibrary(id);
+  void router.push({ path: '/', query: { unreadable: '1' } });
+}
 
 const { isSyncing, isQueued, currentProgress, currentKind } = useSyncStatus();
 

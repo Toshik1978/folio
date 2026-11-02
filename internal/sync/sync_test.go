@@ -117,12 +117,15 @@ type stubParser struct {
 	checkpoint string // when non-empty, the engine gates on this fingerprint
 	onSync     func(ctx context.Context, source dbq.Library, database *sql.DB, coverStore ingest.CoverStore)
 	panicMsg   string // when set, Sync panics with this message
+	lifted     int    // what RecheckReadFailures reports lifting
+	recheckErr error  // what RecheckReadFailures returns as its error
 
 	mu          stdsync.Mutex
 	calls       int
 	inFlight    int
 	maxInFlight int
 	synced      []int64 // source IDs in call order
+	rechecks    int     // RecheckReadFailures calls
 }
 
 func (p *stubParser) Sync(
@@ -161,6 +164,22 @@ func (p *stubParser) Sync(
 // gating (mirrors a parser that cannot fingerprint its source).
 func (p *stubParser) Checkpoint(dbq.Library) (string, error) {
 	return p.checkpoint, nil
+}
+
+// RecheckReadFailures makes stubParser a ReadFailureRechecker that reports
+// lifting p.lifted records.
+func (p *stubParser) RecheckReadFailures(context.Context, dbq.Library, *sql.DB) (int, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.rechecks++
+
+	return p.lifted, p.recheckErr
+}
+
+func (p *stubParser) recheckCount() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.rechecks
 }
 
 func (p *stubParser) callCount() int {

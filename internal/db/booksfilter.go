@@ -38,9 +38,14 @@ type BookFilter struct {
 	LibraryID int64       // when non-zero, restrict to this library
 	Lang      string      // language code, e.g. "en"
 	Publisher string      // exact publisher name
-	Sort      string      // sort key: "source" → source-date desc, "rating" → rating desc, else imported_at desc
-	Limit     int64
-	Offset    int64
+	// Unreadable restricts to books whose metadata read failed at ReaderVersion
+	// (a book_read_failures row, flow 'metadata'). Rows from an older reader
+	// version are stale and do not count.
+	Unreadable    bool
+	ReaderVersion int64
+	Sort          string // sort key: "source" → source-date desc, "rating" → rating desc, else imported_at desc
+	Limit         int64
+	Offset        int64
 }
 
 // bookColumns is the projection selected by FilterBooks: the complete books row,
@@ -240,6 +245,13 @@ func (f BookFilter) filterMods() []bob.Mod[*dialect.SelectQuery] {
 		// EXISTS avoids JOIN fan-out for multi-format books.
 		mods = append(mods, sm.Where(sqlite.Raw(
 			"EXISTS (SELECT 1 FROM book_files bf WHERE bf.book_id = b.id AND bf.file_format = ?)", f.Format,
+		)))
+	}
+	if f.Unreadable {
+		mods = append(mods, sm.Where(sqlite.Raw(
+			"EXISTS (SELECT 1 FROM book_read_failures f WHERE f.book_id = b.id "+
+				"AND f.flow = 'metadata' AND f.reader_version = ?)",
+			f.ReaderVersion,
 		)))
 	}
 	if f.Lang != "" {

@@ -102,20 +102,37 @@ func (c *capReader) Read(p []byte) (int, error) {
 
 // parseFB2Header decodes only the <description> element and stops at its closing
 // tag. The input is capped at maxArchiveTextBytes. Metadata.Cover stays nil.
+// A well-formed document without a <description> — the header ends at the first
+// <body> or <binary> — is readable with empty metadata, not malformed, so the
+// caller falls back to the file name as before; a stream with no XML element at
+// all is still an error.
 func parseFB2Header(r io.Reader) (Metadata, error) {
 	dec := newFB2Decoder(newCapReader(r, maxArchiveTextBytes))
 
+	sawRoot := false
 	for {
 		tok, err := dec.Token()
 		if errors.Is(err, io.EOF) {
-			return Metadata{}, errors.New("parse fb2 xml: no description element")
+			if sawRoot {
+				return Metadata{}, nil
+			}
+
+			return Metadata{}, errors.New("parse fb2 xml: no root element")
 		}
 		if err != nil {
 			return Metadata{}, fmt.Errorf("parse fb2 xml: %w", err)
 		}
 
 		start, ok := tok.(xml.StartElement)
-		if !ok || start.Name.Local != "description" {
+		if !ok {
+			continue
+		}
+		sawRoot = true
+		switch start.Name.Local {
+		case "body", "binary":
+			return Metadata{}, nil
+		case "description":
+		default:
 			continue
 		}
 

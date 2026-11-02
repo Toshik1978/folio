@@ -169,13 +169,24 @@
       @applied="emit('updated', $event)"
     />
 
-    <div v-if="book.annotation" class="border-base-300 mt-8 border-t pt-6">
-      <h2 class="mb-3 text-base font-semibold">Annotation</h2>
+    <div v-if="book.unreadable || book.annotation" class="border-base-300 mt-8 border-t pt-6">
       <div
-        data-testid="annotation-body"
-        class="text-base-content/70 text-sm leading-relaxed"
-        v-html="sanitizedAnnotation"
-      />
+        v-if="book.unreadable"
+        role="status"
+        data-testid="unreadable-notice"
+        class="alert alert-warning alert-soft mb-4 text-sm"
+      >
+        <i class="pi pi-exclamation-triangle" />
+        <span>{{ unreadableMessage }}</span>
+      </div>
+      <template v-if="book.annotation">
+        <h2 class="mb-3 text-base font-semibold">Annotation</h2>
+        <div
+          data-testid="annotation-body"
+          class="text-base-content/70 text-sm leading-relaxed"
+          v-html="sanitizedAnnotation"
+        />
+      </template>
     </div>
   </div>
 </template>
@@ -188,7 +199,7 @@ import CoverPickerModal from '@/components/CoverPickerModal.vue';
 import EditBookModal from '@/components/EditBookModal.vue';
 import FixMatchModal from '@/components/FixMatchModal.vue';
 import StarRating from '@/components/StarRating.vue';
-import type { Book } from '@/types';
+import type { Book, UnreadableReason } from '@/types';
 import { formatSize } from '@/utils/format';
 import { languageLabel } from '@/utils/language';
 
@@ -202,6 +213,20 @@ const coverOpen = ref(false);
 // Seed the Fix Match search with the book's title and authors.
 const matchQuery = computed(() =>
   [props.book.title, ...props.book.authors.map((a) => a.name)].join(' ').trim(),
+);
+
+// Each label ends with its own period, so the sentence is not punctuated again.
+const UNREADABLE_LABELS: Record<UnreadableReason, string> = {
+  corrupt: 'The file is damaged or not a valid ebook.',
+  missing_entry: 'The file is missing from its archive.',
+  too_large: 'The file is too large to read.',
+  crashed: "Folio's reader couldn't process this file.",
+};
+
+const unreadableMessage = computed(() =>
+  props.book.unreadable
+    ? `Folio couldn't read this book's file: ${UNREADABLE_LABELS[props.book.unreadable.reason]} Downloading it may still work.`
+    : '',
 );
 
 // The backend already sanitizes annotations (bluemonday.UGCPolicy), so this is

@@ -111,11 +111,11 @@ cover, or when the declared reference points at nothing (an FB2 `href` with no
 matching `<binary>`, a MOBI cover offset outside the records). It returns an
 error — `ErrMalformed` after the dispatcher wraps it — when the declared cover
 payload cannot be extracted: FB2 base64 that is invalid or truncated, or an EPUB
-manifest cover item whose zip entry is missing or fails to inflate. An FB2 or
-EPUB cover over the 10 MiB cover cap is an error too (FB2 reports
-`ErrTooLarge`); a MOBI cover record over the cap is treated as no cover.
-Extracted bytes that are not a
-decodable image are returned as-is; the `covers` package marks them none
+manifest cover item whose zip entry is missing or fails to inflate. A cover over
+the 10 MiB cover cap is an `ErrTooLarge` error (`too_large`) in every parser —
+FB2, EPUB and MOBI alike; a MOBI cover record over the cap is not treated as no
+cover and does not fall back to the first-image scan. Extracted bytes that are
+not a decodable image are returned as-is; the `covers` package marks them none
 (`cover_state = 2`).
 
 ### Traits
@@ -155,8 +155,10 @@ a book file.
 `ReaderVersion` (`internal/ebook/version.go`) identifies the current reading
 logic. Broken-read records carry the version that produced them, and a record
 is trusted (the file is not read again) only while its version and the file's
-fingerprint still match. The ingest side of this — the `book_read_failures`
-records — lands with the read-outcome work of the unified-reading spec.
+fingerprint still match: ingest's `readBook` gate compares the stored
+`book_read_failures` row against `ReaderVersion` and the recomputed fingerprint
+before opening any file (see
+[DATABASE.md](./DATABASE.md#read-failures)).
 **Bump `ReaderVersion` in the same change as a reader fix that could make a
 previously broken file readable**, so books recorded as broken under the old
 logic are retried.

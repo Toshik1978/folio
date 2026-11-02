@@ -417,3 +417,49 @@ func (s *booksFilterSuite) TestSortByImportedAtAndSource() {
 	s.Require().NoError(err)
 	s.Equal([]string{"OldImport", "NewImport"}, titles(bySource), "source sorts by added_at DESC")
 }
+
+func (s *booksFilterSuite) failMetadata(bookID int64, flow string, version int64) {
+	_, err := s.db.ExecContext(context.Background(),
+		`INSERT INTO book_read_failures (book_id, flow, reason, fingerprint, reader_version, recorded_at)
+		 VALUES (?, ?, 'corrupt', 'fp', ?, 1)`, bookID, flow, version)
+	s.Require().NoError(err)
+}
+
+// TestUnreadableFilterSelectsCurrentMetadataFailures confirms the filter keeps
+// only current-version metadata failures, scopes by library, combines with FTS,
+// and that Count agrees with the listing.
+func (s *booksFilterSuite) TestUnreadableFilterSelectsCurrentMetadataFailures() {
+	ctx := context.Background()
+	a := s.libraryAt("A", "/a")
+	b := s.libraryAt("B", "/b")
+	broken := s.seed(a, bookSeed{key: "k1", title: "Broken Dune"})
+	brokenOther := s.seed(a, bookSeed{key: "k2", title: "Broken Emma"})
+	coverOnly := s.seed(a, bookSeed{key: "k3", title: "Cover Dune"})
+	stale := s.seed(a, bookSeed{key: "k4", title: "Stale Dune"})
+	s.seed(a, bookSeed{key: "k5", title: "Fine Dune"})
+	inB := s.seed(b, bookSeed{key: "k6", title: "Other Dune"})
+	s.failMetadata(broken, "metadata", 2)
+	s.failMetadata(brokenOther, "metadata", 2)
+	s.failMetadata(coverOnly, "cover", 2)
+	s.failMetadata(stale, "metadata", 1)
+	s.failMetadata(inB, "metadata", 2)
+
+	check := func(f BookFilter, want ...int64) {
+		f.Unreadable, f.ReaderVersion, f.Limit = true, 2, 50
+		got, err := FilterBooks(ctx, s.db, f)
+		s.Require().NoError(err)
+		ids := lo.Map(got, func(b dbq.Book, _ int) int64 { return b.ID })
+		s.ElementsMatch(want, ids)
+		n, err := CountFilteredBooks(ctx, s.db, f)
+		s.Require().NoError(err)
+		s.Equal(int64(len(want)), n)
+	}
+	check(BookFilter{LibraryID: a}, broken, brokenOther)
+	check(BookFilter{}, broken, brokenOther, inB)
+	check(BookFilter{LibraryID: a, Query: "dune"}, broken)
+
+	// Off by default: the zero value does not restrict.
+	all, err := CountFilteredBooks(ctx, s.db, BookFilter{LibraryID: a})
+	s.Require().NoError(err)
+	s.Equal(int64(5), all)
+}

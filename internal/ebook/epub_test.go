@@ -128,19 +128,31 @@ func (s *epubSuite) TestOversizedCoverIsBounded() {
 	s.Require().NoError(zw.Close())
 	s.Require().NoError(f.Close())
 
+	// The metadata read is not part of the bound: only the cover read can
+	// inflate the bomb, so only it is sampled.
+	m := s.readMetadata(path)
+	s.Equal("Bomb", m.Title)
+
 	var (
-		m        Metadata
 		cover    []byte
 		coverErr error
 	)
 	peak := s.peakHeapBytes(func() {
-		m = s.readMetadata(path)
 		cover, coverErr = s.d.Cover(context.Background(), s.log, s.open(path))
 	})
-	s.Equal("Bomb", m.Title)
 	s.Require().Error(coverErr)
+	reason, ok := ReasonOf(coverErr)
+	s.True(ok)
+	s.Equal(ReasonTooLarge, reason)
 	s.Nil(cover, "oversized cover must not be loaded into memory")
-	s.Less(peak, uint64(32<<20), "cover read must stay bounded well below the inflated size")
+	// A bounded read grows one buffer to at most maxCoverBytes+1 (io.ReadAll
+	// reallocates, so the old and new buffers plus uncollected garbage can
+	// coexist) and -race instrumentation adds more; 5x covers that headroom
+	// yet stays under half the 128 MiB inflated size, so loading the bomb
+	// whole would still fail it.
+	bound := uint64(5 * maxCoverBytes)
+	s.Less(bound, uint64(coverSize)/2, "bound must stay well below the inflated size")
+	s.Lessf(peak, bound, "cover read held %d peak heap bytes; it must stay bounded by maxCoverBytes", peak)
 }
 
 func (s *epubSuite) TestSeriesIndex() {

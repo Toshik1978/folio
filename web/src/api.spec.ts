@@ -277,6 +277,16 @@ describe('api', () => {
       await fetchBooks({ format: 'epub', lang: 'ru' });
       expect(lastCall()[0]).toBe('/api/books?format=epub&lang=ru');
     });
+
+    it('buildQuery emits unreadable=1 only when true', async () => {
+      fetchMock.mockResolvedValue(res({ items: [], total: 0, page: 1, limit: 24 }));
+      await fetchBooks({ unreadable: true });
+      expect(lastCall()[0]).toBe('/api/books?unreadable=1');
+      await fetchBooks({ unreadable: false });
+      expect(lastCall()[0]).toBe('/api/books');
+      await fetchBooks({});
+      expect(lastCall()[0]).toBe('/api/books');
+    });
   });
 
   describe('error handling', () => {

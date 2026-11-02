@@ -23,8 +23,8 @@ import (
 // archive is unzipped here. source_path is stored as "{archive}.zip/{inner}"
 // so downloads can later seek directly into the ZIP.
 type INPXParser struct {
-	log  *slog.Logger
-	rank func(format string) int
+	log    *slog.Logger
+	reader bookReader
 }
 
 // INP field indices (MyHomeLib / flibusta layout).
@@ -48,16 +48,23 @@ const (
 // fields up to EXT are required.
 const inpMinFields = inpExt + 1
 
-// NewINPXParser builds the INPX inventory parser. rank orders a book's formats
-// (typically ebook.Dispatcher.Rank).
-func NewINPXParser(log *slog.Logger, rank func(format string) int) *INPXParser {
-	return &INPXParser{log: log, rank: rank}
+// NewINPXParser builds the INPX inventory parser. reader (typically the
+// standard ebook.Dispatcher) orders a book's formats through its Rank and
+// re-checks broken-read records after each sync, inflating no book entry.
+func NewINPXParser(log *slog.Logger, reader bookReader) *INPXParser { //nolint:iface // tests inject a fake reader
+	return &INPXParser{log: log, reader: reader}
 }
 
 // Checkpoint fingerprints the .inpx bundle, which is regenerated wholesale, so
 // the engine can skip an unchanged inventory.
 func (*INPXParser) Checkpoint(library dbq.Library) (string, error) {
 	return fileCheckpoint(library.Path)
+}
+
+// RecheckReadFailures runs the broken-read re-check on its own, for a sync the
+// engine skipped because the .inpx did not change. See recheckReadFailures.
+func (p *INPXParser) RecheckReadFailures(ctx context.Context, library dbq.Library, db *sql.DB) (int, error) {
+	return recheckReadFailures(ctx, p.log, db, p.reader, library)
 }
 
 func (p *INPXParser) Sync(
@@ -73,7 +80,7 @@ func (p *INPXParser) Sync(
 	}
 	defer func() { _ = zr.Close() }()
 
-	return runReconcile(ctx, db, covers, library, r, p.log, p.rank, func(ctx context.Context, rc *reconciler) error {
+	return runReconcile(ctx, db, covers, library, r, p.log, p.reader, func(ctx context.Context, rc *reconciler) error {
 		libDir := filepath.Dir(library.Path)
 		for _, f := range zr.File {
 			if !strings.EqualFold(filepath.Ext(f.Name), ".inp") {

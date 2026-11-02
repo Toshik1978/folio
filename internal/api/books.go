@@ -12,6 +12,7 @@ import (
 	"github.com/Toshik1978/folio/internal/bookfile"
 	"github.com/Toshik1978/folio/internal/db"
 	"github.com/Toshik1978/folio/internal/db/dbq"
+	"github.com/Toshik1978/folio/internal/ebook"
 )
 
 // enrichTimeout bounds the whole online tier (lookup + cover fetch) on the
@@ -31,18 +32,20 @@ func (h *BooksHandler) listBooks(w http.ResponseWriter, r *http.Request) {
 	pageNo, limit, offset := pagination(r)
 	qp := r.URL.Query()
 	filter := db.BookFilter{
-		Query:     strings.TrimSpace(qp.Get("q")),
-		Title:     parseFieldFilter(qp.Get("title")),
-		Author:    parseFieldFilter(qp.Get("author")),
-		Series:    parseFieldFilter(qp.Get("series")),
-		Genre:     qp.Get("tag"),
-		Format:    qp.Get("format"),
-		LibraryID: intQueryParam(r, "library"),
-		Lang:      qp.Get("lang"),
-		Publisher: qp.Get("publisher"),
-		Sort:      qp.Get("sort"),
-		Limit:     limit,
-		Offset:    offset,
+		Query:         strings.TrimSpace(qp.Get("q")),
+		Title:         parseFieldFilter(qp.Get("title")),
+		Author:        parseFieldFilter(qp.Get("author")),
+		Series:        parseFieldFilter(qp.Get("series")),
+		Genre:         qp.Get("tag"),
+		Format:        qp.Get("format"),
+		LibraryID:     intQueryParam(r, "library"),
+		Lang:          qp.Get("lang"),
+		Publisher:     qp.Get("publisher"),
+		Sort:          qp.Get("sort"),
+		Unreadable:    qp.Get("unreadable") == "1",
+		ReaderVersion: ebook.ReaderVersion,
+		Limit:         limit,
+		Offset:        offset,
 	}
 
 	books, err := db.FilterBooks(r.Context(), h.db, filter)
@@ -109,7 +112,10 @@ func (h *BooksHandler) getBook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.runLazyTiers(r, id, &book)
+	// The metadata failure record, loaded first: a recorded failure makes the
+	// on-view fill re-check the file even when nothing else needs backfilling.
+	_, recErr := h.q.GetReadFailure(r.Context(), dbq.GetReadFailureParams{BookID: id, Flow: readFlowMetadata})
+	h.runLazyTiers(r, id, &book, recErr == nil)
 
 	view, err := h.toSingleBookView(r.Context(), book)
 	if err != nil {
@@ -118,6 +124,21 @@ func (h *BooksHandler) getBook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.writeJSON(w, http.StatusOK, view)
+}
+
+// readFlowMetadata is the book_read_failures flow of the description/metadata read.
+const readFlowMetadata = "metadata"
+
+// unreadable returns the unreadable marker when a metadata failure recorded at
+// the current reader version exists for the book; a stale record (an older
+// reader) is not reported, matching the list filter and the library count.
+func (h *BooksHandler) unreadable(ctx context.Context, bookID int64) *unreadableView {
+	rec, err := h.q.GetReadFailure(ctx, dbq.GetReadFailureParams{BookID: bookID, Flow: readFlowMetadata})
+	if err != nil || rec.ReaderVersion != ebook.ReaderVersion {
+		return nil
+	}
+
+	return &unreadableView{Reason: rec.Reason}
 }
 
 // needsBackfill reports whether the lazy file-level backfill can still recover
@@ -140,9 +161,9 @@ func (h *BooksHandler) needsBackfill(ctx context.Context, book dbq.Book) bool {
 // HasLocalCover check. Both are guarded (once per book), and claimLazy keeps
 // two concurrent first views from running them twice; the losing view serves
 // the current row and the persisted result shows on a later view.
-func (h *BooksHandler) runLazyTiers(r *http.Request, id int64, book *dbq.Book) {
+func (h *BooksHandler) runLazyTiers(r *http.Request, id int64, book *dbq.Book, recordExists bool) {
 	ctx := r.Context()
-	backfill := book.MetadataChecked == 0 && h.needsBackfill(ctx, *book)
+	backfill := book.MetadataChecked == 0 && (recordExists || h.needsBackfill(ctx, *book))
 	enrich := book.EnrichmentChecked == 0 && h.needsEnrichment(*book)
 	if !backfill && !enrich {
 		return

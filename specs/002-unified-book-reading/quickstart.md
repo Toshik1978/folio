@@ -37,22 +37,24 @@ These cover:
   - a changed fingerprint, or a bumped reader version in the test, re-reads the book, and a successful read deletes the row;
   - a missing archive and a cancelled run record nothing (FR-012, FR-016);
   - multi-file books;
-  - folder import stores no cover, and a changed file invalidates a lazily extracted cover but never a manual one.
+  - folder import stores no cover, and a changed file invalidates a lazily extracted cover but never a manual one;
+  - a sync (full, or skipped on an unchanged checkpoint) lifts the record of a replaced archive entry and keeps an unchanged broken book's record;
+  - Deep Index pages its work list without skipping or repeating a book.
 - **db/api**:
   - the migration 007 round trip;
   - cascade on book delete and library purge;
   - `unreadable_count`, the `unreadable=1` filter scoped by `library`, and `unreadable` on detail only while the record applies.
-- **covers**: a broken cover is recorded once, the placeholder is served, `cover_state` stays 0, and the next view does not read the file.
+- **covers** (driven through a real `covers.Store` in ingest's `extractorSuite`): a broken cover is recorded once, the placeholder is served, `cover_state` stays 0, and the next view does not read the file.
 - **Vitest**: see [contracts/spa-ui.md](./contracts/spa-ui.md#vitest-coverage).
 - **Format-name guards (SC-007, FR-004)**: the authoritative checks are the Go tests `ingestSuite.TestNoFormatNames`, which covers every non-test file of `internal/ingest` and `internal/covers` (string literals equal to a format label or containing its dotted extension, plus any use of `ebook` format constants or identifiers; the format list is taken from the dispatcher; identifier words are not matched), and the `ebookSuite` public-surface test. Both run in `task test`. A quick manual approximation, which must print nothing:
 
   ```bash
   grep -rnE --include='*.go' --exclude='*_test.go' --exclude-dir=testdata \
     'ebook\.Format|"\.?([Ee][Pp][Uu][Bb]|[Ff][Bb]2(\.zip)?|[Mm][Oo][Bb][Ii]|[Aa][Zz][Ww]3?|[Pp][Dd][Ff])"|"[^"]*\.(epub|fb2|fbz|mobi|azw3?|pdf)\b[^"]*"' \
-    internal/ingest internal/covers
+    internal/ingest internal/covers | grep -vE '^[^:]+:[0-9]+:\s*//'
   ```
 
-  Like the Go guard, it matches only exact or dotted labels in literals and `ebook.Format*` references. Identifier-scheme literals such as `"mobi-asin"`/`"mobi-uid"` and shared vocabulary such as `fb2GenreMap` are allowed and do not match.
+  Like the Go guard, it matches only exact or dotted labels in literals and `ebook.Format*` references, and the last filter drops comment lines (the guard does not check comments; `source.go` has one naming `"../x.fb2"`). Identifier-scheme literals such as `"mobi-asin"`/`"mobi-uid"` and shared vocabulary such as `fb2GenreMap` are allowed and do not match.
 
 ## 2. Non-regression: Deep Index time (SC-001, SC-002)
 
@@ -97,7 +99,7 @@ Use a scratch library built from test fixtures, not a real collection:
 | 1 | Run Deep Index | One `Warn` per broken book. Summary `broken = 2`. The corrupt FB2 and the EPUB have rows (`flow = metadata`, reasons `corrupt`). The PDF is checked. |
 | 2 | Run Deep Index again | `broken = 0`, `errors = 0`, `known_broken = 2`, and no new `Warn` lines. |
 | 3 | Open a broken book's page | No new log line, and the notice shows. |
-| 4 | Replace the archive with one where the FB2 is fixed, then run Deep Index | That book is re-read and filled, its row is gone, and the EPUB stays known-broken. |
+| 4 | Replace the archive with one where the FB2 is fixed, then run Deep Index | That book is re-read and filled, and its row is gone. The archive's own size and mtime are part of every entry's fingerprint, so the EPUB is re-read once too and recorded again: `broken = 1`, `known_broken = 0`. A further run reports it as `known_broken = 1`. |
 | 5 | Make the archive unreadable (rename it away), reset one book's `metadata_checked`, run Deep Index | `errors ≥ 1`, and no new rows are recorded (retryable). |
 | 6 | Cancel a running Deep Index from the engine (shutdown) | Uncommitted books stay pending, and no rows are added by the cancellation. |
 | 7 | Display a book whose FB2 is readable but whose coverpage `<binary>` holds invalid base64 | A `cover` row is recorded once and the placeholder is served. Reloading does not re-read the file, and the book is not counted as unreadable. |

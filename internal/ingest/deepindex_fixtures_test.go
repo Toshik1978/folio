@@ -18,7 +18,7 @@ func (s *deepIndexFixturesSuite) TestINPXListsExpectedBooks() {
 	s.Require().NoError(err)
 
 	src := s.insertLibrary("inpx", path)
-	res, err := NewINPXParser(s.log, testRank).Sync(context.Background(), src, s.db, s.store, nopReporter{})
+	res, err := NewINPXParser(s.log, newTestDispatcher()).Sync(context.Background(), src, s.db, s.store, nopReporter{})
 	s.Require().NoError(err)
 	s.Equal(10, res.Added)
 

@@ -12,6 +12,7 @@ import (
 
 	"github.com/Toshik1978/folio/internal/db"
 	"github.com/Toshik1978/folio/internal/db/dbq"
+	"github.com/Toshik1978/folio/internal/ebook"
 	"github.com/Toshik1978/folio/internal/libtype"
 	"github.com/Toshik1978/folio/internal/sync"
 )
@@ -47,6 +48,7 @@ type libraryView struct {
 	LastSyncAt          *int64  `json:"last_sync_at"`
 	LastSyncError       *string `json:"last_sync_error"`
 	BookCount           int64   `json:"book_count"`
+	UnreadableCount     int64   `json:"unreadable_count"`
 }
 
 type createLibraryRequest struct {
@@ -70,12 +72,24 @@ func (h *LibrariesHandler) listLibraries(w http.ResponseWriter, r *http.Request)
 		h.writeError(w, http.StatusInternalServerError, "failed to list libraries")
 		return
 	}
+	unreadable, err := h.q.ListUnreadableCounts(r.Context(), ebook.ReaderVersion)
+	if err != nil {
+		h.log.Error("list unreadable counts", slog.Any("error", err))
+		h.writeError(w, http.StatusInternalServerError, "failed to list libraries")
+		return
+	}
+	unreadableByLibrary := make(map[int64]int64, len(unreadable))
+	for _, u := range unreadable {
+		unreadableByLibrary[u.LibraryID] = u.UnreadableCount
+	}
 	// Snapshot the engine's live work once for the whole list rather than locking
 	// the engine per row inside effectiveStatus.
 	st := h.sync.Status()
 	views := make([]libraryView, 0, len(rows))
 	for i := range rows {
-		views = append(views, h.libraryCountRowView(st, rows[i]))
+		v := h.libraryCountRowView(st, rows[i])
+		v.UnreadableCount = unreadableByLibrary[v.ID]
+		views = append(views, v)
 	}
 	h.writeJSON(w, http.StatusOK, views)
 }
@@ -103,7 +117,7 @@ func (h *LibrariesHandler) getLibrary(w http.ResponseWriter, r *http.Request) {
 		h.writeError(w, http.StatusInternalServerError, "failed to load library")
 		return
 	}
-	h.writeJSON(w, http.StatusOK, h.libraryView(h.sync.Status(), src, count))
+	h.writeLibraryView(w, r, src, count)
 }
 
 // createLibrary handles POST /api/libraries.
@@ -451,7 +465,22 @@ func (h *LibrariesHandler) respondLibrary(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	h.writeJSON(w, http.StatusOK, h.libraryView(h.sync.Status(), src, count))
+	h.writeLibraryView(w, r, src, count)
+}
+
+// writeLibraryView writes one library with its current unreadable-book count.
+func (h *LibrariesHandler) writeLibraryView(w http.ResponseWriter, r *http.Request, src dbq.Library, bookCount int64) {
+	unreadable, err := h.q.CountUnreadableBooks(r.Context(), dbq.CountUnreadableBooksParams{
+		LibraryID: src.ID, ReaderVersion: ebook.ReaderVersion,
+	})
+	if err != nil {
+		h.log.Error("count unreadable books", slog.Int64("library", src.ID), slog.Any("error", err))
+		h.writeError(w, http.StatusInternalServerError, "failed to load library")
+		return
+	}
+	view := h.libraryView(h.sync.Status(), src, bookCount)
+	view.UnreadableCount = unreadable
+	h.writeJSON(w, http.StatusOK, view)
 }
 
 // reschedule re-syncs the engine's interval jobs after a library change. A

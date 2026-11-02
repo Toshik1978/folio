@@ -1,12 +1,19 @@
 import { mount } from '@vue/test-utils';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import LibraryTable from '@/components/settings/LibraryTable.vue';
+import { useLibrary } from '@/composables/useLibrary';
 import { useSyncStatus } from '@/composables/useSyncStatus';
 import { makeLibrary } from '@/test/factories';
 
+const { push } = vi.hoisted(() => ({ push: vi.fn() }));
+vi.mock('vue-router', () => ({
+  useRouter: () => ({ push }),
+}));
+
 describe('LibraryTable', () => {
   beforeEach(() => {
+    push.mockReset();
     const sync = useSyncStatus();
     sync.running.value = false;
     sync.current.value = 0;
@@ -110,5 +117,45 @@ describe('LibraryTable', () => {
     expect(bar.exists()).toBe(true);
     // A determinate bar must have a value attribute (indeterminate bars have none)
     expect(bar.attributes('value')).toBe('0');
+  });
+
+  it('shows the unreadable link with the count when N > 0', () => {
+    const wrapper = mount(LibraryTable, {
+      props: { libraries: [makeLibrary({ id: 5, status: 'active', unreadable_count: 3 })] },
+    });
+    const link = wrapper.find('[data-testid="library-unreadable"]');
+    expect(link.exists()).toBe(true);
+    expect(link.text()).toBe('⚠ 3 unreadable');
+    expect(link.classes()).toEqual(expect.arrayContaining(['text-warning', 'text-xs']));
+  });
+
+  it('hides the unreadable link when the count is 0', () => {
+    const wrapper = mount(LibraryTable, {
+      props: { libraries: [makeLibrary({ id: 5, status: 'active', unreadable_count: 0 })] },
+    });
+    expect(wrapper.find('[data-testid="library-unreadable"]').exists()).toBe(false);
+  });
+
+  it('selects the library and navigates with unreadable=1 on click', async () => {
+    const { libraryId } = useLibrary();
+    libraryId.value = null;
+    const wrapper = mount(LibraryTable, {
+      props: { libraries: [makeLibrary({ id: 5, status: 'active', unreadable_count: 2 })] },
+    });
+    await wrapper.find('[data-testid="library-unreadable"]').trigger('click');
+    expect(libraryId.value).toBe(5);
+    expect(push).toHaveBeenCalledWith({ path: '/', query: { unreadable: '1' } });
+  });
+
+  it('keeps the unreadable link enabled while the library syncs', () => {
+    const sync = useSyncStatus();
+    sync.running.value = true;
+    sync.current.value = 5;
+    const wrapper = mount(LibraryTable, {
+      props: { libraries: [makeLibrary({ id: 5, status: 'syncing', unreadable_count: 2 })] },
+    });
+    const link = wrapper.find('[data-testid="library-unreadable"]');
+    expect(link.exists()).toBe(true);
+    expect(link.attributes('disabled')).toBeUndefined();
   });
 });

@@ -94,9 +94,13 @@ pass the same-site and form-body guards. Progress and the running `kind`
   "purge_at": null,
   "last_sync_at": 1717200000,
   "last_sync_error": null,
-  "book_count": 1423
+  "book_count": 1423,
+  "unreadable_count": 0
 }
 ```
+
+`unreadable_count` is the number of the library's books whose metadata could not
+be read by the current reader version (always present, `0` when none).
 
 `status` values: `active`, `queued`, `syncing`, `pending_purge`, `error`. `queued` is
 a live overlay: the engine reports it for a library waiting its turn in the sync
@@ -175,6 +179,7 @@ bar's Format/Language value-picker facets are populated separately from
 | `publisher` | string | Filter by publisher name |
 | `format` | string | Filter by file format (`epub`, `fb2`, …). Selectable from the search bar's Format facet (values from `/api/facets`). |
 | `library` | int | Restrict to a single library by id (`0`/absent = all libraries). Also honored by `/api/authors`, `/api/series`, `/api/tags`, `/api/publishers`, their `/letters` variants, and `/api/facets`. (`/api/stats` is **not** scoped — it is always whole-catalog.) |
+| `unreadable` | `1` | Only books whose metadata could not be read at the current reader version (the set counted by `unreadable_count` on `/api/libraries`). Combines with every other filter; any value other than `1` is ignored. |
 | `lang` | string | Filter by language code (e.g. `en`, `ru`). Values are normalized ISO 639-1 across all sources — Calibre's ISO 639-2/B codes (e.g. `eng`, `rus`) are mapped to two-letter codes at ingest, so a single `lang=en` matches books from every source. Selectable from the search bar's Language facet (values from `/api/facets`). |
 | `sort` | string | Result order when not searching, three modes: absent/unrecognized → `imported_at` desc (**"Recently added"** — when the book entered Folio; the default), `source` → `added_at` desc (**"Newest"** — source/original chronology), `rating` → rating desc (highest first, unrated last). Each tie-breaks by `added_at`/`id`. Ignored while a free-text/FTS `q` is active (BM25 relevance wins). |
 | `page` | int | Page number (1-indexed) |
@@ -185,6 +190,7 @@ ratings (see [DATABASE.md](./DATABASE.md#ingestion-sources)). It also includes:
 
 - `cover_url` (string|null) — the cached cover image URL, versioned `?v=<content_hash>-<cover_version>` (e.g. `/api/books/42/cover?v=abc123-1717200000`).
 - `thumbnail_url` (string|null) — the downscaled cover URL, versioned `?v=<content_hash>-<cover_version>-<thumb_token>` (e.g. `/api/books/42/cover/thumbnail?v=abc123-1717200000-t400q85`). The token encodes the rendering spec (max dimension + JPEG quality) and changes when those constants change, so clients automatically re-fetch when the thumbnail generation parameters are updated.
+- `unreadable` (object, detail only) — `{"reason": "<reason>"}`, present only on `GET /api/books/{id}` when the book's metadata could not be read at the current reader version (the same rule as the `unreadable` filter and `unreadable_count`). A recorded failure makes the on-view fill re-read the file, so the field disappears once the file is fixed. Absent otherwise; list items never carry it.
 
 ### Alphabet browse (`/api/<entity>` + `/api/<entity>/letters`)
 

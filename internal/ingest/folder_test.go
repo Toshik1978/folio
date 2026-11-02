@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/Toshik1978/folio/internal/covers"
+	"github.com/Toshik1978/folio/internal/db"
 	"github.com/Toshik1978/folio/internal/db/dbq"
 )
 
@@ -569,7 +570,7 @@ func (s *folderSuite) TestChangedFileResetsNoneState() {
 // and a later change to the file invalidates it.
 func (s *folderSuite) TestLazyCoverSavedAsFileCoverAndInvalidated() {
 	store, err := covers.NewStore(s.T().TempDir(),
-		NewExtractor(s.db, s.log, newTestDispatcher()), NewCoverState(s.db))
+		NewExtractor(s.db, s.log, newTestDispatcher(), db.NewWriteGuard()), NewCoverState(s.db))
 	s.Require().NoError(err)
 
 	id := s.syncTouched(store, s.coverFixture(), func(bookID int64) {

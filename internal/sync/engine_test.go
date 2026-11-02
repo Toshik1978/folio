@@ -117,6 +117,39 @@ func (s *engineSuite) TestCheckpointSkipDoesNotBustCaches() {
 		"skip must still stamp last_sync_at with the current time")
 	s.Equal(1, stats.calls(), "skip must not invalidate the stats cache")
 	s.Equal([]int64{src.ID}, rec.libraryIDs(), "skip must not emit another library event")
+	s.Equal(1, s.parser.recheckCount(), "a skip still re-checks broken-read records")
+}
+
+// TestCheckpointSkipRechecksReadFailures guards the skip path's re-check: a
+// full sync leaves it to the parser's reconcile, a skip runs it, and lifted
+// records tell observers the unreadable count changed. A failed re-check is
+// only logged and the skip still completes.
+func (s *engineSuite) TestCheckpointSkipRechecksReadFailures() {
+	s.parser.checkpoint = "cp-1"
+	rec := &recordingPublisher{}
+	stats := &recordingStats{}
+	eng, err := New(slog.New(slog.DiscardHandler), s.db, db.NewWriteGuard(),
+		map[string]Parser{"stub": s.parser}, s.store,
+		WithEvents(rec), WithStatsObserver(stats))
+	s.Require().NoError(err)
+	src := s.insertLibrary("stub", "/lib/skip-recheck")
+
+	eng.syncLibrary(syncReq{id: src.ID})
+	s.Require().Equal(1, s.parser.callCount())
+	s.Equal(0, s.parser.recheckCount(), "a full sync re-checks inside its own reconcile")
+
+	s.parser.lifted = 2
+	eng.syncLibrary(syncReq{id: src.ID})
+	s.Equal(1, s.parser.callCount(), "skip must not re-run the parser")
+	s.Equal(1, s.parser.recheckCount())
+	s.Equal(2, stats.calls(), "lifted records invalidate the stats cache")
+	s.Equal([]int64{src.ID, src.ID}, rec.libraryIDs(), "lifted records emit a library event")
+
+	s.parser.lifted, s.parser.recheckErr = 0, errors.New("archive unreachable")
+	eng.syncLibrary(syncReq{id: src.ID})
+	s.Equal(2, s.parser.recheckCount())
+	s.Equal(2, stats.calls(), "nothing lifted: the skip stays silent")
+	s.Empty(s.getLibrary(src.ID).LastSyncError.String, "a failed re-check does not fail the skip")
 }
 
 func (s *engineSuite) TestParserErrorMarksLibraryFailed() {

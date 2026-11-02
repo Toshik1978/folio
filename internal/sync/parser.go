@@ -28,3 +28,12 @@ type Parser interface {
 type Checkpointer interface {
 	Checkpoint(library dbq.Library) (string, error)
 }
+
+// ReadFailureRechecker lets a Checkpointer re-check its broken-read records on
+// a sync the engine skips. A full sync re-checks them itself after its
+// reconcile; an unchanged checkpoint skips that, yet a book file behind the
+// index (an archive entry replaced under an unchanged .inpx) may have changed.
+// It returns the number of records lifted. The caller holds the write guard.
+type ReadFailureRechecker interface {
+	RecheckReadFailures(ctx context.Context, library dbq.Library, db *sql.DB) (int, error)
+}

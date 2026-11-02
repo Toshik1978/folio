@@ -130,7 +130,7 @@ folio/
 The composition root (`cmd/folio-idx/main.go`) owns the wiring: it injects an
 `ebook.Dispatcher` (`ebook.NewStandardDispatcher`; it reads every book format
 through one random-access `ebook.Source`), assembles the per-library-type
-parser map (`buildParsers`) the sync engine dispatches on, and registers a stats
+parser map the sync engine dispatches on, and registers a stats
 observer (`WithStatsObserver`) the engine notifies when catalog stats change, so a
 finished sync refreshes the cached catalog stats. The full `internal/` package layout, dependency graph, and
 composition root are documented in [BACKEND.md](./BACKEND.md#package-structure).

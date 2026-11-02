@@ -10,6 +10,27 @@ import (
 	"database/sql"
 )
 
+const countUnreadableBooks = `-- name: CountUnreadableBooks :one
+SELECT COUNT(*)
+FROM book_read_failures f
+         JOIN books b ON b.id = f.book_id
+WHERE b.library_id = ?
+  AND f.flow = 'metadata'
+  AND f.reader_version = ?
+`
+
+type CountUnreadableBooksParams struct {
+	LibraryID     int64
+	ReaderVersion int64
+}
+
+func (q *Queries) CountUnreadableBooks(ctx context.Context, arg CountUnreadableBooksParams) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countUnreadableBooks, arg.LibraryID, arg.ReaderVersion)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const deleteLibrary = `-- name: DeleteLibrary :exec
 DELETE
 FROM libraries
@@ -203,6 +224,45 @@ func (q *Queries) ListPendingPurgeLibraries(ctx context.Context, purgeAt sql.Nul
 			&i.Checkpoint,
 			&i.CreatedAt,
 		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listUnreadableCounts = `-- name: ListUnreadableCounts :many
+SELECT b.library_id, COUNT(*) AS unreadable_count
+FROM book_read_failures f
+         JOIN books b ON b.id = f.book_id
+WHERE f.flow = 'metadata'
+  AND f.reader_version = ?
+GROUP BY b.library_id
+`
+
+type ListUnreadableCountsRow struct {
+	LibraryID       int64
+	UnreadableCount int64
+}
+
+// Per-library number of books whose metadata read currently fails: rows recorded
+// by an older reader version are stale and ignored. Libraries with none are absent.
+func (q *Queries) ListUnreadableCounts(ctx context.Context, readerVersion int64) ([]ListUnreadableCountsRow, error) {
+	rows, err := q.db.QueryContext(ctx, listUnreadableCounts, readerVersion)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListUnreadableCountsRow
+	for rows.Next() {
+		var i ListUnreadableCountsRow
+		if err := rows.Scan(&i.LibraryID, &i.UnreadableCount); err != nil {
 			return nil, err
 		}
 		items = append(items, i)

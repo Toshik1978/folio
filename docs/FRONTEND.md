@@ -241,6 +241,12 @@ the theme picker, and a settings gear.
   pages, language), external identifier links, one download button per format
   (with file size), and the rendered HTML annotation (sanitized server-side and
   re-sanitized client-side via DOMPurify before `v-html`).
+  When the API flags the book `unreadable` (detail responses only), a
+  `role="status"` notice (`data-testid="unreadable-notice"`) sits at the top of
+  the description section, above any annotation: "Folio couldn't read this
+  book's file: {label} Downloading it may still work." with a fixed label per
+  reason (`corrupt`, `missing_entry`, `too_large`, `crashed`), rendered as plain
+  text and with no retry control.
 - **List pages (`/authors`, `/series`, `/tags`, `/publishers`)** — share an
   `AlphabetSelector` + `AlphabetList` (via `useAlphabetBrowse`). They load **one
   alphabet bucket at a time** — `/api/<entity>/letters` lights up the selector
@@ -361,6 +367,10 @@ navigation and removal stay in sync — the bar never holds stale local text).
 - `tag` and `publisher` are exact-only and not in the menu; they appear as chips
   when reached via navigation links (browse-by-letter, book detail). Author/series
   nav links use the exact (`=`) form.
+- `unreadable=1` is a flag filter (the `Unreadable` chip, `badge-warning`, fixed
+  label with no value). `BooksPage` sets `filters.unreadable` only when
+  `route.query.unreadable === '1'`, and `buildQuery` emits `unreadable=1` only
+  when it is true; it lists just the books whose file cannot be read.
 - Removing a chip (✕) clears that one route param.
 - Editing chips preserves the current `sort` order. The sort `<select>` lives on
   `BooksPage`, not the search bar, so `nextQuery()` explicitly carries `route.query.sort`
@@ -412,6 +422,12 @@ filter. Covered by `SearchInput.spec.ts` (real memory-router tests).
   `SyncBanner` and the row's status badge read "Deep indexing…" (from
   `status.kind`) and show its progress. Covered by `LibraryTable.spec.ts`,
   `SettingsPage.spec.ts`, `SyncBanner.spec.ts`, and `useLibraryActions.spec.ts`.
+- **Unreadable warning link.** Under a library's book count, a row with
+  `unreadable_count > 0` shows a `text-warning text-xs` link "⚠ N unreadable"
+  (`data-testid="library-unreadable"`; nothing for 0). Clicking it calls
+  `setLibrary(library.id)` then routes to `/?unreadable=1`, the books page filtered
+  to that library's unreadable books. It stays enabled while the library syncs.
+  Covered by `LibraryTable.spec.ts`.
 - **`LibraryStats` is deliberately global.** The catalog-overview card at the top
   of the tab (`LibraryStats.vue` → `fetchStats()` with no `library` arg) always
   reports whole-catalog totals and **ignores the header library selector**

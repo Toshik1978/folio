@@ -128,7 +128,7 @@ func (s *calibreSuite) TestResyncKeepsBookIDs() {
 	s.buildCalibreDB(libDir)
 	src := s.insertLibrary("calibre", libDir)
 
-	parser := CalibreParser{log: s.log, rank: testRank}
+	parser := CalibreParser{log: s.log, reader: newTestDispatcher()}
 	_, err := parser.Sync(ctx, src, s.db, s.store, nopReporter{})
 	s.Require().NoError(err)
 	before := s.booksByLibrary(src.ID)
@@ -174,7 +174,7 @@ func (s *calibreSuite) TestResyncAppliesInPlaceEdits() {
 	s.buildCalibreDB(libDir)
 	src := s.insertLibrary("calibre", libDir)
 
-	parser := CalibreParser{log: s.log, rank: testRank}
+	parser := CalibreParser{log: s.log, reader: newTestDispatcher()}
 	_, err := parser.Sync(ctx, src, s.db, s.store, nopReporter{})
 	s.Require().NoError(err)
 	before := s.booksByLibrary(src.ID)["War and Peace"]
@@ -210,7 +210,7 @@ func (s *calibreSuite) TestSyncSetsDeterminateTotal() {
 	src := s.insertLibrary("calibre", libDir)
 
 	rep := &countingReporter{}
-	parser := CalibreParser{log: s.log, rank: testRank}
+	parser := CalibreParser{log: s.log, reader: newTestDispatcher()}
 	_, err := parser.Sync(ctx, src, s.db, s.store, rep)
 	s.Require().NoError(err)
 	s.Positive(rep.total, "Calibre must set a determinate total up front")
@@ -223,7 +223,7 @@ func (s *calibreSuite) TestSync() {
 	s.buildCalibreDB(libDir)
 
 	src := s.insertLibrary("calibre", libDir)
-	parser := CalibreParser{log: s.log, rank: testRank}
+	parser := CalibreParser{log: s.log, reader: newTestDispatcher()}
 	res, err := parser.Sync(ctx, src, s.db, s.store, nopReporter{})
 	s.Require().NoError(err)
 	s.Equal(2, res.Added)

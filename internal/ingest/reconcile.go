@@ -41,9 +41,11 @@ func newReconciler(ctx context.Context, im *importer, libraryID, now int64, r Re
 
 // upsert persists one record and marks its file seen. A file whose source_path
 // previously belonged to a different logical book (its grouping key changed) has
-// its stale row removed so it does not linger under the old book. A file that is
-// new, or whose size or mod time changed, is passed to the importer as changed so
-// it can invalidate the book's lazily extracted cover.
+// its stale row removed so it does not linger under the old book, and that book's
+// file-derived cover and read failures are reset. A file that is new, or whose
+// size or mod time changed, is passed to the importer as changed so it can
+// invalidate the book's lazily extracted cover; the importer treats a file new to
+// an existing book the same way.
 func (rc *reconciler) upsert(ctx context.Context, rec bookRecord) error {
 	prev, existed := rc.prev[rec.SourcePath]
 	changed := !existed || prev.FileSize != rec.FileSize || prev.Mtime != rec.Mtime
@@ -64,6 +66,9 @@ func (rc *reconciler) upsert(ctx context.Context, rec bookRecord) error {
 		}
 		if err := q.DeleteBookFile(ctx, prev.ID); err != nil {
 			return fmt.Errorf("drop moved file %d: %w", prev.ID, err)
+		}
+		if err := rc.im.fileLeft(ctx, prev.BookID); err != nil {
+			return err
 		}
 	}
 

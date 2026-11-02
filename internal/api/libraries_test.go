@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Toshik1978/folio/internal/ebook"
 	"github.com/Toshik1978/folio/internal/libtype"
 	"github.com/Toshik1978/folio/internal/sync"
 )
@@ -416,4 +417,65 @@ func (s *librariesSuite) TestUpdateLibrarySucceedsWhenRescheduleFails() {
 
 	s.Equal(http.StatusOK, w.Code)
 	s.Equal(1, s.sync.rescheduled)
+}
+
+// seedReadFailure records a read failure for a book.
+func (s *librariesSuite) seedReadFailure(bookID int64, flow string, version int) {
+	_, err := s.db.ExecContext(context.Background(),
+		`INSERT INTO book_read_failures (book_id, flow, reason, fingerprint, reader_version, recorded_at)
+		 VALUES (?, ?, 'corrupt', 'fp', ?, 1)`, bookID, flow, version)
+	s.Require().NoError(err)
+}
+
+func (s *librariesSuite) TestUnreadableCountCountsOnlyCurrentMetadataFailuresOfThisLibrary() {
+	a := s.seedLibrary("folder", "/a")
+	b := s.seedLibrary("folder", "/b")
+	clean := s.seedLibrary("folder", "/clean")
+	s.seedBook(clean, bookSeed{Title: "ok"})
+
+	metaA1 := s.seedBook(a, bookSeed{Title: "m1"})
+	metaA2 := s.seedBook(a, bookSeed{Title: "m2"})
+	coverOnly := s.seedBook(a, bookSeed{Title: "cover"})
+	stale := s.seedBook(a, bookSeed{Title: "stale"})
+	otherLib := s.seedBook(b, bookSeed{Title: "other"})
+
+	s.seedReadFailure(metaA1, "metadata", ebook.ReaderVersion)
+	s.seedReadFailure(metaA2, "metadata", ebook.ReaderVersion)
+	s.seedReadFailure(metaA2, "cover", ebook.ReaderVersion)
+	s.seedReadFailure(coverOnly, "cover", ebook.ReaderVersion)
+	s.seedReadFailure(stale, "metadata", ebook.ReaderVersion-1)
+	s.seedReadFailure(otherLib, "metadata", ebook.ReaderVersion)
+
+	w := s.do(http.MethodGet, "/libraries", nil)
+	s.Require().Equal(http.StatusOK, w.Code)
+	var views []libraryView
+	s.decode(w, &views)
+	counts := map[int64]int64{}
+	for _, v := range views {
+		counts[v.ID] = v.UnreadableCount
+	}
+	s.Equal(map[int64]int64{a: 2, b: 1, clean: 0}, counts)
+
+	w = s.do(http.MethodGet, fmt.Sprintf("/libraries/%d", a), nil)
+	s.Require().Equal(http.StatusOK, w.Code)
+	var one libraryView
+	s.decode(w, &one)
+	s.Equal(int64(2), one.UnreadableCount)
+}
+
+func (s *librariesSuite) TestUnreadableCountPresentAsZeroOnEveryLibraryResponse() {
+	id := s.seedLibrary("folder", "/z")
+
+	for _, w := range []*httptest.ResponseRecorder{
+		s.do(http.MethodGet, "/libraries", nil),
+		s.do(http.MethodGet, fmt.Sprintf("/libraries/%d", id), nil),
+		s.do(http.MethodPut, fmt.Sprintf("/libraries/%d", id),
+			map[string]any{"name": "Z", "path": "/z", "sync_interval_seconds": 60}),
+		s.do(http.MethodPost, fmt.Sprintf("/libraries/%d/reactivate", id), nil),
+		s.do(http.MethodPost, "/libraries",
+			map[string]any{"name": "N", "type": "folder", "path": "/new"}),
+	} {
+		s.Require().Contains([]int{http.StatusOK, http.StatusCreated}, w.Code)
+		s.Contains(w.Body.String(), `"unreadable_count":0`)
+	}
 }

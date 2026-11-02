@@ -248,7 +248,10 @@ func mobiReadCover(ctx context.Context, src Source) ([]byte, error) {
 			return nil, nil
 		}
 	}
-	cover := mf.extractCover(ctx, mf.coverOffset)
+	cover, err := mf.extractCover(ctx, mf.coverOffset)
+	if err != nil {
+		return nil, err
+	}
 	if err := ctx.Err(); err != nil {
 		return nil, fmt.Errorf("mobi cover: %w", err)
 	}
@@ -319,7 +322,9 @@ func applyEXTHPublishing(recType int, val string, m *Metadata) {
 	}
 }
 
-func (mf *mobiFile) extractCover(ctx context.Context, coverOffset int) []byte {
+// extractCover returns the cover image record, or (nil, nil) when the records
+// read cleanly but hold none. A failed read is returned (see coverReadError).
+func (mf *mobiFile) extractCover(ctx context.Context, coverOffset int) ([]byte, error) {
 	// EXTH 201 (CoverOffset) is relative to the MOBI header's FirstImageIndex.
 	// This is the standard base for both MOBI6 and KF8 — confirmed by the
 	// leotaku/mobi writer which sets:
@@ -327,70 +332,91 @@ func (mf *mobiFile) extractCover(ctx context.Context, coverOffset int) []byte {
 	//   EXTHCoverOffset = position of cover within the image sequence
 	if mf.firstImageIndex >= 0 {
 		coverRec := mf.firstImageIndex + coverOffset
-		if img := mf.readRecordImage(coverRec); img != nil {
-			return img
+		img, err := mf.readRecordImage(coverRec)
+		if err != nil || img != nil {
+			return img, err
 		}
 	}
 
 	// Fallback: FirstImageIndex missing or resolved record not an image.
 	// Scan for the first record with an image signature.
-	firstImage := mf.findFirstImageRecord(ctx)
-	if firstImage < 0 {
-		return nil
+	firstImage, err := mf.findFirstImageRecord(ctx)
+	if err != nil || firstImage < 0 {
+		return nil, err
 	}
 
 	return mf.readRecordImage(firstImage)
 }
 
-func (mf *mobiFile) findFirstImageRecord(ctx context.Context) int {
+// findFirstImageRecord returns the index of the first record with an image
+// signature, or -1 when there is none. A failed read or a canceled ctx is
+// returned (see coverReadError).
+func (mf *mobiFile) findFirstImageRecord(ctx context.Context) (int, error) {
 	// Read only each record's leading bytes — enough to match an image signature
 	// — instead of whole records, so the scan stays cheap on large files.
 	head := make([]byte, 4)
 	for i := range mf.numRecords {
 		// The scan can touch up to 65535 records; abandon it if the caller cancels.
-		if ctx.Err() != nil {
-			return -1
+		if err := ctx.Err(); err != nil {
+			return -1, fmt.Errorf("mobi cover: %w", err)
 		}
 		recStart := mf.recOffsets[i]
 		if recStart < 0 || recStart+4 > mf.size {
 			continue
 		}
 		if _, err := mf.r.ReadAt(head, recStart); err != nil {
-			continue
+			return -1, coverReadError(err)
 		}
 		if isImageHeader(head) {
-			return i
+			return i, nil
 		}
 	}
 
-	return -1
+	return -1, nil
 }
 
-func (mf *mobiFile) readRecordImage(recIndex int) []byte {
-	recStart, recLen, ok := mf.recordBounds(recIndex)
-	if !ok {
-		return nil
+// readRecordImage returns record recIndex when it holds an image, or (nil, nil)
+// when it is out of range or reads cleanly but is not an image. A failed read
+// is returned (see coverReadError).
+func (mf *mobiFile) readRecordImage(recIndex int) ([]byte, error) {
+	recStart, recLen, err := mf.recordBounds(recIndex)
+	if err != nil || recLen == 0 {
+		return nil, err
 	}
 
 	coverData := make([]byte, recLen)
 	if _, err := mf.r.ReadAt(coverData, recStart); err != nil {
-		return nil
+		return nil, coverReadError(err)
 	}
 	if !isImageHeader(coverData) {
-		return nil
+		return nil, nil
 	}
 
-	return coverData
+	return coverData, nil
+}
+
+// coverReadError classifies a failed cover-record read so the Dispatcher can
+// act on it: an error already matching ErrSourceIO, ErrTooLarge or ErrMalformed
+// is kept as is; any other (for example a short read of a record the file
+// declares) means the file is malformed.
+func coverReadError(err error) error {
+	if errors.Is(err, ErrSourceIO) || errors.Is(err, ErrTooLarge) || errors.Is(err, ErrMalformed) {
+		return fmt.Errorf("mobi cover: %w", err)
+	}
+
+	return fmt.Errorf("%w: mobi cover: %w", ErrMalformed, err)
 }
 
 // recordBounds resolves the [start, start+len) byte range of PDB record
-// recIndex, returning ok=false when the record is out of range, the offsets are
-// inconsistent, or the span exceeds maxCoverBytes. The size cap bounds the
-// allocation against a corrupt/pathological record table rather than trusting
-// the offsets (mirrors the archive read caps).
-func (mf *mobiFile) recordBounds(recIndex int) (start, length int64, ok bool) {
+// recIndex, returning length 0 when the record is out of range or the offsets are
+// inconsistent. A span exceeding maxCoverBytes is an ErrTooLarge error, not a
+// missing record: the size cap bounds the allocation against a
+// corrupt/pathological record table rather than trusting the offsets (mirrors
+// the archive read caps), and the file is classified like an oversized cover in
+// any other format.
+func (mf *mobiFile) recordBounds(recIndex int) (start, length int64, err error) {
 	if recIndex < 0 || recIndex >= mf.numRecords {
-		return 0, 0, false
+		return 0, 0, nil
 	}
 
 	recStart := mf.recOffsets[recIndex]
@@ -402,11 +428,14 @@ func (mf *mobiFile) recordBounds(recIndex int) (start, length int64, ok bool) {
 		recEnd = mf.size
 	}
 
-	if recStart < 0 || recStart >= recEnd || recEnd-recStart > maxCoverBytes {
-		return 0, 0, false
+	if recStart < 0 || recStart >= recEnd {
+		return 0, 0, nil
+	}
+	if recEnd-recStart > maxCoverBytes {
+		return 0, 0, fmt.Errorf("%w: mobi cover record is larger than %d bytes", ErrTooLarge, maxCoverBytes)
 	}
 
-	return recStart, recEnd - recStart, true
+	return recStart, recEnd - recStart, nil
 }
 
 var imageSignatures = [][]byte{ //nolint:gochecknoglobals // read-only lookup table

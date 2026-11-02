@@ -64,6 +64,16 @@ type BookIdentifier struct {
 	Value  string
 }
 
+type BookReadFailure struct {
+	BookID        int64
+	Flow          string
+	Reason        string
+	Detail        string
+	Fingerprint   string
+	ReaderVersion int64
+	RecordedAt    int64
+}
+
 type BooksFt struct {
 	Title      string
 	Authors    string

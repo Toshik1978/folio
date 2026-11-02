@@ -4,7 +4,10 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"image"
 	"image/jpeg"
 	"log/slog"
@@ -14,6 +17,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/Toshik1978/folio/internal/db/dbq"
 	"github.com/Toshik1978/folio/internal/ebook"
 	"github.com/Toshik1978/folio/internal/ingest"
 )
@@ -26,15 +30,17 @@ type booksSuite struct {
 type fakeExtractor struct {
 	annotation  string
 	identifiers []ebook.Identifier
+	res         ingest.ReadResult // the zero value is ReadDone
 	called      int
 }
 
-func (f *fakeExtractor) Description(_ context.Context, _ int64) (ebook.Metadata, bool, error) {
+func (f *fakeExtractor) Description(_ context.Context, _ int64) (ebook.Metadata, ingest.ReadResult) {
 	f.called++
 	if f.annotation == "" && len(f.identifiers) == 0 {
-		return ebook.Metadata{}, false, nil
+		return ebook.Metadata{}, f.res
 	}
-	return ebook.Metadata{Annotation: f.annotation, Identifiers: f.identifiers}, true, nil
+
+	return ebook.Metadata{Annotation: f.annotation, Identifiers: f.identifiers}, f.res
 }
 
 func (s *booksSuite) TestListBooksPaginated() {
@@ -91,6 +97,64 @@ func (s *booksSuite) TestListBooksFilterByAuthorAndFormat() {
 	s.decode(w, &byFormat)
 	s.Equal(int64(1), byFormat.Total)
 	s.Equal("Dune", byFormat.Items[0].Title)
+}
+
+func (s *booksSuite) TestListBooksUnreadableFilter() {
+	a := s.seedLibrary("folder", "/a")
+	b := s.seedLibrary("folder", "/b")
+	broken := s.seedBook(a, bookSeed{Title: "Broken Dune", Format: "epub"})
+	brokenFB2 := s.seedBook(a, bookSeed{Title: "Broken Emma", Format: "fb2"})
+	coverOnly := s.seedBook(a, bookSeed{Title: "Cover Dune"})
+	stale := s.seedBook(a, bookSeed{Title: "Stale Dune"})
+	s.seedBook(a, bookSeed{Title: "Fine Dune"})
+	inB := s.seedBook(b, bookSeed{Title: "Other Dune"})
+	for _, f := range []struct {
+		id      int64
+		flow    string
+		version int
+	}{
+		{broken, "metadata", ebook.ReaderVersion},
+		{brokenFB2, "metadata", ebook.ReaderVersion},
+		{coverOnly, "cover", ebook.ReaderVersion},
+		{stale, "metadata", ebook.ReaderVersion - 1},
+		{inB, "metadata", ebook.ReaderVersion},
+	} {
+		_, err := s.db.ExecContext(context.Background(),
+			`INSERT INTO book_read_failures (book_id, flow, reason, fingerprint, reader_version, recorded_at)
+			 VALUES (?, ?, 'corrupt', 'fp', ?, 1)`, f.id, f.flow, f.version)
+		s.Require().NoError(err)
+	}
+
+	list := func(query string) page[bookView] {
+		w := s.do(http.MethodGet, "/books?"+query, nil)
+		s.Require().Equal(http.StatusOK, w.Code)
+		var p page[bookView]
+		s.decode(w, &p)
+		return p
+	}
+	titlesOf := func(p page[bookView]) []string {
+		out := make([]string, len(p.Items))
+		for i := range p.Items {
+			out[i] = p.Items[i].Title
+		}
+		return out
+	}
+
+	p := list(fmt.Sprintf("unreadable=1&library=%d", a))
+	s.Equal(int64(2), p.Total)
+	s.ElementsMatch([]string{"Broken Dune", "Broken Emma"}, titlesOf(p))
+
+	p = list(fmt.Sprintf("unreadable=1&library=%d&q=dune", a))
+	s.Equal(int64(1), p.Total)
+	s.Equal([]string{"Broken Dune"}, titlesOf(p))
+
+	p = list(fmt.Sprintf("unreadable=1&library=%d&format=fb2", a))
+	s.Equal(int64(1), p.Total)
+	s.Equal([]string{"Broken Emma"}, titlesOf(p))
+
+	for _, v := range []string{"0", "true", ""} {
+		s.Equal(int64(5), list(fmt.Sprintf("unreadable=%s&library=%d", v, a)).Total, v)
+	}
 }
 
 func (s *booksSuite) TestListBooksFTSSearch() {
@@ -277,6 +341,151 @@ func (s *booksSuite) TestGetBookCachesMissingAnnotation() {
 	// Second view: a checked book must not be re-parsed.
 	s.Require().Equal(http.StatusOK, s.do(http.MethodGet, "/books/"+itoa(id), nil).Code)
 	s.Equal(1, ext.called, "a checked book must not be re-extracted")
+}
+
+// TestGetBookRecordsBrokenFile covers the outcome-aware fill: a corrupt book is
+// recorded once and stays unchecked; a retryable read records nothing.
+func (s *booksSuite) TestGetBookRecordsBrokenFile() {
+	ext := &fakeExtractor{res: ingest.ReadResult{
+		Status: ingest.ReadBroken, Reason: ebook.ReasonCorrupt, Detail: "bad", Fingerprint: "fp",
+	}}
+	bf := ingest.NewLocalBackfiller(slog.New(slog.DiscardHandler), s.db, s.guard, ext)
+	bh := NewBooks(slog.New(slog.DiscardHandler), s.db, s.guard, s.covers, bf, nil, s.covers, nil)
+	r := chi.NewRouter()
+	bh.Register(r)
+	s.router = r
+
+	src := s.seedLibrary("inpx", filepath.Join(s.dir, "lib.inpx"))
+	id := s.seedBook(src, bookSeed{Title: "Corrupt", Format: "epub"})
+
+	s.Require().Equal(http.StatusOK, s.do(http.MethodGet, "/books/"+itoa(id), nil).Code)
+	row, err := s.q.GetReadFailure(s.T().Context(), dbq.GetReadFailureParams{BookID: id, Flow: "metadata"})
+	s.Require().NoError(err)
+	s.Equal("corrupt", row.Reason)
+	stored, err := s.q.GetBook(s.T().Context(), id)
+	s.Require().NoError(err)
+	s.Zero(stored.MetadataChecked)
+
+	// The file is fixed: the next view reads it, clears the record, checks the book.
+	ext.res = ingest.ReadResult{Status: ingest.ReadDone}
+	s.Require().Equal(http.StatusOK, s.do(http.MethodGet, "/books/"+itoa(id), nil).Code)
+	_, err = s.q.GetReadFailure(s.T().Context(), dbq.GetReadFailureParams{BookID: id, Flow: "metadata"})
+	s.Require().ErrorIs(err, sql.ErrNoRows)
+	stored, err = s.q.GetBook(s.T().Context(), id)
+	s.Require().NoError(err)
+	s.Equal(int64(1), stored.MetadataChecked)
+}
+
+// useBackfiller wires the handler with a real LocalBackfiller over ext.
+func (s *booksSuite) useBackfiller(ext *fakeExtractor) {
+	bf := ingest.NewLocalBackfiller(slog.New(slog.DiscardHandler), s.db, s.guard, ext)
+	bh := NewBooks(slog.New(slog.DiscardHandler), s.db, s.guard, s.covers, bf, nil, s.covers, nil)
+	r := chi.NewRouter()
+	bh.Register(r)
+	s.router = r
+}
+
+func (s *booksSuite) recordFailure(id int64, flow string, version int) {
+	s.Require().NoError(s.q.UpsertReadFailure(s.T().Context(), dbq.UpsertReadFailureParams{
+		BookID: id, Flow: flow, Reason: "corrupt", Detail: "bad", Fingerprint: "fp",
+		ReaderVersion: int64(version), RecordedAt: 1,
+	}))
+}
+
+func (s *booksSuite) getDetail(id int64) bookView {
+	w := s.do(http.MethodGet, "/books/"+itoa(id), nil)
+	s.Require().Equal(http.StatusOK, w.Code)
+	var v bookView
+	s.decode(w, &v)
+	return v
+}
+
+func (s *booksSuite) TestGetBookReportsUnreadable() {
+	ext := &fakeExtractor{res: ingest.ReadResult{
+		Status: ingest.ReadBroken, Reason: ebook.ReasonCorrupt, Detail: "bad", Fingerprint: "fp",
+	}}
+	s.useBackfiller(ext)
+	src := s.seedLibrary("inpx", filepath.Join(s.dir, "lib.inpx"))
+	id := s.seedBook(
+		src,
+		bookSeed{Title: "Corrupt", Format: "epub", Annotation: "has one", Identifiers: map[string]string{"isbn": "1"}},
+	)
+	s.recordFailure(id, "metadata", ebook.ReaderVersion)
+
+	v := s.getDetail(id)
+	s.Require().NotNil(v.Unreadable)
+	s.Equal("corrupt", v.Unreadable.Reason)
+	s.Equal(1, ext.called, "a recorded failure forces a re-check on view")
+
+	w := s.do(http.MethodGet, "/books?library="+itoa(src), nil)
+	s.Require().Equal(http.StatusOK, w.Code)
+	s.NotContains(w.Body.String(), `"unreadable"`)
+}
+
+func (s *booksSuite) TestEditKeepsUnreadableMarker() {
+	src := s.seedLibrary("inpx", filepath.Join(s.dir, "lib.inpx"))
+	id := s.seedBook(src, bookSeed{Title: "Corrupt", Format: "epub"})
+	s.recordFailure(id, "metadata", ebook.ReaderVersion)
+
+	w := s.do(http.MethodPut, "/books/"+itoa(id), map[string]any{"title": "Renamed"})
+	s.Require().Equal(http.StatusOK, w.Code, w.Body.String())
+	var v bookView
+	s.decode(w, &v)
+	s.Require().NotNil(v.Unreadable, "the edit response replaces the open detail view")
+	s.Equal("corrupt", v.Unreadable.Reason)
+}
+
+func (s *booksSuite) TestGetBookFixedFileClearsUnreadable() {
+	ext := &fakeExtractor{res: ingest.ReadResult{Status: ingest.ReadDone}}
+	s.useBackfiller(ext)
+	src := s.seedLibrary("inpx", filepath.Join(s.dir, "lib.inpx"))
+	id := s.seedBook(
+		src,
+		bookSeed{Title: "Fixed", Format: "epub", Annotation: "has one", Identifiers: map[string]string{"isbn": "1"}},
+	)
+	s.recordFailure(id, "metadata", ebook.ReaderVersion)
+
+	s.Nil(s.getDetail(id).Unreadable)
+	_, err := s.q.GetReadFailure(s.T().Context(), dbq.GetReadFailureParams{BookID: id, Flow: "metadata"})
+	s.Require().ErrorIs(err, sql.ErrNoRows)
+}
+
+func (s *booksSuite) TestGetBookOmitsStaleAndCoverOnlyUnreadable() {
+	ext := &fakeExtractor{res: ingest.ReadResult{Status: ingest.ReadRetryable, Err: errors.New("io")}}
+	s.useBackfiller(ext)
+	src := s.seedLibrary("inpx", filepath.Join(s.dir, "lib.inpx"))
+	stale := s.seedBook(
+		src,
+		bookSeed{Title: "Stale", Format: "epub", Annotation: "has one", Identifiers: map[string]string{"isbn": "1"}},
+	)
+	coverOnly := s.seedBook(
+		src,
+		bookSeed{Title: "Cover", Format: "epub", Annotation: "has one", Identifiers: map[string]string{"isbn": "1"}},
+	)
+	s.recordFailure(stale, "metadata", ebook.ReaderVersion-1)
+	s.recordFailure(coverOnly, "cover", ebook.ReaderVersion)
+
+	s.Nil(s.getDetail(stale).Unreadable)
+	s.Nil(s.getDetail(coverOnly).Unreadable)
+}
+
+func (s *booksSuite) TestGetBookRetryableRecordsNothing() {
+	ext := &fakeExtractor{res: ingest.ReadResult{Status: ingest.ReadRetryable, Err: errors.New("io")}}
+	bf := ingest.NewLocalBackfiller(slog.New(slog.DiscardHandler), s.db, s.guard, ext)
+	bh := NewBooks(slog.New(slog.DiscardHandler), s.db, s.guard, s.covers, bf, nil, s.covers, nil)
+	r := chi.NewRouter()
+	bh.Register(r)
+	s.router = r
+
+	src := s.seedLibrary("inpx", filepath.Join(s.dir, "lib.inpx"))
+	id := s.seedBook(src, bookSeed{Title: "Flaky", Format: "epub"})
+
+	s.Require().Equal(http.StatusOK, s.do(http.MethodGet, "/books/"+itoa(id), nil).Code)
+	_, err := s.q.GetReadFailure(s.T().Context(), dbq.GetReadFailureParams{BookID: id, Flow: "metadata"})
+	s.Require().ErrorIs(err, sql.ErrNoRows)
+	stored, err := s.q.GetBook(s.T().Context(), id)
+	s.Require().NoError(err)
+	s.Zero(stored.MetadataChecked)
 }
 
 // TestGetBookOnlineEnrichmentFillsGaps covers the online tier: a metadata-poor

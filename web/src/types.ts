@@ -1,6 +1,11 @@
+// UnreadableReason is why a book's file cannot be opened for reading.
+export type UnreadableReason = 'corrupt' | 'missing_entry' | 'too_large' | 'crashed';
+
 export interface Book {
   id: number;
   title: string;
+  // Present only when the book's file is unreadable.
+  unreadable?: { reason: UnreadableReason };
   authors: BookAuthor[];
   series: string | null;
   series_index: number | null;
@@ -89,6 +94,7 @@ export interface Library {
   last_sync_at: number | null;
   last_sync_error: string | null;
   book_count: number;
+  unreadable_count: number;
 }
 
 // SyncStatus is the engine's live snapshot from GET /api/sync/status.
@@ -148,6 +154,7 @@ export interface BookFilters {
   publisher?: string;
   format?: string;
   lang?: string;
+  unreadable?: boolean;
   library?: number;
   sort?: string;
   page?: number;

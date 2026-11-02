@@ -72,6 +72,7 @@ function buildQuery(filters: BookFilters): string {
   if (filters.publisher) params.set('publisher', filters.publisher);
   if (filters.format) params.set('format', filters.format);
   if (filters.lang) params.set('lang', filters.lang);
+  if (filters.unreadable) params.set('unreadable', '1');
   if (filters.library) params.set('library', String(filters.library));
   if (filters.sort) params.set('sort', filters.sort);
   if (filters.page) params.set('page', String(filters.page));

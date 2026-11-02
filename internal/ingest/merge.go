@@ -19,46 +19,52 @@ type bookView = dbq.FindBookByLibraryKeyRow
 // files once, ensures rec's file row exists/updates, then merges rec's metadata
 // onto the book (gap-fill or, for the owning edition, overwrite). The preloaded
 // file list also tells the merge whether a same-format sibling exists (M8). rank
-// orders formats for the overwrite decision (see resolveMode).
+// orders formats for the overwrite decision (see resolveMode). joined reports
+// that rec's file was new to the book.
 func mergeExisting(
 	ctx context.Context, q *dbq.Queries, x dbq.DBTX, existing bookView, rec bookRecord, rank func(format string) int,
-) error {
+) (joined bool, err error) {
 	files, err := q.ListFilesForBook(ctx, existing.ID)
 	if err != nil {
-		return fmt.Errorf("list files: %w", err)
+		return false, fmt.Errorf("list files: %w", err)
 	}
-	if err := ensureFile(ctx, q, existing.ID, rec, files); err != nil {
-		return err
+	joined, err = ensureFile(ctx, q, existing.ID, rec, files)
+	if err != nil {
+		return false, err
 	}
 
-	return gapFill(ctx, q, x, existing, rec, files, rank)
+	return joined, gapFill(ctx, q, x, existing, rec, files, rank)
 }
 
 // ensureFile makes the book's preloaded set of files contain rec's file: it
 // inserts a new row for an unseen source_path, or updates the row when its bytes
 // — or the source's page count, which changes neither size nor mtime (e.g. a
-// Calibre 'pages' custom-column edit) — changed.
-func ensureFile(ctx context.Context, q *dbq.Queries, bookID int64, rec bookRecord, files []dbq.BookFile) error {
+// Calibre 'pages' custom-column edit) — changed. joined reports an inserted
+// row: the file is new to this book, even when its bytes are not new (an INPX
+// entry regrouped onto the book by an index fix).
+func ensureFile(
+	ctx context.Context, q *dbq.Queries, bookID int64, rec bookRecord, files []dbq.BookFile,
+) (joined bool, err error) {
 	for i := range files {
 		if files[i].SourcePath != rec.SourcePath {
 			continue
 		}
 		if files[i].FileSize == rec.FileSize && files[i].Mtime == rec.Mtime &&
 			(rec.Pages == 0 || files[i].Pages == nullInt(rec.Pages)) {
-			return nil // unchanged
+			return false, nil // unchanged
 		}
 
 		err := q.UpdateBookFile(ctx, dbq.UpdateBookFileParams{
 			FileSize: rec.FileSize, Pages: nullInt(rec.Pages), Mtime: rec.Mtime, ID: files[i].ID,
 		})
 		if err != nil {
-			return fmt.Errorf("update book file: %w", err)
+			return false, fmt.Errorf("update book file: %w", err)
 		}
 
-		return nil
+		return false, nil
 	}
 
-	return insertFileRow(ctx, q, bookID, rec)
+	return true, insertFileRow(ctx, q, bookID, rec)
 }
 
 // mergeMode is the reconcile decision: gap-fill empty fields, or let a

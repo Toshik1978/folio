@@ -10,7 +10,7 @@ Three parts, delivered in order. Each phase leaves `task build`, `task test` and
 
 1. **Uniform reading** (US1, FR-001…FR-009). Every ebook parser reads one random-access `ebook.Source` (`io.ReaderAt` + size + name), backed either by a plain file or by a zip entry that inflates lazily and is held in memory up to a size cap. Each parser offers two operations, `Metadata` (never decodes covers) and `Cover`. The `Dispatcher` routes both by extension and keeps the panic recovery and ctx checks. The FB2 header-only read becomes the private body of the unexported `fb2Parser.Metadata`; `ParseFB2Description` and the temp-file materialize go away. A single resolver in `ingest` maps a book file of any library type to a `Source` and a fingerprint, so Deep Index, the on-view fill and the cover flow name no formats and no library types. Folder import reads metadata only, and covers for every library type come from the lazy cover flow (Calibre keeps its `cover.jpg`).
 2. **Read outcomes** (US2, FR-010…FR-019). Every local read for a flow ends `done`, `broken` or `retryable`. Broken reads are stored in a new table `book_read_failures` (one row per book and flow, with the reason, a short detail, the file fingerprint and the reader version). A record that still matches the current fingerprint and `ebook.ReaderVersion` stops Deep Index, the on-view fill and the lazy cover flow from reading the file again. Errors are classified once, from typed errors raised by the ebook layer.
-3. **Visibility** (US3, FR-020…FR-024). `GET /api/libraries` gains `unreadable_count`, `GET /api/books` gains an `unreadable=1` filter, and `GET /api/books/{id}` gains `unreadable: {reason}`. The SPA shows "⚠ N unreadable" on the library row, linking to the filtered book list, and a plain-language notice on the book page. There is no retry button.
+3. **Visibility** (US3, FR-020…FR-024). `GET /api/libraries` gains `unreadable_count`, `GET /api/books` gains an `unreadable=1` filter, and `GET /api/books/{id}` (and every other single-book response) gains `unreadable: {reason}`. The SPA shows "⚠ N unreadable" on the library row, linking to the filtered book list, and a plain-language notice on the book page. There is no retry button.
 
 Research and the decisions behind this plan: [research.md](./research.md). The open `CLAUDE?` review comments in `internal/ebook/fb2.go` and `internal/ingest/deepindex.go` are resolved by Phase 1 (see "Review comments resolved").
 
@@ -46,7 +46,7 @@ Research and the decisions behind this plan: [research.md](./research.md). The o
 
 **Storage**: Folio SQLite at `<data-dir>/folio.db`.
 - Migration `007_book_read_failures.sql`: a new table and one index ([data-model.md](./data-model.md)).
-- New and changed sqlc queries: upsert, get, delete read failure; per-library unreadable count; `ListDeepIndexWork` returns every file of an unchecked book plus its metadata-failure record.
+- New and changed sqlc queries: upsert, get, delete read failure; per-library unreadable count; `ListMetadataFailureFiles` for the post-sync re-check; `ResetCoverState` and `MarkFileCover` for the lazy-cover state; `ListDeepIndexWork` returns one page of unchecked books (every file of each, plus its metadata-failure record), and `CountDeepIndexWork` counts the work for the progress total.
 - `booksfilter.go` (bob): an `Unreadable` filter, an `EXISTS` subquery with the reader version bound as a parameter.
 
 **Testing**: Go testify suites (one `Test<Package>` per package, entry point only `suite.Run`). Vitest for the SPA. Fixtures under `testdata/`:
@@ -65,7 +65,7 @@ Research and the decisions behind this plan: [research.md](./research.md). The o
 
 **Constraints**:
 - Sources are read-only, and nothing is written outside `<data-dir>`. No temp files are used to read books (SC-005).
-- Memory is bounded: an inflated entry is capped at `ebook.MaxEntryBytes`, a code constant of 64 MiB, the same value as today's anti-bomb ceiling. At most one entry per Deep Index worker is held at a time.
+- Memory is bounded: an inflated entry is capped at `ebook.MaxEntryBytes`, a code constant of 64 MiB, the same value as today's anti-bomb ceiling. At most one entry per Deep Index worker is held at a time, and Deep Index holds one page of its work list (5,000 books) at a time.
 - No online calls from Deep Index or MCP (FR-019).
 
 **Scale/Scope**: large archive collections, plus folder and Calibre libraries. Broken files are expected to be a tiny fraction of any library.
@@ -106,7 +106,7 @@ Contract: [contracts/ebook-reading.md](./contracts/ebook-reading.md).
 - `version.go` (new): `const ReaderVersion = 1` (FR-018). The comment states the bump rule.
 - `parser.go`: `Parser` gets `Extensions()`, `Metadata(ctx, Source)`, `Cover(ctx, Source)` and `Traits() Traits{Rank int, Describes bool}`.
   - The concrete parsers become unexported (`fb2Parser`, `epubParser`, `mobiParser`, `pdfParser`, with no exported constructors).
-  - `NewStandardDispatcher() *Dispatcher` is the one exported way to get the standard parser set, used by `main.go` and tests. `Parser` and `NewDispatcher` stay exported, format-agnostic, for test fakes.
+  - `NewStandardDispatcher(opts ...Option) *Dispatcher` is the one exported way to get the standard parser set, used by `main.go` and tests. `Parser` and `NewDispatcher` stay exported, format-agnostic, for test fakes. (The `WithCrashReporter` option, which reports recovered parser panics, came later with the Telegram notifications, spec 003.)
   - `Rank` takes over from `ingest.filePriority` (EPUB 4, FB2 3, MOBI family 2, PDF 1).
   - `Describes` is false only for PDF (FR-007).
 - `dispatch.go`:
@@ -116,16 +116,19 @@ Contract: [contracts/ebook-reading.md](./contracts/ebook-reading.md).
   - New package function `ContentType(format) string`, so the `Format*` label constants can be unexported. `bookfile.ContentType` delegates to it.
   - Public surface: only format-agnostic identifiers are exported. An `ebookSuite` AST test fails on any exported identifier whose camelCase words include a format label.
 - `fb2.go`:
-  - `Metadata` = the header-only decode, unexported (`parseFB2Header`, formerly `ParseFB2Description`), over `bufio` on an `io.SectionReader`.
+  - `Metadata` = the header-only decode, unexported (`parseFB2Header`, formerly `ParseFB2Description`), over `bufio` on an `io.SectionReader`. A well-formed document without a `<description>` reads as empty metadata (the title falls back to the file name), not as corrupt; a stream with no XML element at all is an error.
+  - Both reads cap the FB2 XML at 64 MiB (`maxArchiveTextBytes`), plain file or `.fb2.zip` alike; going past the cap is `ErrTooLarge`, not a truncated (corrupt) document.
   - `Cover` = a token scan for the coverpage href, then the matching `<binary>` only.
   - `.fb2.zip` = `zip.NewReader(src.R, src.Size)` → `OpenZipEntry` → the same functions.
   - `ParseFB2Description` is removed (FR-004).
 - `epub.go`: `zip.NewReader(src.R, src.Size)`. `Metadata` reads container + OPF. `Cover` reads OPF + manifest.
-- `mobi.go`: `openMOBI(src.R, src.Size)` as today. `Metadata` = title + EXTH. `Cover` = EXTH 201 + `extractCover`.
+- `mobi.go`: `openMOBI(src.R, src.Size)` as today, with the record-0 read capped at 1 MiB so a lying entry size cannot force a huge allocation. `Metadata` = title + EXTH. `Cover` = EXTH 201 + `extractCover`; a `FirstImageIndex` outside the records falls back to the first-image scan.
 - `pdf.go`: `pdfcpu.ReadContext(io.NewSectionReader(...))`. `Metadata` skips `coverFromContext`, and `Cover` uses it.
 - `ebook.go`: add `MaxEntryBytes`, and unexport the `Format*` constants. `Metadata.Cover` stays, because online providers (`metasearch`, `api/enrich.go`, `api/match.go`) fill it. Ebook parsers' `Metadata` never sets it.
 - Cover-decode failures are classified as follows:
-  - when the cover payload declared inside the file cannot be extracted, `Cover` returns an error that becomes `ErrMalformed`. That covers FB2 coverpage base64 that is invalid or truncated, and an EPUB manifest cover item whose zip entry is missing or corrupt.
+  - when the cover payload declared inside the file cannot be extracted, `Cover` returns an error that becomes `ErrMalformed`. That covers FB2 coverpage base64 that is invalid or truncated, and an EPUB manifest cover item whose zip entry is missing or corrupt (the href's `./` and `../` segments are cleaned first, so a valid book is not reported corrupt).
+  - a declared cover over the 10 MiB cover cap is `ErrTooLarge` in every parser (FB2, EPUB and MOBI); a MOBI cover record over the cap does not fall back to the first-image scan.
+  - a failed MOBI cover-record read is returned, not treated as "no cover": source I/O stays retryable, anything else is malformed.
   - extracted bytes that are not a decodable image keep today's `covers` behaviour (`cover_state = 2`, none), which already stops re-reads.
 
 **Ingest layer (`internal/ingest`)**
@@ -133,31 +136,33 @@ Contract: [contracts/ebook-reading.md](./contracts/ebook-reading.md).
   - `open(library, file, ac) (ebook.Source, io.Closer, error)`, `group(library, file) string`, and from Phase 2 `fingerprint(library, files, ac) (string, error)`. The group key is the archive path for archive-backed files and empty otherwise. It takes over the INPX branches of `extract.go` and `deepindex.go`.
   - A new ingest-local `withinRoot` helper rejects a stored `source_path` that escapes the library or archive directory.
   - `bookfile` (downloads) keeps its own archive lookup; it is out of scope for this feature.
-  - A per-caller `archiveCache` opens each archive once (with `ebook.TagIO`). Deep Index uses one per worker job; per-book reads use a one-shot cache.
+  - A per-caller `archiveCache` opens each archive once (with `ebook.TagIO`). Deep Index uses one per worker job; per-book reads use a one-shot cache. An archive that opens but that `zip.NewReader` rejects for a reason other than source I/O is `ErrMalformed` (broken `corrupt`) for every entry read from it.
 - `extract.go`: `Extractor` loses `tmpDir`, `materialize`, `parseFromZip`, `acceptNonPDF` and `ebook.FormatPDF`.
   - `Description(ctx, bookID)` and `Cover(ctx, bookID)` both go through the shared `readBook(ctx, flow, files)`.
   - `readBook` orders candidates by `Dispatcher.Rank`, skips formats that cannot serve the flow (`Describes` for metadata, `Supported` for both), and returns the first good read.
-  - `NewExtractor(db, log, reader)`: the `dataDir` argument is dropped.
+  - `NewExtractor(db, log, reader, guard)`: the `dataDir` argument is dropped; the write guard (Phase 2) serializes the cover-flow record writes.
   - `newSession() *readSession` gives Deep Index workers a session that owns an `archiveCache`.
 - `deepindex.go`:
   - `parseFB2`, `inpxItem`, `parseEntry`, `deepIndexArchive` and `isPDF` are removed.
   - Jobs are grouped by `resolver.group`, and each worker runs the same `readBook` with its job's archive cache. The code names no format and no library type (SC-007).
   - `NewDeepIndexer(log, db, guard, extractor *Extractor)`. Tests inject a fake `bookReader` into a real `Extractor`; there is no extra session interface.
-- `folder.go`: `visit` opens `ebook.OpenFile` → `Dispatcher.Metadata` (FR-008). `recordFromMeta` no longer carries a cover.
+- `folder.go`: `visit` opens `ebook.OpenFile` → `Dispatcher.Metadata` (FR-008). `recordFromMeta` no longer carries a cover. A known file whose read fails for a retryable reason is marked seen, so its book is kept rather than pruned, and re-read on the next sync.
 - `importer.go`/`reconcile.go`: lazy-cover invalidation for records that carry no cover bytes, generic across library types.
-  - Trigger: the reconciler sees a new file, or a changed `(file_size, mtime)` versus `rc.prev`, and the file's rank is ≥ the persisted `cover_prio`. Manual covers (prio 1000) are never invalidated.
-  - Action: queue a cover op that deletes the cached cover and thumbnail, sets `cover_state = 0` and `cover_prio = 0`, and runs after commit like today's ops. The next display re-extracts through the lazy flow from the best-ranked file.
+  - File-derived marker: when the lazy flow caches a cover extracted from the book's file, `covers.Store` records `cover_state = 1` with `cover_prio = 1` (`MarkFileCover`, a new method on `covers.CoverState`). An online-enrichment cover keeps `cover_prio = 0`.
+  - Trigger: for an existing book (never a brand-new one), the reconciler sees a new file, a changed `(file_size, mtime)` versus `rc.prev`, or a file newly joined to the book (`ensureFile` reports it); the file's rank is ≥ the persisted `cover_prio`; and the state is one a file produced: `cover_state = 2`, or `cover_state = 1` with `1 <= cover_prio < 1000`. It is skipped when a cover was already saved for the book this run. Online covers (prio 0) and manual covers (prio 1000) are never invalidated.
+  - A file that moves to another book (its grouping key changed) also resets the book it left: the same file-derived invalidation, without the rank check.
+  - Action: queue a cover op that deletes the cached cover and thumbnail, then runs `ResetCoverState` (`cover_state = 0`, `cover_prio = 0`, skipping manual covers), after commit like today's ops. The next display re-extracts through the lazy flow from the best-ranked file.
   - Calibre records with `cover.jpg` bytes keep the existing Save path.
-- `merge.go`: `filePriority` is replaced by a `rank func(format string) int` threaded through `newImporter` ← `runReconcile` ← the INPX, Calibre and Folder parser constructors, so no format names remain.
+- `merge.go`: `filePriority` is replaced by a `rank func(format string) int` passed to `newImporter` by `runReconcile`, which takes the dispatcher (`bookReader`) from the INPX, Calibre and Folder parser constructors (`NewCalibreParser(log, parser)`, `NewINPXParser(log, parser)`, `NewFolderParser(log, parser)`) and hands `reader.Rank` on, so no format names remain.
 - Guard: `ingestSuite.TestNoFormatNames` parses every non-test `.go` file of `internal/ingest` and `internal/covers` (excluding `testdata`). It checks behaviour, not naming. It reports only (a) string literals that equal a supported format label or extension, or contain the dotted extension form (`.epub`, `.fb2.zip`, …), derived from `NewStandardDispatcher().Extensions()`, case-insensitive; and (b) any use of a format constant or format-specific identifier from package `ebook` (`ebook.Format*`, `ebook.New<Format>`, `ebook.<Format>Parser`, `ebook.ParseFB2Description`). Words inside identifiers are not matched.
   - Policy: identifier-scheme labels from external metadata (`"mobi-asin"`, `"mobi-uid"`, `"amazon-asin"` in `identifier.go`) name an identifier scheme, not a file format. They are allowed, and the literal rule (exact or dotted match only) passes them.
   - `fb2GenreMap` (`internal/ingest/genres.go`) stays as it is, with the same name and location. It holds FictionBook's own genre taxonomy (the FB2 XSD codes) mapped to canonical BISAC genres. Every source's genres are mapped through it, and the genre filters reuse it (`CanonicalGenres`), so it is shared vocabulary, not format-reading logic. The guard passes it because identifier words are not matched.
 
-**DB**: `ListDeepIndexWork` returns every file of each unchecked book (`book_id, file_id, file_format, source_path`), ordered by `source_path`. The format `CASE` ranking leaves the SQL, and Go ranks by `Dispatcher.Rank`.
+**DB**: `ListDeepIndexWork` returns every file of each unchecked book (`book_id, file_id, file_format, source_path`), ordered by `source_path`. The format `CASE` ranking leaves the SQL, and Go ranks by `Dispatcher.Rank`. Later the list became paged (see Phase 2, `DeepIndexer`).
 
-**Composition**: `cmd/folio-idx/main.go` calls `ingest.NewExtractor(database, log, parser)`.
+**Composition**: `cmd/folio-idx/main.go` calls `ingest.NewExtractor(database, log, parser, writeGuard)`.
 
-**Covers**: no behaviour change in Phase 1. `covers.CoverExtractor` keeps its signature.
+**Covers**: `covers.CoverExtractor` keeps its signature. The only change is the file-derived marker: `covers.CoverState` gains `MarkFileCover`, which `lazyExtract` calls instead of setting `StateHas` when it caches an extracted cover.
 
 **Performance checkpoint**: run quickstart §2 at the end of Phase 1, so an SC-001 regression from the EPUB-first ranking or the job regrouping shows before Phase 2 builds on it.
 
@@ -174,17 +179,19 @@ Data: [data-model.md](./data-model.md).
 - `GetReadFailure(book_id, flow)`
 - `DeleteReadFailure(book_id, flow)`
 - `DeleteReadFailuresForBook(book_id)`
+- `ListMetadataFailureFiles(library_id, reader_version)`: every file of each book with a current-version metadata record, with the record's fingerprint, for the post-sync re-check
 
 `ListDeepIndexWork` LEFT JOINs the metadata-flow record (`fingerprint`, `reader_version`). The library counts are separate queries (Phase 3), so `ListLibrariesWithBookCount` and its callers (`api/libraries.go`, `mcpserver/tools.go`) keep their signature.
 
 **Outcome (`internal/ingest/outcome.go`, new)**:
 - Exported types, so that `FileExtractor` stays implementable outside `ingest` (the api tests fake it):
   - `ReadStatus`: `ReadDone`, `ReadBroken`, `ReadRetryable`;
-  - `ReadResult{Status, Reason ebook.Reason, Detail, Fingerprint string, Known bool, Err error}`.
+  - `ReadResult{Status, Reason ebook.Reason, Detail, Fingerprint string, Known bool, Recorded bool, Err error}`. `Recorded` says a record (applicable or not) existed when the read began, so a done cover read takes the write guard to clear a record only when one existed.
 - `FileExtractor.Description(ctx, bookID) (ebook.Metadata, ReadResult)`.
 - `classify(err)`:
   - `ebook.ReasonOf` covers malformed, too large and crashed.
   - A missing entry in an opened archive is broken with `missing_entry`.
+  - An archive container `zip.NewReader` rejects (not a source I/O error) is broken `corrupt`.
   - Open errors on the file, archive or library root, `ErrSourceIO`, ctx errors and guard timeouts are retryable.
 - Multi-file books (edge case):
   - the first done read wins;
@@ -194,25 +201,27 @@ Data: [data-model.md](./data-model.md).
 
 **Gate in `readBook`**:
 1. Load the `(book, flow)` record first.
-2. If `reader_version == ebook.ReaderVersion` and the fingerprint recomputed from stat or the zip header (no entry inflate) is equal, return `broken, known=true` without reading (FR-014, SC-004).
-3. Otherwise read. On done, delete the record. On new broken, upsert it and log once at `Warn` (FR-013, FR-015).
+2. If `reader_version == ebook.ReaderVersion` and the fingerprint recomputed from stat or the zip header plus the archive's stat (no entry inflate) is equal, return `broken, known=true` without reading (FR-014, SC-004).
+3. Otherwise read, and return the result with the fingerprint. A broken read whose fingerprint could not be computed is returned as retryable, since it could not be recorded. The caller deletes the record on done, and upserts it on a new broken result, logging once at `Warn` with the reason and the detail (FR-013, FR-015).
 
 **Callers**:
 - `LocalBackfiller.fill`:
-  - done → persist, mark checked, delete the record;
-  - broken → record, leave unchecked;
+  - done → delete the record first (a failed delete leaves the book pending), then persist and mark checked. The annotation is written only while the book still has none (`SetBookAnnotationIfNull`), so one stored meanwhile wins; a failed annotation write leaves the book unchecked;
+  - broken → record (a known-broken result writes nothing), leave unchecked;
   - retryable → nothing (FR-016).
-  - The write uses the existing guard budget, and a busy guard is retryable.
+  - The write uses the existing guard budget, and a busy guard is retryable. The writes are detached from the request's cancellation, so a closed tab does not throw away a read that already happened.
 - `DeepIndexer`:
   - known-broken books are skipped without reading;
   - the writer batch upserts records for new broken outcomes and deletes records on done.
   - `DeepIndexResult` gains `Broken` (recorded this run) and `KnownBroken`. `Errors` counts retryable only (FR-017).
   - The run summary log carries all of them.
+  - Later additions: the work list is paged, 5,000 books at a time in id order (`ListDeepIndexWork` with `after_id`/`lim`, `CountDeepIndexWork` for the progress total), so memory stays flat on very large libraries. The Telegram notifications (spec 003) added `NewlyBroken`, a sample of up to 5 newly recorded books with their reasons, and `WorkerPanic`, and made a run whose library root is unreachable (`ingest.CheckReadRoot`) fail as a whole instead of counting one retryable error per book.
 - Cover flow:
   - `Extractor.Cover` applies the same gate and records cover-flow failures itself (guarded, best-effort).
   - It returns an error for broken and retryable alike. `covers.Store.lazyExtract` already serves the placeholder without setting `cover_state` on error, so `cover_state` keeps its meaning and a fingerprint change is re-checked on the next view.
-  - `covers` is unchanged.
-- Importer: the reconciler's changed-file signal (Phase 1) also runs `DeleteReadFailuresForBook`, so a file that sync sees change stops counting at once.
+  - Like the backfill, the record writes are detached from the request's cancellation.
+- Importer: the reconciler's changed-file signal (Phase 1), including a file joining or leaving a book, also runs `DeleteReadFailuresForBook`, so a file that sync sees change stops counting at once.
+- Post-sync re-check (`internal/ingest/recheck.go`): sync's size/mtime signal misses an archive entry replaced under an unchanged `.inpx`. So after every sync commits, still under its write guard, `runReconcile` calls `recheckReadFailures`: it recomputes the fingerprint of every book with a current-version metadata record (stat or zip directory only) and deletes the records whose fingerprint differs. A record whose fingerprint cannot be computed is kept. A sync the engine skips on an unchanged checkpoint runs the same re-check through the INPX and Calibre parsers' `RecheckReadFailures` (`sync.ReadFailureRechecker`), and emits a `library` event when it lifts records. Best-effort: a failure is logged and the sync result stands.
 
 ### Phase 3: Visibility (US3, FR-020…FR-024, SC-006)
 
@@ -220,13 +229,13 @@ Contracts: [contracts/rest-api.md](./contracts/rest-api.md), [contracts/spa-ui.m
 
 - **API**:
   - `api/libraries.go`: `libraryView.UnreadableCount`. It is filled from new queries: `ListUnreadableCounts(reader_version)` (library_id → count, merged in Go for the list) and `CountUnreadableBooks(library_id, reader_version)` (single library).
-  - `api/books.go`: `listBooks` reads `unreadable` into `db.BookFilter.Unreadable`. `getBook` loads the metadata-flow record. If a record exists, `runLazyTiers` runs the backfill even when `needsBackfill` is false, so the fingerprint gate re-checks the file. `getBook` then reloads the record and sets `bookView.Unreadable` when it applies to the current version.
+  - `api/books.go`: `listBooks` reads `unreadable` into `db.BookFilter.Unreadable`. `getBook` loads the metadata-flow record. If a record exists, `runLazyTiers` runs the backfill even when `needsBackfill` is false, so the fingerprint gate re-checks the file. The view then reloads the record and sets `bookView.Unreadable` when it applies to the current version. Every single-book response (`toSingleBookView`: the detail read and the edit, cover and match writes) carries the marker, so an edit does not drop it from the open detail view.
   - `api/bookview.go`: `Unreadable *unreadableView` with `omitempty`.
 - **DB**: `booksfilter.go` gets `BookFilter.Unreadable bool` and `ReaderVersion int64`. When set, it adds the `EXISTS` subquery.
 - **SPA**:
   - `types.ts`: `Library.unreadable_count`, `Book.unreadable`, `BookFilters.unreadable`.
   - `api.ts`: `buildQuery` passes `unreadable`.
-  - `components/settings/LibraryTable.vue`: the warning link under the book count.
+  - `components/settings/LibraryTable.vue`: the warning link under the book count. Its `href` (`/?unreadable=1&library={id}`) also works opened in a new tab: `BooksPage` adopts `?library=` as the library selection and drops it from the URL.
   - `components/SearchInput.vue`: an "Unreadable" chip.
   - `pages/BooksPage.vue`: the filter from `route.query.unreadable`.
   - `components/BookDetail.vue`: the notice.
@@ -260,7 +269,7 @@ Each phase is its own commit, so each doc change goes in with the behaviour that
 | FR-008 | Phase 1: `folder.go`, importer lazy-cover invalidation |
 | FR-009, SC-001, SC-002 | Technical Context, Performance Goals; [quickstart.md](./quickstart.md) §2 |
 | FR-010, FR-011, FR-012 | Phase 2: `outcome.go` classification |
-| FR-013, FR-014, FR-015, SC-004 | Phase 2: gate in `readBook`, `book_read_failures` |
+| FR-013, FR-014, FR-015, SC-004 | Phase 2: gate in `readBook`, `book_read_failures`, post-sync re-check |
 | FR-016 | Phase 2: callers (retryable records nothing) |
 | FR-017 | Phase 2: `DeepIndexResult.Broken`/`KnownBroken` |
 | FR-018 | Phase 1: `ebook.ReaderVersion` |
@@ -303,18 +312,20 @@ internal/
 │   └── testdata/            # + corrupt/truncated/badcover/archive-entry fixtures
 ├── ingest/
 │   ├── source.go            # new: resolver (library layout → Source + fingerprint), archiveCache
+│   ├── readfailure.go       # new: record/clear helpers for the per-book read paths
+│   ├── recheck.go           # new: post-sync re-check of stale metadata records
 │   ├── outcome.go           # new: ReadStatus/ReadResult, classify, combine (Phase 2)
 │   ├── extract.go           # Description/Cover via readBook; temp files removed
 │   ├── deepindex.go         # format/library-type free; Broken/KnownBroken
 │   ├── backfill.go          # outcome-aware fill
 │   ├── folder.go            # metadata-only import
 │   ├── importer.go, reconcile.go  # lazy-cover invalidation, failure cleanup on changed files
-│   ├── merge.go, driver.go, inpx.go, calibre.go  # filePriority → injected rank func
+│   ├── merge.go, driver.go, inpx.go, calibre.go  # filePriority → injected rank func; parsers take the dispatcher
 │   └── ingest_test.go       # TestNoFormatNames guard
 ├── db/
 │   ├── migrations/007_book_read_failures.sql   # new
-│   ├── queries/readfailures.sql                # new
-│   ├── queries/books.sql                       # ListDeepIndexWork: all files + failure record
+│   ├── queries/readfailures.sql                # new (incl. ListMetadataFailureFiles)
+│   ├── queries/books.sql                       # ListDeepIndexWork (paged): all files + failure record; CountDeepIndexWork; ResetCoverState, MarkFileCover
 │   ├── queries/libraries.sql                   # ListUnreadableCounts, CountUnreadableBooks (new; existing queries unchanged)
 │   └── booksfilter.go                          # Unreadable filter
 ├── api/
@@ -323,8 +334,9 @@ internal/
 │   ├── bookview.go          # unreadableView
 │   └── books_test.go        # fakeExtractor follows FileExtractor changes
 ├── bookfile/bookfile.go     # ContentType delegates to ebook.ContentType (downloads otherwise out of scope)
-└── covers/store.go          # unchanged (error path already skips cover_state)
-cmd/folio-idx/main.go        # NewStandardDispatcher, NewExtractor and parser constructor signatures
+├── sync/engine.go, parser.go  # re-check on a checkpoint-skipped sync (ReadFailureRechecker)
+└── covers/store.go          # MarkFileCover on CoverState; error path already skips cover_state
+cmd/folio-idx/main.go        # NewStandardDispatcher, NewExtractor(…, writeGuard) and parser constructor signatures
 web/src/
 ├── types.ts, api.ts
 ├── components/settings/LibraryTable.vue

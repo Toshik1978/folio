@@ -546,6 +546,7 @@ func (e *Engine) guardedSync(ctx context.Context, req syncReq) (dbq.Library, ing
 		// catalog moved, so busting the stats cache or emitting a library event
 		// would make every connected client refetch on each unchanged cycle.
 		e.stampLastSync(ctx, req.id)
+		e.recheckSkipped(ctx, parser, src)
 		return src, ingest.Result{}, false // unchanged artifact: skip read + reconcile
 	}
 
@@ -709,6 +710,33 @@ func (e *Engine) stampLastSync(ctx context.Context, id int64) {
 	if err != nil {
 		e.log.Error("record last sync", slog.Int64("library", id), slog.Any("error", err))
 	}
+}
+
+// recheckSkipped re-checks the broken-read records of a library whose sync was
+// skipped on an unchanged checkpoint, so a book file replaced behind its index
+// stops counting as unreadable. Only books with a record are looked at, by
+// stat or zip directory, with no entry read. Lifted records change the
+// unreadable count, so observers are told; otherwise the skip stays silent. A
+// failure is logged and the skip stands.
+func (e *Engine) recheckSkipped(ctx context.Context, parser Parser, src dbq.Library) {
+	rc, ok := parser.(ReadFailureRechecker)
+	if !ok {
+		return
+	}
+	lifted, err := rc.RecheckReadFailures(ctx, src, e.db)
+	if err != nil && !errors.Is(err, context.Canceled) {
+		e.log.Warn("read failure re-check failed; the skip stands",
+			slog.Int64("library", src.ID), slog.Any("error", err))
+	}
+	if lifted == 0 {
+		return
+	}
+	e.log.Info("lifted stale read failure records",
+		slog.Int64("library", src.ID), slog.Int("lifted", lifted))
+	if e.statsObserver != nil {
+		e.statsObserver.StatsChanged()
+	}
+	e.emitLibrary(src.ID, "active")
 }
 
 // recordLastSync stamps the library's last successful sync time and notifies

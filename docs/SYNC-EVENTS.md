@@ -224,7 +224,8 @@ chokepoints — surgical instrumentation:
 | queue grows | `enqueue` (`internal/sync/engine.go`) | `status` |
 | run starts / advances | `dequeue` sets `current` | `status` |
 | run ends (`current=0`) | worker loop | `status` |
-| sync success / checkpoint-skip | `recordLastSync` | `library {id,"active"}` |
+| sync success | `recordLastSync` | `library {id,"active"}` |
+| checkpoint-skip that lifted read failures | `recheckSkipped` | `library {id,"active"}` |
 | sync error / panic | `markError` (covers both `runSync` error and `safeSync` panic) | `library {id,"error"}` |
 
 Progress events are emitted from the per-run reporter (see [Progress](#progress)).

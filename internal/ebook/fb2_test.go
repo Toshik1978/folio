@@ -210,7 +210,21 @@ func (s *fb2Suite) TestHeaderMalformed() {
 }
 
 func (s *fb2Suite) TestHeaderMissing() {
-	_, err := parseFB2Header(strings.NewReader(`<FictionBook><body/></FictionBook>`))
+	// Readable without a <description>: empty metadata, so the caller falls
+	// back to the file name instead of marking the book unreadable.
+	for _, doc := range []string{
+		`<FictionBook><body/></FictionBook>`,
+		`<FictionBook><binary id="c">AAAA</binary></FictionBook>`,
+		`<FictionBook></FictionBook>`,
+	} {
+		m, err := parseFB2Header(strings.NewReader(doc))
+		s.Require().NoError(err, doc)
+		s.Equal(Metadata{}, m, doc)
+	}
+}
+
+func (s *fb2Suite) TestHeaderNoRootElement() {
+	_, err := parseFB2Header(strings.NewReader("plain text, not xml"))
 	s.Require().Error(err)
 }
 
@@ -300,4 +314,24 @@ func (s *fb2Suite) TestSourceMetadataCorrupt() {
 
 	_, err := fb2Parser{}.Metadata(context.Background(), src)
 	s.Require().Error(err)
+}
+
+// TestSourceCoverOversizedIsTooLarge: a declared cover over the cover cap is
+// classified too_large, like EPUB and MOBI.
+func (s *fb2Suite) TestSourceCoverOversizedIsTooLarge() {
+	payload := strings.Repeat("AAAA", int(maxCoverBytes)/3+1024) // decodes past maxCoverBytes
+	doc := `<?xml version="1.0" encoding="UTF-8"?>
+<FictionBook xmlns="http://www.gribuser.ru/xml/fictionbook/2.0" xmlns:l="http://www.w3.org/1999/xlink">
+<description><title-info><book-title>Big</book-title><lang>en</lang>
+<coverpage><image l:href="#cover.jpg"/></coverpage></title-info></description>
+<binary id="cover.jpg" content-type="image/jpeg">` + payload + `</binary>
+</FictionBook>`
+	path := filepath.Join(s.T().TempDir(), "big.fb2")
+	s.Require().NoError(os.WriteFile(path, []byte(doc), 0o600))
+
+	got, err := fb2Parser{}.Cover(context.Background(), s.open(path))
+	s.Nil(got)
+	reason, ok := ReasonOf(err)
+	s.True(ok)
+	s.Equal(ReasonTooLarge, reason)
 }

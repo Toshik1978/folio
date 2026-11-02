@@ -20,8 +20,8 @@ import (
 // (the folder containing metadata.db); book files and cover images are
 // resolved relative to it.
 type CalibreParser struct {
-	log  *slog.Logger
-	rank func(format string) int
+	log    *slog.Logger
+	reader bookReader
 }
 
 // calibreAuthorsQuery joins authors per book.
@@ -76,16 +76,23 @@ const calibreBooksQuery = `
 // automatically (no separate FROM/WHERE to maintain).
 const calibreBooksCountQuery = `SELECT COUNT(*) FROM (` + calibreBooksQuery + `)`
 
-// NewCalibreParser builds the Calibre library parser. rank orders a book's
-// formats (typically ebook.Dispatcher.Rank).
-func NewCalibreParser(log *slog.Logger, rank func(format string) int) *CalibreParser {
-	return &CalibreParser{log: log, rank: rank}
+// NewCalibreParser builds the Calibre library parser. reader (typically the
+// standard ebook.Dispatcher) orders a book's formats through its Rank and
+// re-checks broken-read records after each sync.
+func NewCalibreParser(log *slog.Logger, reader bookReader) *CalibreParser { //nolint:iface // tests inject a fake reader
+	return &CalibreParser{log: log, reader: reader}
 }
 
 // Checkpoint fingerprints the library's metadata.db, which Calibre rewrites on
 // any change, so the engine can skip an unchanged library.
 func (*CalibreParser) Checkpoint(library dbq.Library) (string, error) {
 	return fileCheckpoint(filepath.Join(library.Path, "metadata.db"))
+}
+
+// RecheckReadFailures runs the broken-read re-check on its own, for a sync the
+// engine skipped because metadata.db did not change. See recheckReadFailures.
+func (c *CalibreParser) RecheckReadFailures(ctx context.Context, library dbq.Library, db *sql.DB) (int, error) {
+	return recheckReadFailures(ctx, c.log, db, c.reader, library)
 }
 
 func (c *CalibreParser) Sync(
@@ -123,7 +130,7 @@ func (c *CalibreParser) Sync(
 	}
 	defer func() { _ = rows.Close() }()
 
-	return runReconcile(ctx, db, covers, library, r, c.log, c.rank, func(ctx context.Context, rc *reconciler) error {
+	return runReconcile(ctx, db, covers, library, r, c.log, c.reader, func(ctx context.Context, rc *reconciler) error {
 		return reconcileCalibreRows(ctx, rc, rows, library.Path, library.ID, links)
 	})
 }

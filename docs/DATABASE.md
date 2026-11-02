@@ -44,7 +44,8 @@ internal/db/migrations/
 ├── 003_book_identifiers_lookup.sql    # idx_book_identifiers_lookup on book_identifiers(type, value) — accelerates identifier-based lookups (ISBN / Amazon / Goodreads) used by metasearch enrichment
 ├── 004_book_cover_state.sql           # cover state columns on books
 ├── 005_fts_rowid_key.sql              # books_fts keyed by rowid (= books.id) instead of a book_id column
-└── 006_fts_contentless.sql            # books_fts becomes contentless-delete; adds the books_fts_vocab view
+├── 006_fts_contentless.sql            # books_fts becomes contentless-delete; adds the books_fts_vocab view
+└── 007_book_read_failures.sql         # book_read_failures: remembered unreadable sources, per book and flow
 ```
 
 The migration files are embedded into the binary (`go:embed`) and run
@@ -214,6 +215,91 @@ CREATE INDEX idx_book_files_format ON book_files (file_format, book_id);        
 CREATE INDEX idx_books_language ON books (language);                            -- language facet / stats
 ```
 
+### Read Failures
+
+`book_read_failures` (migration `007`) remembers books whose source file could
+not be read, so an unchanged broken file is not re-opened on every sync, cover
+request or detail view. It holds at most one row per `(book_id, flow)`.
+
+```sql
+CREATE TABLE book_read_failures
+(
+    book_id        INTEGER NOT NULL,
+    flow           TEXT    NOT NULL CHECK (flow IN ('metadata', 'cover')),
+    reason         TEXT    NOT NULL CHECK (reason IN ('corrupt', 'missing_entry', 'too_large',
+    'crashed')),
+    detail         TEXT    NOT NULL DEFAULT '',  -- short human-readable cause
+    fingerprint    TEXT    NOT NULL,             -- identity of the source file when it failed
+    reader_version INTEGER NOT NULL,             -- reader generation that failed
+    recorded_at    INTEGER NOT NULL,             -- unix seconds
+    PRIMARY KEY (book_id, flow),
+    FOREIGN KEY (book_id) REFERENCES books (id) ON DELETE CASCADE
+) WITHOUT ROWID;
+CREATE INDEX idx_book_read_failures_flow_version
+    ON book_read_failures (flow, reader_version, book_id);
+```
+
+- **Upsert.** `UpsertReadFailure` replaces the row for `(book_id, flow)`, so a
+  repeat failure updates reason, detail, fingerprint, reader version and time.
+- **Lifecycle.** `DeleteReadFailure` (one flow) and `DeleteReadFailuresForBook`
+  (both) clear rows; `GetReadFailure` looks one up. `detail` is capped at 256
+  bytes and is never sent to clients; it is for logs and diagnosis only.
+  Deleting a book, or purging its library, removes its rows through
+  `ON DELETE CASCADE`. A sync that sees a file of an existing book new or
+  changed (size or mod time) also clears both rows, in the import transaction
+  (`importer.add`); an unchanged re-sync keeps them. A brand-new book has none.
+- **Post-sync re-check.** Sync's size/mtime signal can miss a changed file: an
+  archive entry replaced under an unchanged `.inpx` keeps the indexed size and
+  date. So after every sync run commits, still under the sync's write guard,
+  `recheckReadFailures` (`internal/ingest/recheck.go`, called from
+  `runReconcile`) loads the library's `metadata` rows of the current
+  `ebook.ReaderVersion` with their books' files (`ListMetadataFailureFiles`),
+  recomputes each book's fingerprint exactly as the read gate does (ranked
+  metadata candidates; stat or zip central directory, nothing inflated or
+  parsed) and deletes the rows whose fingerprint differs. A row whose
+  fingerprint cannot be computed (a stat or open failure, e.g. the library is
+  unreachable) is left in place: nothing is deleted on uncertainty. Cover rows
+  and rows of other reader versions are not touched. The re-check is
+  best-effort: a failure is logged and the sync result stands. A scheduled
+  sync skipped by an unchanged checkpoint re-checks too: the engine calls the
+  parser's `RecheckReadFailures` (the `sync.ReadFailureRechecker` capability
+  of the INPX and Calibre parsers) under the same write guard. Only books with
+  a record are looked at, so a library without unreadable books pays one
+  empty query. When records are lifted the engine invalidates the stats cache
+  and emits a `library` event, since the unreadable count changed; otherwise
+  the skip stays silent.
+- **Read gate.** Every local read of a flow goes through the Extractor's
+  `readBook`, which returns an `ingest.ReadResult` (done, broken or retryable,
+  with the reason, a 256-byte detail and the fingerprint). It first loads the
+  `(book_id, flow)` row; when `reader_version` equals `ebook.ReaderVersion` and
+  the fingerprint recomputed from the flow's candidate files (in rank order:
+  `source_path|size|mtime` from `os.Stat`; for an archive entry the zip
+  header's size and mtime plus the archive's own `os.Stat`, so a damaged
+  archive replaced by a good copy of the same release re-checks its books; the
+  archive's `os.Stat` alone when the entry is gone or the archive container is
+  corrupt) is unchanged, the read is broken and `Known`
+  and no file is opened. Otherwise every candidate is read and classified: a
+  parser content error, a corrupt archive container or a missing archive entry
+  is broken; open/stat failures, source I/O errors and cancellation are
+  retryable. A book with no candidate file (e.g. PDF-only, for descriptions) is
+  done without a lookup. Recording and clearing rows from these results is the
+  caller's job: the metadata flow is written by the on-view fill and the Deep
+  Index, the cover flow by `Extractor.Cover`.
+- **Cover flow.** `Extractor.Cover` reads the cover through the same gate. A
+  done read deletes the book's stale `cover` row (only when the gate found one,
+  so a normal first view never takes the write guard); a newly broken read upserts it
+  (logged once); a broken read, new or known, returns an error wrapping
+  `ebook.ErrMalformed`, and a known one opens no file. A retryable read records
+  nothing. Both writes are best-effort under the write guard (a busy guard skips
+  them). The rule: a cover payload that cannot be extracted (bad encoding, an
+  unreadable or oversized cover entry) is **broken**; a payload that is
+  extracted but is not an image is **none** — the lazy cover flow's
+  `convertToJPEG` fails and marks `cover_state = 2`, and no row is written.
+  On a broken cover the lazy flow serves the placeholder and leaves
+  `cover_state` at 0, so a later view consults the row rather than the file
+  until the file's fingerprint or the reader version changes. Cover rows are
+  never counted as unreadable books; only metadata-flow rows are.
+
 ### Full-Text Search (FTS5)
 
 ```sql
@@ -354,7 +440,7 @@ different book (see [Stable identity](#stable-identity-library_key)).
    the `books_ad` FTS-cleanup trigger fires per row. Purge is idempotent: a second
    call on an already-deleted library is a clean no-op, and the minute-interval
    deadline sweep retries automatically if the async teardown fails.
-6. **Cover Extraction & Caching** — A cover is cached keyed to the **logical** `books.id` under `/data/covers/{id/1000}/{id}.jpeg`, normalized to JPEG (`covers.Save` → `convertToJPEG`). Only a Calibre sync saves cover bytes at import (its `cover.jpg`). Every other library type, folder included, imports metadata only: the folder walk opens each new or changed file and reads its metadata, never its cover. Those covers come from the lazy cover flow: the first view of a book with `cover_state = 0` extracts the cover from its best file (preferring richer formats: epub→fb2→mobi/azw3→pdf) and records the result. Every cached cover is therefore a JPEG, so serving and the OPDS feed declare `image/jpeg` without sniffing each file (see [API.md](./API.md#cover-image-serving--security)). The priority of the format whose cover is cached is **persisted** in `books.cover_prio`, so the "prefer richer formats" rule holds *across* runs, not just within one — a partial re-sync (e.g. only the PDF changed) can never downgrade a richer edition's cover. `covers.Save` skips a write when the new bytes are byte-identical to the cached file, so the on-disk mtime — and thus the `?v=` cache-buster — only changes when the image actually changes. Lazy extraction negative-caches a *missing* cover only after a **successful** parse that found none; a parse **error** is never cached, so a transient failure retries on the next view. When the lazy flow caches a cover extracted from the book's file it records `cover_state = 1` with `cover_prio = 1` (`MarkFileCover`), marking it file-derived; an online-enrichment cover stays at `cover_prio = 0`. **Invalidation:** when a sync sees a file of an **existing** book that is new or whose size or mod time changed, and the record brings no cover bytes of its own, the importer queues an invalidation of the state that file produced: `cover_state = 2` (none), or `cover_state = 1` with `1 <= cover_prio < 1000` (a lazily extracted cover, or a cover saved at import). It is skipped when `cover_prio` outranks the file's format, or when a cover was already saved for that book in the same run. A brand-new book queues nothing: it has no cover to invalidate. After the batch commits the importer deletes the cached cover and thumbnail and runs `ResetCoverState` (`cover_state = 0`, `cover_prio = 0`), so the next view re-extracts the cover from the changed file. A rolled-back batch discards the invalidation. Two covers are kept: one with `cover_prio = 0` (an online cover, which nothing would fetch again, or a cover cached lazily before `cover_prio = 1` was recorded), and a manual cover (`cover_prio = 1000`), which is never touched and which `ResetCoverState` also skips.
+6. **Cover Extraction & Caching** — A cover is cached keyed to the **logical** `books.id` under `/data/covers/{id/1000}/{id}.jpeg`, normalized to JPEG (`covers.Save` → `convertToJPEG`). Only a Calibre sync saves cover bytes at import (its `cover.jpg`). Every other library type, folder included, imports metadata only: the folder walk opens each new or changed file and reads its metadata, never its cover. Those covers come from the lazy cover flow: the first view of a book with `cover_state = 0` extracts the cover from its best file (preferring richer formats: epub→fb2→mobi/azw3→pdf) and records the result. Every cached cover is therefore a JPEG, so serving and the OPDS feed declare `image/jpeg` without sniffing each file (see [API.md](./API.md#cover-image-serving--security)). The priority of the format whose cover is cached is **persisted** in `books.cover_prio`, so the "prefer richer formats" rule holds *across* runs, not just within one — a partial re-sync (e.g. only the PDF changed) can never downgrade a richer edition's cover. `covers.Save` skips a write when the new bytes are byte-identical to the cached file, so the on-disk mtime — and thus the `?v=` cache-buster — only changes when the image actually changes. Lazy extraction negative-caches a *missing* cover only after a **successful** parse that found none; a parse **error** is never cached in `cover_state`, so a transient failure retries on the next view, while a broken cover is remembered in `book_read_failures` and not re-read until its file changes (see [Read Failures](#read-failures)). When the lazy flow caches a cover extracted from the book's file it records `cover_state = 1` with `cover_prio = 1` (`MarkFileCover`), marking it file-derived; an online-enrichment cover stays at `cover_prio = 0`. **Invalidation:** when a sync sees a file of an **existing** book that is new or whose size or mod time changed, and the record brings no cover bytes of its own, the importer queues an invalidation of the state that file produced: `cover_state = 2` (none), or `cover_state = 1` with `1 <= cover_prio < 1000` (a lazily extracted cover, or a cover saved at import). It is skipped when `cover_prio` outranks the file's format, or when a cover was already saved for that book in the same run. A brand-new book queues nothing: it has no cover to invalidate. After the batch commits the importer deletes the cached cover and thumbnail and runs `ResetCoverState` (`cover_state = 0`, `cover_prio = 0`), so the next view re-extracts the cover from the changed file. A rolled-back batch discards the invalidation. A file that **moves** between two existing books with unchanged bytes (an INPX index fix changed its grouping key) counts as changed on both sides: the book it joined is invalidated as above (`ensureFile` reports the new file row), and the book it left gets the same file-derived invalidation (no format-rank check, since the cover may have come from the departed file) and loses its `book_read_failures` rows. Two covers are kept: one with `cover_prio = 0` (an online cover, which nothing would fetch again, or a cover cached lazily before `cover_prio = 1` was recorded), and a manual cover (`cover_prio = 1000`), which is never touched and which `ResetCoverState` also skips.
 7. **Post-sync description fill** — A sync that added files (`Result.Added > 0`) then runs the Deep Index over just the books that run inserted, in the same queue turn. It runs only when a deep indexer is wired (`WithDeepIndexer`, as `cmd/folio-idx` does); otherwise it is a no-op. It releases the whole-run write guard first, so the indexer takes the guard per batch like a Deep Index run. The scope is `ingest.DeepIndexImportedAt(stamp)`, where `stamp` is the run's `imported_at` (`Result.ImportedAt`): unchecked books stamped with that value, never the backlog. The backlog is the Deep Index button's job. A checkpoint-skipped sync and a sync with no additions run no fill. On a library's first sync every book is new, so the fill is a full Deep Index for that library in that turn. A fill failure is logged as a warning and does not mark the library errored; the books stay unchecked for a later Deep Index.
 
 ---
@@ -474,6 +560,18 @@ row, and the persisted result shows on the next view.
    file is read directly, and an INPX archive entry inflates lazily into memory
    (capped at `ebook.MaxEntryBytes`). Nothing is written to disk, and a stored `source_path`
    that escapes its library or archive directory (`../`) is rejected.
+
+   *Outcomes of the on-view fill* (`LocalBackfiller.fill`, flow `metadata`):
+   **done** persists as above, deletes the book's `metadata` read-failure row
+   and sets `metadata_checked`, all inside one guarded section. **Broken, not
+   known** upserts the row (reason, detail, fingerprint, `ebook.ReaderVersion`,
+   now) under the write guard with `backfillAcquireBudget`, logs one
+   `Warn("unreadable book file")` and leaves the book unchecked. **Broken,
+   known** (the record gate matched) writes and logs nothing. **Retryable**
+   logs at `Debug` only and writes nothing; a busy guard likewise skips the
+   write. A recorded book is re-read only when its file fingerprint or the
+   reader version changes, so repeated views of a corrupt book cost no file
+   I/O.
 2. **Online enrichment** (`enrichment_checked`) — when the local tiers still leave
    a gap, query Google Books by the book's ISBN (else title+author) for the
    description, publisher, year, categories (genres), identifiers, and cover.
@@ -498,10 +596,24 @@ opening each book. It is a sync-engine request kind (see
 implemented by `ingest.DeepIndexer` (`internal/ingest/deepindex.go`). It reads
 local files only, never calls the network, and never writes to a library source.
 
-- **Work list.** `ListDeepIndexWork` returns every file of each book with
-  `metadata_checked = 0`, ordered by `source_path` (then book id), so an
-  archive's entries are contiguous. SQL ranks nothing: Go groups the rows by
-  book and orders each book's files by `Dispatcher.Rank`.
+- **Work list, in pages.** A run never holds the whole work list: on a
+  580k-book INPX library one list took about 170 MB of heap before any book
+  was read. `CountDeepIndexWork` gives the progress total (unchecked books with
+  a file, in scope), then `ListDeepIndexWork` is read one page at a time:
+  every file of the next 5,000 unchecked books (`deepIndexPageSize`) with an id
+  above the previous page's largest, in id order. Paging by book keeps all of a
+  book's files on one page, and since the run only moves forward, a book it
+  leaves unchecked (broken or retryable) is not picked up again in the same
+  run. Each page goes through the same jobs, worker pool and writer, and the
+  run's result is the sum of its pages; a cancel stops before the next page.
+  An archive whose books straddle two pages is opened once per page. Within a
+  page, rows are ordered by `source_path` (then book id), so an archive's
+  entries are contiguous. SQL ranks nothing: Go groups the rows by
+  book and orders each book's files by `Dispatcher.Rank`. Each row also carries
+  the book's metadata-flow record from `book_read_failures` (`LEFT JOIN` on its
+  `(book_id, flow)` primary key, `flow = 'metadata'`), as the nullable
+  `failure_fingerprint` and `failure_reader_version`, so the read gate gets the
+  record from the work row and no book costs an extra query.
 - **Reading.** Every format is read the same way, through the dispatcher: each
   book goes through the Extractor's shared `readBook` (the same read as the
   on-view fill), which opens its top-ranked describing file via the resolver
@@ -523,12 +635,29 @@ local files only, never calls the network, and never writes to a library source.
   shared `db.WriteGuard` for each batch only (`guard.WithTx`), not for the whole
   run. Other writers (edits, syncs, API writes) interleave between batches
   instead of waiting for the run to end.
-- **Failures and cancellation.** A book whose file is unreadable, missing or
-  fails to parse is left unchecked and retried by the next run. On cancellation
-  the batches already committed stay, no further file is opened, and the rest
-  is picked up next time.
+- **Skip rule (known broken).** Before reading a book, the gate compares the
+  joined record with the book's current fingerprint (stat or zip header, no
+  entry inflated). When the record's `reader_version` is `ebook.ReaderVersion`
+  and its fingerprint matches, the book is known broken: no entry is opened and
+  nothing is written. A replaced file or a new reader version lifts the skip,
+  and the book is read again.
+- **Failures and cancellation.** Each read outcome is handled in the writer's
+  batch transaction. A done book is persisted as above, its metadata record is
+  deleted (`DeleteReadFailure`) and it is marked checked. A newly broken book
+  (corrupt content, missing entry, …) gets its record upserted
+  (`UpsertReadFailure`) and one `unreadable book file` warning after the batch
+  commits; it stays unchecked. A known broken or retryable book (I/O error,
+  unreadable or missing archive, cancellation) is not written, and a retryable
+  one is read again by the next run. On cancellation the batches already
+  committed stay, no further file is opened, the uncommitted outcomes record
+  nothing, and the rest is picked up next time.
 - **Result.** `DeepIndexResult` counts `Checked`, `Filled` (annotation newly
-  set), `Skipped` (already had one) and `Errors`; it is logged at the end of a run.
+  set), `Skipped` (already had one), `Broken` (recorded broken this run),
+  `KnownBroken` (skipped by the rule above) and `Errors` (retryable only). Each
+  committed book lands in exactly one of `Checked`, `Broken`, `KnownBroken` or
+  `Errors`. The `deep index finished` log line carries all six, as `checked`,
+  `filled`, `skipped`, `broken`, `known_broken` and `errors`. A re-run over an
+  unchanged library therefore reports `errors = 0` and `broken = 0`.
 
 Online enrichment restamps `content_hash` so the `?v=<content_hash>-<cover
 mtime>` cache-buster changes (the second component, `covers.Store.Version`,

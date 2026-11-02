@@ -5,6 +5,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"errors"
+	"io"
 	"os"
 	"path/filepath"
 )
@@ -395,4 +397,92 @@ func (s *mobiSuite) TestRecord0ReadIsCapped() {
 	})
 	s.Require().ErrorIs(err, ErrMalformed)
 	s.Less(peak, uint64(4*mobiMaxRec0))
+}
+
+// faultFromReaderAt serves r until offset from, then fails every read with err.
+type faultFromReaderAt struct {
+	r    io.ReaderAt
+	from int64
+	err  error
+}
+
+func (f faultFromReaderAt) ReadAt(p []byte, off int64) (int, error) {
+	if off+int64(len(p)) > f.from {
+		return 0, f.err
+	}
+
+	return f.r.ReadAt(p, off) //nolint:wrapcheck // test pass-through
+}
+
+// mobiCoverRecordStart returns the byte offset of record 1 (the image) of the
+// test.mobi fixture.
+func (s *mobiSuite) mobiCoverRecordStart() (data []byte, start int64) {
+	data, err := os.ReadFile(s.fixture("test.mobi"))
+	s.Require().NoError(err)
+	s.Require().Equal(uint16(2), binary.BigEndian.Uint16(data[76:78]))
+
+	return data, int64(binary.BigEndian.Uint32(data[78+8 : 78+8+4]))
+}
+
+// TestCoverReadErrorIsSourceIO: a failing read of the cover record is returned
+// (retryable), not taken for "no cover".
+func (s *mobiSuite) TestCoverReadErrorIsSourceIO() {
+	data, start := s.mobiCoverRecordStart()
+	r := TagIO(faultFromReaderAt{r: bytes.NewReader(data), from: start, err: errors.New("EIO")})
+
+	got, err := mobiParser{}.Cover(context.Background(), Source{Name: "a.mobi", R: r, Size: int64(len(data))})
+	s.Require().ErrorIs(err, ErrSourceIO)
+	s.Require().NotErrorIs(err, ErrMalformed)
+	s.Nil(got)
+}
+
+// TestCoverScanReadErrorIsSourceIO: the same for the first-image scan used when
+// FirstImageIndex is unset.
+func (s *mobiSuite) TestCoverScanReadErrorIsSourceIO() {
+	rec0 := buildRec0("Scan", []exthRecord{{typ: exthCoverOffset, data: u32(0)}}) // no FirstImageIndex
+	jpeg := append([]byte{0xFF, 0xD8, 0xFF}, make([]byte, 40)...)
+	data, err := os.ReadFile(s.writeMOBIFixture("mobi", rec0, jpeg))
+	s.Require().NoError(err)
+	start := int64(binary.BigEndian.Uint32(data[78+8 : 78+8+4]))
+	r := TagIO(faultFromReaderAt{r: bytes.NewReader(data), from: start, err: errors.New("EIO")})
+
+	_, err = mobiParser{}.Cover(context.Background(), Source{Name: "a.mobi", R: r, Size: int64(len(data))})
+	s.Require().ErrorIs(err, ErrSourceIO)
+}
+
+// TestCoverOverZipLimitIsTooLarge: a cover record beyond the entry cap returns
+// ErrTooLarge.
+func (s *mobiSuite) TestCoverOverZipLimitIsTooLarge() {
+	data, start := s.mobiCoverRecordStart()
+	var zb bytes.Buffer
+	zw := zip.NewWriter(&zb)
+	w, err := zw.CreateHeader(&zip.FileHeader{Name: "book.mobi", Method: zip.Store})
+	s.Require().NoError(err)
+	_, err = w.Write(data)
+	s.Require().NoError(err)
+	s.Require().NoError(zw.Close())
+	zr, err := zip.NewReader(bytes.NewReader(zb.Bytes()), int64(zb.Len()))
+	s.Require().NoError(err)
+
+	src, closer := OpenZipEntry(zr.File[0], start) // holds record 0, not the cover
+	defer func() { _ = closer.Close() }()
+
+	got, err := mobiParser{}.Cover(context.Background(), src)
+	s.Require().ErrorIs(err, ErrTooLarge)
+	s.Nil(got)
+}
+
+// TestCoverOversizedIsTooLarge: an EXTH-201 cover record over the cover cap is
+// ErrTooLarge, neither "no cover" nor a fallback to the first-image scan.
+func (s *mobiSuite) TestCoverOversizedIsTooLarge() {
+	rec0 := buildRec0("Big", []exthRecord{{typ: exthCoverOffset, data: u32(0)}}, withFirstImageIndex(1))
+	big := append([]byte{0xFF, 0xD8, 0xFF}, make([]byte, maxCoverBytes+1)...)
+	path := s.writeMOBIFixture("mobi", rec0, big)
+
+	got, err := mobiParser{}.Cover(context.Background(), s.open(path))
+	s.Nil(got)
+	s.Require().ErrorIs(err, ErrTooLarge)
+	reason, ok := ReasonOf(err)
+	s.True(ok)
+	s.Equal(ReasonTooLarge, reason)
 }

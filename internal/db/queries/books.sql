@@ -293,20 +293,47 @@ UPDATE books
 SET cover_state = ?
 WHERE id = ?;
 
--- ListDeepIndexWork returns every file of each not-yet-checked book of a
--- library, for the deep indexer, which ranks a book's files in Go. Rows are
--- ordered by source_path so the entries of one archive are contiguous. A NULL
--- imported_at means every book; otherwise only books stamped by that sync run.
--- name: ListDeepIndexWork :many
-SELECT b.id          AS book_id,
-       f.id          AS file_id,
-       f.file_format AS file_format,
-       f.source_path AS source_path
+-- CountDeepIndexWork counts the books ListDeepIndexWork pages through: the
+-- library's not-yet-checked books that have a file, in the same imported_at
+-- scope. The deep indexer reports it as its progress total.
+-- name: CountDeepIndexWork :one
+SELECT COUNT(*)
 FROM books b
-         JOIN book_files f ON f.book_id = b.id
 WHERE b.library_id = sqlc.arg('library_id')
   AND b.metadata_checked = 0
   AND (CAST(sqlc.narg('imported_at') AS INTEGER) IS NULL OR b.imported_at = sqlc.narg('imported_at'))
+  AND EXISTS (SELECT 1 FROM book_files f WHERE f.book_id = b.id);
+
+-- ListDeepIndexWork returns one page of the deep indexer's work: every file of
+-- the next lim not-yet-checked books of a library with an id above after_id,
+-- taken in id order (pass 0 for the first page, then the page's largest
+-- book_id). Paging by book keeps all of a book's files on one page, and
+-- moving forward by id means a book the run left unchecked is not picked up
+-- again by a later page. Within the page, rows are ordered by source_path so
+-- the entries of one archive are contiguous. A NULL imported_at means every
+-- book; otherwise only books stamped by that sync run. Each row carries the
+-- book's metadata-flow broken-read record (NULL when there is none), joined on
+-- its (book_id, flow) primary key, so the deep indexer's read gate needs no
+-- query per book.
+-- name: ListDeepIndexWork :many
+SELECT b.id              AS book_id,
+       f.id              AS file_id,
+       f.file_format     AS file_format,
+       f.source_path     AS source_path,
+       rf.fingerprint    AS failure_fingerprint,
+       rf.reader_version AS failure_reader_version
+FROM (SELECT p.id
+      FROM books p
+      WHERE p.library_id = sqlc.arg('library_id')
+        AND p.metadata_checked = 0
+        AND (CAST(sqlc.narg('imported_at') AS INTEGER) IS NULL OR p.imported_at = sqlc.narg('imported_at'))
+        AND p.id > sqlc.arg('after_id')
+        AND EXISTS (SELECT 1 FROM book_files pf WHERE pf.book_id = p.id)
+      ORDER BY p.id
+      LIMIT sqlc.arg('lim')) page
+         JOIN books b ON b.id = page.id
+         JOIN book_files f ON f.book_id = b.id
+         LEFT JOIN book_read_failures rf ON rf.book_id = b.id AND rf.flow = 'metadata'
 ORDER BY f.source_path, b.id;
 
 -- ResetCoverState forgets a book's imported or lazily extracted cover after its

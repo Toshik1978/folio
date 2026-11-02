@@ -113,7 +113,10 @@ const VALUE_FACETS: { field: ValueField; label: string }[] = [
 ];
 
 // All route params the search bar owns, with chip presentation metadata.
-const CHIP_META: Record<string, { label: string; badgeClass: string; exactable: boolean }> = {
+const CHIP_META: Record<
+  string,
+  { label: string; badgeClass: string; exactable: boolean; fixedLabel?: boolean }
+> = {
   q: { label: 'Search', badgeClass: 'badge-ghost', exactable: false },
   title: { label: 'Title', badgeClass: 'badge-accent', exactable: true },
   author: { label: 'Author', badgeClass: 'badge-primary', exactable: true },
@@ -122,6 +125,13 @@ const CHIP_META: Record<string, { label: string; badgeClass: string; exactable: 
   publisher: { label: 'Publisher', badgeClass: 'badge-neutral', exactable: false },
   format: { label: 'Format', badgeClass: 'badge-info', exactable: false },
   lang: { label: 'Language', badgeClass: 'badge-info', exactable: false },
+  // A flag, not a value: the chip reads just "Unreadable".
+  unreadable: {
+    label: 'Unreadable',
+    badgeClass: 'badge-warning',
+    exactable: false,
+    fixedLabel: true,
+  },
 };
 const OWNED_KEYS = Object.keys(CHIP_META);
 
@@ -152,6 +162,12 @@ const chips = computed(() => {
     const raw = route.query[key];
     if (typeof raw !== 'string' || raw === '') continue;
     const meta = CHIP_META[key];
+    if (meta.fixedLabel) {
+      // Fixed-label flags filter only on '1'; any other value is not active.
+      if (raw !== '1') continue;
+      out.push({ key, label: meta.label, badgeClass: meta.badgeClass });
+      continue;
+    }
     const exact = meta.exactable && raw.startsWith('=');
     const value = exact ? raw.slice(1) : raw;
     // exact reads "Field = value"; partial/free reads "Field: value".

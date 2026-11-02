@@ -26,6 +26,15 @@ type bookView struct {
 	Identifiers  []identifierView `json:"identifiers"`
 	CoverURL     *string          `json:"cover_url"`
 	ThumbnailURL *string          `json:"thumbnail_url"`
+	// Unreadable is set only on single-book responses (detail, edit, cover,
+	// match), when a current-version metadata read failure is recorded for the
+	// book. List items never set it.
+	Unreadable *unreadableView `json:"unreadable,omitempty"`
+}
+
+// unreadableView says why a book's file could not be read.
+type unreadableView struct {
+	Reason string `json:"reason"`
 }
 
 type authorView struct {
@@ -205,14 +214,19 @@ func nullIntToPtr(n sql.NullInt64) *int {
 }
 
 // toSingleBookView renders one book, fetching its relations itself (the
-// page-batched path is listBooks).
+// page-batched path is listBooks). Every single-book response — the detail
+// read and the edit, cover and match writes the SPA swaps in for it — carries
+// the unreadable marker, so an edit never drops it from the open detail view.
 func (h *BooksHandler) toSingleBookView(ctx context.Context, b dbq.Book) (bookView, error) {
 	rel, err := h.fetchBookRelations(ctx, []int64{b.ID})
 	if err != nil {
 		return bookView{}, err
 	}
 
-	return h.toBookView(ctx, b, make(seriesCache), rel), nil
+	view := h.toBookView(ctx, b, make(seriesCache), rel)
+	view.Unreadable = h.unreadable(ctx, b.ID)
+
+	return view, nil
 }
 
 // resolveSeries fills the view's series name and index from the book row.

@@ -9,7 +9,7 @@
 //     content-hash merge). The Parser interface they satisfy is defined by their
 //     consumer, the sync engine.
 //   - File extraction (Extractor): on-demand cover/metadata recovery from a book's
-//     source files, used by the API and the sync engine's cover-warming pass.
+//     source files, used by the API.
 //   - Online enrichment (Enricher): on-demand metadata recovery from Google Books.
 //
 // The sync engine decides when to call a parser's Sync for a given library.

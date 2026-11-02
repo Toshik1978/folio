@@ -63,6 +63,7 @@ func TestIngest(t *testing.T) {
 	suite.Run(t, new(deepIndexFixturesSuite))
 	suite.Run(t, new(deepIndexSuite))
 	suite.Run(t, new(deepIndexFolderSuite))
+	suite.Run(t, new(outcomeSuite))
 	suite.Run(t, new(ingestSuite))
 }
 
@@ -405,8 +406,8 @@ func (s *helpersSuite) TestIngestHelpers() {
 	// 1. Exported constructors return the concrete Parser each map key in
 	// main.go's composition root expects (IsType inspects the interface's
 	// dynamic type, so this fails loudly if a constructor is ever rewired).
-	s.IsType(&CalibreParser{}, NewCalibreParser(s.log, testRank))
-	s.IsType(&INPXParser{}, NewINPXParser(s.log, testRank))
+	s.IsType(&CalibreParser{}, NewCalibreParser(s.log, newTestDispatcher()))
+	s.IsType(&INPXParser{}, NewINPXParser(s.log, newTestDispatcher()))
 	s.IsType(&FolderParser{}, NewFolderParser(s.log, newTestDispatcher()))
 
 	// 2. fileCheckpoint
@@ -422,7 +423,7 @@ func (s *helpersSuite) TestIngestHelpers() {
 	s.Require().Error(err)
 
 	// 3. Calibre Checkpoint
-	cal := CalibreParser{log: s.log, rank: testRank}
+	cal := CalibreParser{log: s.log, reader: newTestDispatcher()}
 	_, err = cal.Checkpoint(dbq.Library{Path: tmp})
 	s.Require().Error(err)
 
@@ -432,7 +433,7 @@ func (s *helpersSuite) TestIngestHelpers() {
 	s.NotEmpty(calCP)
 
 	// 4. INPX Checkpoint
-	inpx := INPXParser{log: s.log, rank: testRank}
+	inpx := INPXParser{log: s.log, reader: newTestDispatcher()}
 	_, err = inpx.Checkpoint(dbq.Library{Path: filepath.Join(tmp, "non-existent.inpx")})
 	s.Require().Error(err)
 

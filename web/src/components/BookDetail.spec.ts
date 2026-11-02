@@ -80,4 +80,52 @@ describe('BookDetail', () => {
     const fields = wrapper.find('[data-testid="detail-fields"]');
     expect(fields.text()).toContain('Foundation #0');
   });
+
+  describe('unreadable notice', () => {
+    const notice = (wrapper: ReturnType<typeof mount>) =>
+      wrapper.find('[data-testid="unreadable-notice"]');
+
+    it.each([
+      ['corrupt', 'The file is damaged or not a valid ebook.'],
+      ['missing_entry', 'The file is missing from its archive.'],
+      ['too_large', 'The file is too large to read.'],
+      ['crashed', "Folio's reader couldn't process this file."],
+    ] as const)('renders the %s label', (reason, label) => {
+      const book = makeBook({ unreadable: { reason } });
+      const wrapper = mount(BookDetail, { props: { book }, ...opts });
+
+      expect(notice(wrapper).attributes('role')).toBe('status');
+      expect(notice(wrapper).text()).toBe(
+        `Folio couldn't read this book's file: ${label} Downloading it may still work.`,
+      );
+      expect(notice(wrapper).text()).not.toContain('..');
+    });
+
+    it('is absent when the book is not flagged unreadable', () => {
+      const wrapper = mount(BookDetail, { props: { book: makeBook() }, ...opts });
+
+      expect(notice(wrapper).exists()).toBe(false);
+    });
+
+    it('has no retry control', () => {
+      const book = makeBook({ unreadable: { reason: 'corrupt' } });
+      const wrapper = mount(BookDetail, { props: { book }, ...opts });
+
+      expect(notice(wrapper).find('button').exists()).toBe(false);
+    });
+
+    it('renders above an existing annotation', () => {
+      const book = makeBook({
+        annotation: '<p>An epic.</p>',
+        unreadable: { reason: 'corrupt' },
+      });
+      const wrapper = mount(BookDetail, { props: { book }, ...opts });
+      const html = wrapper.html();
+
+      expect(html.indexOf('data-testid="unreadable-notice"')).toBeGreaterThan(-1);
+      expect(html.indexOf('data-testid="unreadable-notice"')).toBeLessThan(
+        html.indexOf('data-testid="annotation-body"'),
+      );
+    });
+  });
 });

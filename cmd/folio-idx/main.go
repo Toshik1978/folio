@@ -64,8 +64,8 @@ func run() int { //revive:disable:function-length
 	parser := ebook.NewStandardDispatcher()
 
 	// One extractor recovers covers and metadata from source files; it backs
-	// lazy cover serving, cover-warming, and metadata backfill.
-	extractor := ingest.NewExtractor(database, log, parser)
+	// lazy cover serving and metadata backfill.
+	extractor := ingest.NewExtractor(database, log, parser, writeGuard)
 
 	backfiller := ingest.NewLocalBackfiller(log, database, writeGuard, extractor)
 
@@ -113,8 +113,8 @@ func run() int { //revive:disable:function-length
 		database,
 		writeGuard,
 		map[string]sync.Parser{
-			libtype.Calibre: ingest.NewCalibreParser(log, parser.Rank),
-			libtype.INPX:    ingest.NewINPXParser(log, parser.Rank),
+			libtype.Calibre: ingest.NewCalibreParser(log, parser),
+			libtype.INPX:    ingest.NewINPXParser(log, parser),
 			libtype.Folder:  ingest.NewFolderParser(log, parser),
 		},
 		coverStore,

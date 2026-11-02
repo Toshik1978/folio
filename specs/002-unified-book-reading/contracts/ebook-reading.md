@@ -51,7 +51,15 @@ type Parser interface {
 type Dispatcher struct{ /* parsers by extension */ }
 
 func NewDispatcher(parsers ...Parser) *Dispatcher
-func NewStandardDispatcher() *Dispatcher          // the standard parser set; used by main.go and tests
+func NewStandardDispatcher(opts ...Option) *Dispatcher // the standard parser set; used by main.go and tests
+
+// Added later by the Telegram notifications (spec 003): an optional reporter
+// told about each recovered parser panic (never the file name).
+type CrashReporter interface {
+    ReportCrash(place, detail string, recovered any, stack []byte) bool
+}
+type Option func(*Dispatcher)
+func WithCrashReporter(r CrashReporter) Option
 func (d *Dispatcher) Extensions() []string        // every registered extension, e.g. for guard tests
 func (d *Dispatcher) Metadata(ctx context.Context, log *slog.Logger, src Source) (Metadata, error)
 func (d *Dispatcher) Cover(ctx context.Context, log *slog.Logger, src Source) ([]byte, error)
@@ -66,21 +74,21 @@ func ContentType(format string) string            // MIME type by stored label; 
 The Dispatcher, for both `Metadata` and `Cover`:
 1. Returns `ctx.Err()` (wrapped) before touching the source.
 2. Routes by `src.Name` extension. An unsupported extension returns an error, and callers check `Supported` first.
-3. Recovers a panic into `*PanicError`.
+3. Recovers a panic into `*PanicError`, and reports it to the `CrashReporter` when one is set.
 4. Passes `ErrSourceIO`, `ErrTooLarge` and ctx errors through. Any other parser error is wrapped so that it matches `ErrMalformed`.
 
-The FB2 header-only read, the `.fb2.zip` unwrapping and the FB2 streaming cover scan are unexported details of `fb2Parser`.
+The FB2 header-only read, the `.fb2.zip` unwrapping and the FB2 streaming cover scan are unexported details of `fb2Parser`. A well-formed FB2 without a `<description>` reads as empty metadata, not as an error. Both FB2 reads cap the XML at 64 MiB, plain file or wrapper, and fail past it with `ErrTooLarge`. The MOBI reader caps its record-0 read at 1 MiB.
 
 **Public surface rule**: no exported identifier of `internal/ebook` (type, function, method of an exported type, constant, variable) may have a camelCase word equal to a format label or extension (`epub`, `fb2`, `fbz`, `mobi`, `azw`, `azw3`, `pdf`). The format labels become unexported constants. An `ebookSuite` AST test enforces this.
 
-**Cover operation**: `Cover` returns `(nil, nil)` when the file declares no cover, or when the declared cover reference points at nothing (FB2 href with no matching `<binary>`, MOBI cover offset outside the records). It returns an error, which the Dispatcher wraps as `ErrMalformed`, when the declared cover payload cannot be extracted: FB2 base64 that is invalid or truncated, or an EPUB manifest cover item whose zip entry is missing or fails to inflate. Extracted bytes that are not a decodable image are returned as-is; `covers` marks them none (`cover_state = 2`).
+**Cover operation**: `Cover` returns `(nil, nil)` when the file declares no cover, or when the declared cover reference points at nothing (FB2 href with no matching `<binary>`, MOBI cover offset outside the records). It returns an error, which the Dispatcher wraps as `ErrMalformed`, when the declared cover payload cannot be extracted: FB2 base64 that is invalid or truncated, or an EPUB manifest cover item whose zip entry is missing or fails to inflate (the href's `./` and `../` segments are cleaned before the lookup). A declared cover over the 10 MiB cover cap is an `ErrTooLarge` error in every parser; a MOBI cover record over the cap does not fall back to the first-image scan. A failed MOBI cover-record read is returned as is when it matches `ErrSourceIO` (retryable) and as malformed otherwise, never as "no cover". A MOBI `FirstImageIndex` outside the records falls back to the first-image scan. Extracted bytes that are not a decodable image are returned as-is; `covers` marks them none (`cover_state = 2`).
 
 ## Errors and outcome inputs
 
 ```go
 var (
     ErrSourceIO  = errors.New("ebook: source read failed")    // retryable
-    ErrTooLarge  = errors.New("ebook: entry exceeds size cap") // broken: too_large
+    ErrTooLarge  = errors.New("ebook: entry exceeds size cap") // broken: too_large (entry, FB2 text or cover cap)
     ErrMalformed = errors.New("ebook: malformed content")      // broken: corrupt
 )
 
@@ -121,8 +129,9 @@ type bookReader interface {
 ```
 
 - `ingest`'s resolver is the only code on the reading path that maps `(library, book_file)` to a `Source` + fingerprint, and the only reading code that knows archive collections keep entries in sibling archives (`bookfile` downloads are out of scope).
-- `ingest` exports `ReadStatus` (`ReadDone`, `ReadBroken`, `ReadRetryable`) and `ReadResult{Status, Reason, Detail, Fingerprint, Known, Err}`, so `FileExtractor.Description(ctx, bookID) (ebook.Metadata, ReadResult)` can be faked outside `ingest`.
-- `covers.CoverExtractor` (`Cover(ctx, bookID) ([]byte, bool, error)`) is unchanged. Broken and retryable cover reads both return an error, so `cover_state` is not set.
+- `ingest` exports `ReadStatus` (`ReadDone`, `ReadBroken`, `ReadRetryable`) and `ReadResult{Status, Reason, Detail, Fingerprint, Known, Recorded, Err}`, so `FileExtractor.Description(ctx, bookID) (ebook.Metadata, ReadResult)` can be faked outside `ingest`.
+- The resolver's archive cache opens each archive as `os.Open` → `ebook.TagIO` → `zip.NewReader`. A container `zip.NewReader` rejects for a reason other than `ErrSourceIO` matches `ebook.ErrMalformed` (broken `corrupt`).
+- `covers.CoverExtractor` (`Cover(ctx, bookID) ([]byte, bool, error)`) is unchanged. Broken and retryable cover reads both return an error, so `cover_state` is not set. `covers.CoverState` gains `MarkFileCover(ctx, bookID)`, which records a lazily extracted cover as file-derived (`cover_state = 1`, `cover_prio = 1`).
 
 ## Removed
 
