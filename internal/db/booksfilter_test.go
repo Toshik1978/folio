@@ -48,6 +48,7 @@ func (s *booksFilterSuite) libraryAt(name, path string) int64 {
 type bookSeed struct {
 	key, title, lang, publisher, author, series string
 	rating                                      int   // 0 = unrated
+	year                                        int   // 0 = unset
 	addedAt, importedAt                         int64 // 0 = default to now
 }
 
@@ -77,6 +78,7 @@ func (s *booksFilterSuite) seed(srcID int64, bs bookSeed) int64 {
 		Publisher:     sql.NullString{String: bs.publisher, Valid: bs.publisher != ""},
 		PublisherFold: FoldNull(sql.NullString{String: bs.publisher, Valid: bs.publisher != ""}),
 		Rating:        sql.NullInt64{Int64: int64(bs.rating), Valid: bs.rating != 0},
+		Year:          sql.NullInt64{Int64: int64(bs.year), Valid: bs.year != 0},
 		ContentHash:   bs.key, AddedAt: added, ImportedAt: imported,
 	})
 	s.Require().NoError(err)
@@ -366,6 +368,105 @@ func (s *booksFilterSuite) TestFTSValueWithSpecialCharsIsEscaped() {
 	s.Len(books, 1, "embedded quotes must be escaped, not parsed as FTS syntax")
 }
 
+// TestPrefixTokenMatchesWordForms confirms a trailing * is an FTS5 prefix match
+// (Cyrillic has no stemming), while a lone * and stray quotes stay inert.
+func (s *booksFilterSuite) TestPrefixTokenMatchesWordForms() {
+	ctx := context.Background()
+	src := s.library()
+	s.seed(src, bookSeed{key: "k1", title: "Убийца в поезде"})
+	s.seed(src, bookSeed{key: "k2", title: "Убийцы по соседству"})
+	s.seed(src, bookSeed{key: "k3", title: "Тихий дом"})
+
+	books, err := FilterBooks(ctx, s.db, BookFilter{Query: "убийц*", Limit: 10})
+	s.Require().NoError(err)
+	s.ElementsMatch([]string{"Убийца в поезде", "Убийцы по соседству"}, titles(books))
+
+	// Without the star the exact token matches nothing.
+	books, err = FilterBooks(ctx, s.db, BookFilter{Query: "убийц", Limit: 10})
+	s.Require().NoError(err)
+	s.Empty(books)
+
+	// Lone stars are dropped (no bare *), leaving no constraint.
+	for _, q := range []string{"*", "***", "* *"} {
+		n, cerr := CountFilteredBooks(ctx, s.db, BookFilter{Query: q})
+		s.Require().NoError(cerr, q)
+		s.EqualValues(3, n, q)
+	}
+
+	// Quotes next to a star cannot break out of the literal.
+	for _, q := range []string{`"*`, `a" OR "b*`, `убийц"*`, `x") OR (title:"*`} {
+		_, err = FilterBooks(ctx, s.db, BookFilter{Query: q, Limit: 10})
+		s.Require().NoError(err, q)
+	}
+	s.Equal(`(("a""" AND "OR" AND """b"*))`, ftsClause("", `a" OR "b*`))
+	s.Empty(ftsClause("", "* ***"))
+}
+
+// TestAnyTermsOrGroup confirms AnyTerms is an OR group ANDed with Query.
+func (s *booksFilterSuite) TestAnyTermsOrGroup() {
+	ctx := context.Background()
+	src := s.library()
+	s.seed(src, bookSeed{key: "k1", title: "Murder at dawn", author: "Smith"})
+	s.seed(src, bookSeed{key: "k2", title: "Killer in the house", author: "Smith"})
+	s.seed(src, bookSeed{key: "k3", title: "Quiet garden", author: "Smith"})
+	s.seed(src, bookSeed{key: "k4", title: "Murder abroad", author: "Jones"})
+
+	books, err := FilterBooks(ctx, s.db, BookFilter{AnyTerms: []string{"murder", "killer"}, Limit: 10})
+	s.Require().NoError(err)
+	s.ElementsMatch([]string{"Murder at dawn", "Killer in the house", "Murder abroad"}, titles(books))
+
+	books, err = FilterBooks(ctx, s.db, BookFilter{Query: "smith", AnyTerms: []string{"murder", "killer"}, Limit: 10})
+	s.Require().NoError(err)
+	s.ElementsMatch([]string{"Murder at dawn", "Killer in the house"}, titles(books))
+
+	// A multi-word term is an AND of its words; prefix works inside the group.
+	books, err = FilterBooks(ctx, s.db, BookFilter{AnyTerms: []string{"killer house", "murd*", " ", "*"}, Limit: 10})
+	s.Require().NoError(err)
+	s.ElementsMatch([]string{"Murder at dawn", "Killer in the house", "Murder abroad"}, titles(books))
+
+	books, err = FilterBooks(ctx, s.db, BookFilter{AnyTerms: []string{"killer garden"}, Limit: 10})
+	s.Require().NoError(err)
+	s.Empty(books)
+
+	// Only blank terms: no constraint.
+	n, err := CountFilteredBooks(ctx, s.db, BookFilter{AnyTerms: []string{"", "*"}})
+	s.Require().NoError(err)
+	s.EqualValues(4, n)
+
+	// Operators inside a term stay literal.
+	_, err = FilterBooks(ctx, s.db, BookFilter{AnyTerms: []string{`a" OR "b`, "NOT", "title:x"}, Limit: 10})
+	s.NoError(err)
+}
+
+// TestYearRangeInclusive confirms YearFrom/YearTo bound books.year inclusively.
+func (s *booksFilterSuite) TestYearRangeInclusive() {
+	ctx := context.Background()
+	src := s.library()
+	s.seed(src, bookSeed{key: "k1", title: "Y1990", year: 1990})
+	s.seed(src, bookSeed{key: "k2", title: "Y2000", year: 2000})
+	s.seed(src, bookSeed{key: "k3", title: "Y2010", year: 2010})
+	s.seed(src, bookSeed{key: "k4", title: "NoYear"})
+
+	cases := []struct {
+		name     string
+		from, to int
+		want     []string
+	}{
+		{"from", 2000, 0, []string{"Y2000", "Y2010"}},
+		{"to", 0, 2000, []string{"Y1990", "Y2000"}},
+		{"both", 2000, 2000, []string{"Y2000"}},
+		{"range", 1991, 2009, []string{"Y2000"}},
+	}
+	for _, c := range cases {
+		books, err := FilterBooks(ctx, s.db, BookFilter{YearFrom: c.from, YearTo: c.to, Limit: 10})
+		s.Require().NoError(err, c.name)
+		s.ElementsMatch(c.want, titles(books), c.name)
+		n, err := CountFilteredBooks(ctx, s.db, BookFilter{YearFrom: c.from, YearTo: c.to})
+		s.Require().NoError(err, c.name)
+		s.EqualValues(len(c.want), n, c.name)
+	}
+}
+
 // TestFilterBooksScanMatchesGetBook guards the hand-written column list / Scan in
 // FilterBooks against drift from the sqlc-generated GetBook (the A2 risk): both
 // must produce an identical Book.
@@ -416,6 +517,77 @@ func (s *booksFilterSuite) TestSortByImportedAtAndSource() {
 	bySource, err := FilterBooks(ctx, s.db, BookFilter{Sort: "source", Limit: 10})
 	s.Require().NoError(err)
 	s.Equal([]string{"OldImport", "NewImport"}, titles(bySource), "source sorts by added_at DESC")
+}
+
+func (s *booksFilterSuite) TestListLanguagesWithCounts() {
+	ctx := context.Background()
+	libA := s.libraryAt("A", "/a")
+	libB := s.libraryAt("B", "/b")
+	s.seed(libA, bookSeed{key: "a1", title: "A1", lang: "en"})
+	s.seed(libA, bookSeed{key: "a2", title: "A2", lang: "en"})
+	s.seed(libA, bookSeed{key: "a3", title: "A3", lang: "ru"})
+	s.seed(libB, bookSeed{key: "b1", title: "B1", lang: "ru"})
+	s.seed(libB, bookSeed{key: "b2", title: "B2", lang: "ru"})
+	s.seed(libB, bookSeed{key: "b3", title: "B3", lang: "de"})
+	s.seed(libB, bookSeed{key: "b4", title: "B4", lang: "fr"})
+
+	all, err := s.q.ListLanguagesWithCounts(ctx, 0)
+	s.Require().NoError(err)
+	s.Equal([]dbq.ListLanguagesWithCountsRow{
+		{Language: "ru", BookCount: 3},
+		{Language: "en", BookCount: 2},
+		{Language: "de", BookCount: 1},
+		{Language: "fr", BookCount: 1},
+	}, all)
+
+	a, err := s.q.ListLanguagesWithCounts(ctx, libA)
+	s.Require().NoError(err)
+	s.Equal([]dbq.ListLanguagesWithCountsRow{
+		{Language: "en", BookCount: 2},
+		{Language: "ru", BookCount: 1},
+	}, a)
+}
+
+// TestPunctuationOnlyTokensAreDropped confirms a token with no letters or digits
+// (a spaced dash, "-*") never becomes an empty FTS phrase that zeroes the search.
+func (s *booksFilterSuite) TestPunctuationOnlyTokensAreDropped() {
+	ctx := context.Background()
+	src := s.library()
+	s.seed(src, bookSeed{key: "k1", title: "Умный убийца и глупый сыщик"})
+	s.seed(src, bookSeed{key: "k2", title: "Тихий дом"})
+
+	for _, q := range []string{"убийца — сыщик", "убийца - сыщик", "убийца & сыщик", "убийца -* сыщик", "убийца …"} {
+		books, err := FilterBooks(ctx, s.db, BookFilter{Query: q, Limit: 10})
+		s.Require().NoError(err, q)
+		s.Equal([]string{"Умный убийца и глупый сыщик"}, titles(books), q)
+	}
+
+	// Field filters and any_terms alternatives behave the same way.
+	books, err := FilterBooks(ctx, s.db, BookFilter{Title: FieldFilter{Value: "умный — убийца"}, Limit: 10})
+	s.Require().NoError(err)
+	s.Len(books, 1)
+	books, err = FilterBooks(ctx, s.db, BookFilter{AnyTerms: []string{"убийца — сыщик"}, Limit: 10})
+	s.Require().NoError(err)
+	s.Len(books, 1)
+
+	// A value of only punctuation adds no constraint.
+	for _, q := range []string{"—", "-*", "- — &"} {
+		n, err := CountFilteredBooks(ctx, s.db, BookFilter{Query: q})
+		s.Require().NoError(err, q)
+		s.EqualValues(2, n, q)
+		s.False(HasSearchTokens(q), q)
+	}
+	s.True(HasSearchTokens("— убийца"))
+	s.Empty(ftsClause("", "— -*"))
+}
+
+func (s *booksFilterSuite) TestSearchTerms() {
+	s.Equal([]SearchTerm{
+		{},
+		{Prefix: true, PrefixRunes: 6},
+		{Prefix: true, PrefixRunes: 2},
+	}, SearchTerms(`убийца murder* co-op.* — -*`))
+	s.Empty(SearchTerms("— -* *"))
 }
 
 func (s *booksFilterSuite) failMetadata(bookID int64, flow string, version int64) {

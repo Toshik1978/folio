@@ -158,23 +158,23 @@ description: "Task list for Book Discovery for Claude.ai (Deep Index + MCP)"
 
 **Independent Test**: An MCP client lists the tools; `search_books` with prefix and `any_terms` returns matching books with links; `get_book` returns the full description.
 
-- [ ] T016 [US3] Extend `internal/db/booksfilter.go`:
+- [x] T016 [US3] Extend `internal/db/booksfilter.go`:
   - A token ending in `*` (length > 1) becomes the prefix form `"stem"*`, and the quoting stays safe.
   - `BookFilter.AnyTerms []string` becomes an OR group ANDed with `Query`.
   - `YearFrom` and `YearTo`, inclusive.
 
   Tests: a prefix matches word forms (Cyrillic); a lone `*` or embedded quotes cannot inject syntax; the OR group works together with the AND query; the year bounds work; existing filter tests stay green.
-- [ ] T017 [US3] Add sqlc query `ListLanguagesWithCounts(library_id)` in `internal/db/queries/books.sql` (0 = all libraries, ordered by count desc) and regenerate.
+- [x] T017 [US3] Add sqlc query `ListLanguagesWithCounts(library_id)` in `internal/db/queries/books.sql` (0 = all libraries, ordered by count desc) and regenerate.
 
   Test: counts are correct per library and overall.
-- [ ] T018 [US3] Create package `internal/mcpserver`:
+- [x] T018 [US3] Create package `internal/mcpserver`:
   - `server.go`: `New(log, database, publicURL, version) http.Handler`, which builds `mcp.NewServer(&mcp.Implementation{Name:"folio", Title:"Folio library", Version})` with the server instructions from `contracts/mcp-tools.md`, then `mcp.NewStreamableHTTPHandler(..., &mcp.StreamableHTTPOptions{Stateless: true, JSONResponse: true})`.
   - `links.go`: `bookLink(publicURL, id)`, giving `{PUBLIC_URL trimmed of "/"}/books/{id}` or `/books/{id}`.
   - `summary.go`: BookSummary/BookDetail mapping. The excerpt is the stripped annotation, at most 300 characters, cut at a word boundary, with `…` appended when cut.
   - Runner `mcpserver_test.go`.
 
   Tests: link building with and without a public URL; excerpt truncation for Cyrillic multibyte text; an initialize plus `tools/list` round trip through the SDK's in-memory transport.
-- [ ] T019 [US3] Implement the `list_libraries`, `list_facets`, `search_books` and `get_book` tools in `internal/mcpserver/tools.go` exactly per `contracts/mcp-tools.md`:
+- [x] T019 [US3] Implement the `list_libraries`, `list_facets`, `search_books` and `get_book` tools in `internal/mcpserver/tools.go` exactly per `contracts/mcp-tools.md`:
   - typed `mcp.AddTool` inputs and outputs with `jsonschema` descriptions;
   - every tool annotated `readOnlyHint`;
   - `limit` default 20, max 50;
@@ -189,13 +189,13 @@ description: "Task list for Book Discovery for Claude.ai (Deep Index + MCP)"
   - an empty-criteria error;
   - pagination;
   - no rows change in the DB after the calls.
-- [ ] T020 [US3] Mount it in `internal/server/server.go`: `Handlers.MCP http.Handler`, then `r.Route("/mcp", …)` serving the handler at `/mcp`, with no `sameSiteGuard` or `formBodyGuard`. Wire it in `cmd/folio-idx/main.go` with `mcpserver.New(log, database, cfg.PublicURL, version)`.
+- [x] T020 [US3] Mount it in `internal/server/server.go`: `Handlers.MCP http.Handler`, then `r.Route("/mcp", …)` serving the handler at `/mcp`, with no `sameSiteGuard` or `formBodyGuard`. Wire it in `cmd/folio-idx/main.go` with `mcpserver.New(log, database, cfg.PublicURL, version)`.
 
   Tests in `server_test.go`:
   - extend `TestAPIAndOPDSFallbackProtection` so `/mcp/unknown` returns 404, not the SPA;
   - a POST to `/mcp` without an Origin reaches the MCP handler;
   - a GET on `/mcp` returns 405.
-- [ ] T021 [US3] Docs:
+- [x] T021 [US3] Docs:
   - `docs/API.md`: the `/mcp` endpoint and its tools.
   - `docs/NETWORKING.md`: `/mcp` has no app auth, so an external authenticator is mandatory; a worked Cloudflare Access self-hosted application with OAuth for MCP; the security table gets a new row.
   - `docs/BACKEND.md`: router, middleware table, routes, `internal/mcpserver`.
@@ -211,7 +211,7 @@ description: "Task list for Book Discovery for Claude.ai (Deep Index + MCP)"
 
 **Independent Test**: For a book with a description, the candidates share its distinctive themes or genre and exclude the book itself. For a book without one, the candidates come from series, author and genre.
 
-- [ ] T022 [US4] Implement `internal/db/similar.go`:
+- [x] T022 [US4] Implement `internal/db/similar.go`:
   - **`DistinctiveTerms(ctx, db, text, k)`**: tokenize the stripped annotation the way unicode61 with remove_diacritics does (lowercase, letters and digits, ё→е; compare by querying `books_fts_vocab`). Read the document frequency per term from `books_fts_vocab`. Return the top k by tf·idf among terms with df > 1.
   - **`SimilarBooks(ctx, db, bookID, limit)`**: merge these candidate sources and attach the `reason`:
     - a bm25-ranked OR match on the distinctive terms (built with bob, parameterized);
@@ -227,7 +227,7 @@ description: "Task list for Book Discovery for Claude.ai (Deep Index + MCP)"
   - the source book is excluded;
   - the fallback works when the book has no description;
   - the limit caps the result.
-- [ ] T023 [US4] Add the `similar_books` tool in `internal/mcpserver/tools.go` per `contracts/mcp-tools.md` (`{source, candidates[]}` with `reason` and `matched_terms`). Document it in `docs/API.md`.
+- [x] T023 [US4] Add the `similar_books` tool in `internal/mcpserver/tools.go` per `contracts/mcp-tools.md` (`{source, candidates[]}` with `reason` and `matched_terms`). Document it in `docs/API.md`.
 
   Tests through the in-memory client: output shape, links, reasons, an unknown id yields a tool error.
 
@@ -237,7 +237,7 @@ description: "Task list for Book Discovery for Claude.ai (Deep Index + MCP)"
 
 ## Phase 7: Polish & Cross-Cutting Concerns
 
-- [ ] T024 Run `task format`, `task lint`, `task test` and `task build`, and fix any findings. Run the quickstart §2–3 performance check against a **copy** of a real production database (→ temp dir) with the libraries mounted read-only. Record the Deep Index duration, the coverage and the database growth in the PR description (SC-001…SC-004). Any final doc touch-ups go in this task.
+- [x] T024 Run `task format`, `task lint`, `task test` and `task build`, and fix any findings. Run the quickstart §2–3 performance check against a **copy** of a real production database (→ temp dir) with the libraries mounted read-only. Record the Deep Index duration, the coverage and the database growth in the PR description (SC-001…SC-004). Any final doc touch-ups go in this task.
 
 ---
 

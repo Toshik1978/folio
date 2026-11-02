@@ -97,6 +97,46 @@ func (q *Queries) InsertBookAuthor(ctx context.Context, arg InsertBookAuthorPara
 	return err
 }
 
+const listAuthorMateIDs = `-- name: ListAuthorMateIDs :many
+SELECT other.book_id
+FROM book_authors src
+         JOIN book_authors other ON other.author_id = src.author_id
+WHERE src.book_id = ?1
+  AND other.book_id <> ?1
+GROUP BY other.book_id
+ORDER BY COUNT(*) DESC, other.book_id
+LIMIT ?2
+`
+
+type ListAuthorMateIDsParams struct {
+	BookID int64
+	Lim    int64
+}
+
+// Other books sharing an author with the given book, most shared authors first.
+func (q *Queries) ListAuthorMateIDs(ctx context.Context, arg ListAuthorMateIDsParams) ([]int64, error) {
+	rows, err := q.db.QueryContext(ctx, listAuthorMateIDs, arg.BookID, arg.Lim)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []int64
+	for rows.Next() {
+		var book_id int64
+		if err := rows.Scan(&book_id); err != nil {
+			return nil, err
+		}
+		items = append(items, book_id)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listAuthors = `-- name: ListAuthors :many
 SELECT a.id, a.name, a.name_fold, COUNT(b.id) AS book_count
 FROM authors a

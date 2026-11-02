@@ -140,8 +140,10 @@ include books that share its genre and distinctive themes, and exclude the book 
 ### Edge Cases
 
 - A book file is missing from its archive, the archive is unreadable, or the file is corrupt:
-  the book is skipped for this run without failing the run; it is not marked checked, so a
-  later run retries it.
+  the book is skipped for this run without failing the run and is not marked checked. A read
+  that may pass later (an unreadable archive, an I/O error) is retried by the next run; a
+  missing entry or a file the reader cannot parse is recorded as unreadable and not read again
+  until the file or the reader changes (see feature 002, unified book reading).
 - A book's file has no description: it is marked checked and never re-parsed.
 - PDF-only books: not parsed for descriptions (unchanged from today's behavior); marked
   checked so they are not revisited.
@@ -156,6 +158,9 @@ include books that share its genre and distinctive themes, and exclude the book 
 - A search query with invalid full-text syntax: Claude receives a clear error message it can
   correct, not a server failure.
 - Very broad searches: results are paginated with a bounded page size.
+- Very costly searches (too many words or prefix terms, or a prefix shorter than 3 letters):
+  Claude receives a tool error naming the bound, so it can narrow the request.
+- A search word made only of punctuation or `*`: it is ignored rather than matching nothing.
 
 ## Requirements *(mandatory)*
 

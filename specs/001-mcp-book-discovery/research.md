@@ -55,6 +55,12 @@ Measurements were taken read-only against a real large catalog.
   reads to EOF and buffers base64 covers. ZIP entries are compressed individually, so stopping
   after `</description>` means only the first few KB of each entry are inflated — disk I/O
   drops from reading whole archives to a seek plus a small read per book.
+- **Superseded:** shipped as `ParseFB2Description`, then folded into the reading layer by
+  feature 002 (unified book reading): the header parse is now the unexported
+  `parseFB2Header`, reached through the FB2 parser's `Metadata` in `ebook.Dispatcher`. The
+  64 MiB cap is a `capReader` that fails with `ErrTooLarge` (a silent `LimitReader` EOF would
+  read as a corrupt file), and the parse also stops at the first `<body>` or `<binary>`, so a
+  well-formed FB2 without a `<description>` reads as empty metadata instead of an error.
 
 ## R5. Deep Index execution model
 
@@ -76,6 +82,20 @@ Measurements were taken read-only against a real large catalog.
   exclusion with sync of the same DB is guaranteed by the engine's single worker.
 - **Cancellation**: the engine's stop-cancellable ctx; committed batches persist; unchecked
   books resume next run.
+- **Superseded:** three parts of steps 1–4 changed after the first cut.
+  - *Paged work list* — loading every unchecked book at once held about 170 MB on a
+    580k-book library, so a run counts its work once (`CountDeepIndexWork`, the progress
+    total), then reads `ListDeepIndexWork` 5,000 books at a time in id order (`after_id`,
+    `lim`), every file of each book on one page, ordered by `source_path` within the page.
+  - *One reading path* — feature 002 removed the INPX/other split: every library type goes
+    through the same worker pool, grouping books by the archive of their top-ranked file,
+    and the file preference moved from SQL into Go (reader rank EPUB 4, FB2 3, MOBI 2; PDF is
+    never read for descriptions).
+  - *Failure records* — a missing entry or an unparseable file is no longer retried every
+    run: it is recorded in `book_read_failures` (migration 007, feature 002), stays
+    unchecked, and is skipped unopened until its file fingerprint or the reader version
+    changes. Only failures that may pass (I/O, an unreadable archive, cancellation) are left
+    for the next run. Results add `broken` and `known_broken` to the counts.
 
 ## R6. Engine integration
 
@@ -109,6 +129,10 @@ Measurements were taken read-only against a real large catalog.
   is read-only (no state change), and Claude.ai's server-side client sends no browser
   `Origin`. SDK localhost/cross-origin protections are left at defaults unless the quickstart
   check shows the tunnel's Host header trips them.
+- **Superseded:** it did trip them. cloudflared (or another proxy) may reach Folio over
+  loopback while forwarding the public Host, and the SDK's DNS-rebinding guard answers 403
+  to that, so the handler sets `DisableLocalhostProtection: true`. `/mcp` is read-only and
+  exposes nothing the unauthenticated `/api` GET routes do not.
 - **Auth**: none in Folio (constitution VII). Operator adds a Cloudflare Access self-hosted
   application with OAuth for MCP on `/mcp`. Documented in
   `docs/NETWORKING.md`.
@@ -130,3 +154,19 @@ Measurements were taken read-only against a real large catalog.
   (b) same series; (c) same authors; (d) shared genres as a tie-breaker / fallback when the
   book has no annotation. Each candidate carries a `reason`.
 - **Embeddings**: deferred (no CGO-friendly vector extension; model hosting; ~0.7 GB).
+- **Superseded (similar books):** the `row` vocab counts a book once for a term in any
+  column, and the OR match ran across every column, so a book whose title held one of the
+  words came back as a description match. Migration 008 replaces `books_fts_vocab` with an
+  `fts5vocab` `col` table, `books_fts_vocab_col`; df is its `doc` for `col = 'annotation'`,
+  N is the number of books with a description (served by the partial index
+  `idx_books_described`, migration 009), and both MATCH queries are scoped to the
+  annotation column. Shared genres are not a tie-breaker: the four sources are merged in
+  order (distinctive terms, series, authors, genres), each book once under the first source
+  that found it, and genres fill the remaining slots whether or not the book has a
+  description.
+- **Superseded (search input):** a token of only punctuation or `*` is dropped instead of
+  becoming an empty phrase that zeroes the whole AND. bm25 ties are broken by book id so
+  offset paging is stable. `search_books` bounds a request's cost before running it: at most
+  20 `any_terms`, 500 characters per text field, 40 words across all fields, 10 prefix terms,
+  and 3 letters before a `*` (on a 580k-book catalog ten 2-letter prefixes took over a
+  second; ten 3-letter ones a tenth of that).

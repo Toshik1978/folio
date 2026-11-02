@@ -3,7 +3,8 @@
 ## Prerequisites
 
 - `task setup`, then `task build` (or `task dev:backend` + `task dev:frontend`).
-- Use a **copy** of a real database for the end-to-end checks: `cp <data-dir>/folio.db /tmp/folio-copy/`. Point `DATA_DIR` at that copy, and mount the libraries read-only.
+- Use a **copy** of a real database for the end-to-end checks. A live Folio keeps its database in WAL mode, so a `cp` of `folio.db` alone can be inconsistent; take an online backup opened read-only instead: `sqlite3 'file:<data-dir>/folio.db?mode=ro' ".backup /tmp/folio-copy/folio.db"`. Point `DATA_DIR` at that copy, and mount the libraries read-only.
+- The count queries below touch the FTS5 table, so use a `sqlite3` built with FTS5 (some distributions' builds lack it and fail with `no such module: fts5`).
 - Set `PUBLIC_URL` to the external address.
 
 ## 1. Automated gates
@@ -25,13 +26,13 @@ These cover:
 
 ## 2. Migration on a real-sized database
 
-Start Folio on the copied database. It should log goose migration 006, and the run should take seconds.
+Start Folio on the copied database. It should log goose migrations 006 through 009 (007 belongs to feature 002), and the run should take seconds.
 
 ```bash
 sqlite3 /tmp/folio-copy/folio.db "select count(*) from books_fts; select count(*) from books;"
 ```
 
-Expected: the two counts are equal. No `books_fts_content` table exists any more.
+Expected: the two counts are equal. No `books_fts_content` table exists any more, and `books_fts_vocab_col` has replaced `books_fts_vocab`.
 
 ## 3. Deep Index
 
@@ -39,7 +40,7 @@ Expected: the two counts are equal. No `books_fts_content` table exists any more
 2. Expected:
    - the banner shows "Deep indexing…" with processed/total;
    - the run finishes within 1 hour (SC-002);
-   - the log has a summary line with the `checked`/`filled`/`skipped`/`errors` counts.
+   - the log has a `deep index finished` summary line with the `checked`/`filled`/`skipped`/`broken`/`known_broken`/`errors` counts.
 3. Check coverage:
 
    ```bash

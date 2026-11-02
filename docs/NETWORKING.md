@@ -3,7 +3,7 @@
 > Folio's authentication model, the OPDS auth path, and how to deploy it safely.
 >
 > **Key point:** Folio authenticates **only the OPDS catalog** at the application
-> layer. The web UI and REST API have **no built-in authentication** — you must
+> layer. The web UI, REST API and `/mcp` endpoint have **no built-in authentication** — you must
 > place an authenticator in front of them. Cloudflare Access is used below as one
 > worked example; any reverse-proxy SSO, forward-auth, or network-level control
 > works just as well.
@@ -17,6 +17,7 @@
 | **Web UI + REST API** | `/`, `/api/*`, SPA routes | **None.** Unauthenticated. | **Mandatory** external authenticator (reverse-proxy SSO, forward-auth, VPN/LAN isolation, …). |
 | **OPDS catalog** | `/opds/*` (except cover) | **HTTP Basic Auth** (bcrypt, configured at runtime). | Nothing required; works for mobile reading apps that can't do browser SSO. |
 | **OPDS cover** | `/opds/books/{id}/cover` | None (intentionally public). | Nothing — covers are low-sensitivity and many readers fetch them without forwarding credentials. |
+| **MCP endpoint** | `/mcp` | **None.** Unauthenticated. | **Mandatory** external authenticator that speaks OAuth for MCP clients (e.g. Cloudflare Access). See [MCP endpoint](#mcp-endpoint-mcp-and-claudeai). |
 
 The rest of this document explains each row and the cross-cutting hardening
 (CSRF guard, header handling, outbound connections).
@@ -279,6 +280,49 @@ To replicate this with another proxy: protect everything by default, exempt
 
 ---
 
+## MCP endpoint (`/mcp`) and Claude.ai
+
+`/mcp` serves a read-only Model Context Protocol server (see
+[API.md](./API.md#mcp-endpoint-mcp)) so Claude.ai can search the catalog. Folio
+performs **no authentication** on it, so an external authenticator is
+**mandatory**. **Never expose `/mcp` publicly without one**: anyone who can reach
+it can search and read every book's metadata.
+
+It is deliberately outside the `/api` CSRF guard (`sameSiteGuard` and
+`formBodyGuard` are not mounted on it): Claude.ai posts JSON-RPC from its own
+servers, with no `Origin` or a foreign one, and authentication is external.
+For the same reason the MCP SDK's localhost Host-header guard is disabled
+(`DisableLocalhostProtection`): a proxy such as cloudflared reaching Folio over
+loopback with the public `Host` would otherwise get `403 invalid Host header`.
+
+Claude.ai connects to a custom connector over OAuth, so the authenticator must
+act as an OAuth authorization server for MCP clients. Cloudflare Access can do
+this; the worked setup below assumes Folio is already served through a
+Cloudflare Tunnel at `https://<host>`.
+
+1. **Set `PUBLIC_URL`** to `https://<host>`, so the `link` returned for each book
+   is absolute and clickable in Claude.ai (otherwise it is a bare `/books/{id}`).
+2. In the Cloudflare dashboard open **Zero Trust → Access → Applications → Add an
+   application** and choose **Self-hosted**.
+3. Add a public hostname for the application with host `<host>` and path `/mcp`,
+   so it covers `<host>/mcp`. Keep it separate from the Access application that
+   guards the web UI (or make sure that application's scope does not shadow it).
+4. In the application's settings, enable Access's OAuth support for MCP servers
+   (managed OAuth for the application). The exact label depends on the current
+   dashboard; look for the option that lets MCP/OAuth clients authenticate to a
+   self-hosted application.
+5. Add an **Access policy** with action *Allow* that includes only the intended users
+   (for example, their email addresses) and your identity provider. Anyone not
+   matching the policy is denied.
+6. In Claude.ai, go to the connectors settings, **add a custom connector** and set
+   its URL to `https://<host>/mcp`. Claude.ai starts the OAuth flow; sign in
+   through Access. The five tools then become available in chats.
+
+Check it from a shell: an unauthenticated `curl -i https://<host>/mcp` must be
+redirected to or rejected by Access, not answered by Folio.
+
+---
+
 ## Security Considerations
 
 1. **External authenticator required for `/api`** — Folio provides no auth for the
@@ -302,3 +346,7 @@ To replicate this with another proxy: protect everything by default, exempt
    origin-based, token-less CSRF guard (`sameSiteGuard` + `formBodyGuard`) that
    does not depend on any proxy's cookie `SameSite` policy. It is *not* a
    substitute for authentication.
+8. **External authenticator required for `/mcp`** — Folio provides no auth for the
+   MCP endpoint and does not apply the `/api` CSRF guard to it. Front it with an
+   OAuth-capable authenticator (see [MCP endpoint](#mcp-endpoint-mcp-and-claudeai))
+   and set `PUBLIC_URL`. Every MCP tool is read-only and makes no outbound calls.

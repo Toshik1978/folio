@@ -815,6 +815,45 @@ func (q *Queries) ListFilesForBooks(ctx context.Context, bookIds []int64) ([]Boo
 	return items, nil
 }
 
+const listLanguagesWithCounts = `-- name: ListLanguagesWithCounts :many
+SELECT b.language, COUNT(*) AS book_count
+FROM books b
+WHERE b.language <> ''
+  AND (CAST(?1 AS INTEGER) = 0 OR b.library_id = ?1)
+GROUP BY b.language
+ORDER BY book_count DESC, b.language ASC
+`
+
+type ListLanguagesWithCountsRow struct {
+	Language  string
+	BookCount int64
+}
+
+// ListLanguagesWithCounts returns each non-empty language code with its book
+// count, most common first (ties by code). library_id 0 means all libraries.
+func (q *Queries) ListLanguagesWithCounts(ctx context.Context, libraryID int64) ([]ListLanguagesWithCountsRow, error) {
+	rows, err := q.db.QueryContext(ctx, listLanguagesWithCounts, libraryID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListLanguagesWithCountsRow
+	for rows.Next() {
+		var i ListLanguagesWithCountsRow
+		if err := rows.Scan(&i.Language, &i.BookCount); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listPublishersByLetter = `-- name: ListPublishersByLetter :many
 SELECT COALESCE(publisher, '') AS name, COUNT(*) AS book_count
 FROM books
@@ -915,6 +954,45 @@ func (q *Queries) ListPublishersNonLetter(ctx context.Context, arg ListPublisher
 			return nil, err
 		}
 		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listSeriesMateIDs = `-- name: ListSeriesMateIDs :many
+SELECT id
+FROM books
+WHERE series_id = ?1
+  AND id <> ?2
+ORDER BY series_number IS NULL, series_number, id
+LIMIT ?3
+`
+
+type ListSeriesMateIDsParams struct {
+	SeriesID sql.NullInt64
+	BookID   int64
+	Lim      int64
+}
+
+// Other books of a series, in reading order (unnumbered last); "books like this".
+func (q *Queries) ListSeriesMateIDs(ctx context.Context, arg ListSeriesMateIDsParams) ([]int64, error) {
+	rows, err := q.db.QueryContext(ctx, listSeriesMateIDs, arg.SeriesID, arg.BookID, arg.Lim)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
 	}
 	if err := rows.Close(); err != nil {
 		return nil, err

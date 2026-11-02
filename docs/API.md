@@ -171,7 +171,7 @@ bar's Format/Language value-picker facets are populated separately from
 
 | Param | Type | Description |
 | :--- | :--- | :--- |
-| `q` | string | Free-text search (FTS5) across title, authors, series, annotation. Ranked by BM25. |
+| `q` | string | Free-text search (FTS5) across title, authors, series, annotation. Ranked by BM25. A word ending in `*` is a prefix match (`foo*` matches every word starting with `foo`); it was a literal before. The same applies to `title`, `author` and `series` and to the OPDS `q`. |
 | `title` | string | Search the title. Token-level FTS by default; a leading `=` (e.g. `=Dune`) matches the exact title. |
 | `author` | string | Search authors. Token-level FTS by default (e.g. `Pratchett`); a leading `=` matches the exact author name. |
 | `series` | string | Search series. Token-level FTS by default; a leading `=` matches the exact series name. |
@@ -362,6 +362,80 @@ The mapping lives in `bookfile.ContentType` (`internal/bookfile/bookfile.go`),
 keyed on the stored `book_files.file_format` label. A `.fb2.zip` file is stored
 with format `fb2` (the dispatcher normalizes the wrapper — see
 [EBOOK-PARSING.md](./EBOOK-PARSING.md#fb2)), so it serves with the FB2 type.
+
+---
+
+## MCP endpoint (`/mcp`)
+
+A read-only [Model Context Protocol](https://modelcontextprotocol.io) server, so
+an AI client (Claude.ai custom connector) can find books in the catalog by
+description. Implemented in `internal/mcpserver` on the official Go SDK
+(`github.com/modelcontextprotocol/go-sdk`).
+
+**`/mcp` has no application-level authentication.** An external authenticator
+(e.g. Cloudflare Access with OAuth for MCP servers) is **mandatory**; never expose
+it publicly without one. See [NETWORKING.md](NETWORKING.md#mcp-endpoint-mcp-and-claudeai).
+Set `PUBLIC_URL` so the `link` in results is absolute.
+
+- **Transport:** Streamable HTTP, stateless (no `Mcp-Session-Id`), JSON responses.
+  `POST /mcp` only; `GET` and `DELETE` return `405`; unknown sub-paths under
+  `/mcp/*` return `404`.
+- **Identity:** server name `folio`, title `Folio library`, version = the build
+  version (`dev` when none is stamped).
+- **Read-only:** every tool is annotated `readOnlyHint: true`, reads only the
+  catalog database, and makes no outbound network calls.
+- **Instructions** sent at `initialize` tell the model that search matches whole
+  words without stemming, to use `stem*` prefixes and `any_terms` for word forms
+  and synonyms, to narrow with `genre`/`language` from `list_facets`, and to give
+  the user each book's `link`.
+- **Errors** are tool errors (`isError: true`) with an actionable message, e.g.
+  `genre not found; call list_facets`, `book not found`, or a message asking for
+  at least one search criterion.
+
+| Tool | Input | Output |
+| :--- | :--- | :--- |
+| `list_libraries` | none | `{libraries:[{id,name,type,book_count}]}` |
+| `list_facets` | `library_id?` (0/absent = all) | `{genres:[{name,book_count}], languages:[{code,book_count}]}`; genres by count descending, top 200; languages by count descending |
+| `search_books` | see below | `{total, offset, books:[BookSummary]}` |
+| `get_book` | `id` | `BookDetail` |
+| `similar_books` | `id`, `limit?` (default 20, max 50) | `{source:BookSummary, candidates:[SimilarCandidate]}` |
+
+`search_books` input: `query` (all words must match, across title, authors,
+series and description), `any_terms` (array; at least one must match, ANDed with
+`query`), `title`, `author`, `series` (field-scoped words, ANDed), `genre` (an
+exact name from `list_facets`), `language` (ISO code, e.g. `ru`), `library_id`,
+`format`, `year_from`, `year_to` (inclusive), `limit` (default 20, max 50) and
+`offset`. A trailing `*` on a word makes it a prefix match; matching is
+otherwise whole-word with no stemming. At least one of `query`, `any_terms`,
+`title`, `author`, `series` or `genre` is required. Results are ranked by BM25
+when there are text terms, otherwise most recently added first.
+
+A request is bounded so one call cannot hold a reader for seconds: at most 20
+`any_terms`, 500 characters per text field, 40 words across all fields, and 10
+prefix terms, each with at least 3 letters before the `*` (shorter prefixes
+expand to most of the vocabulary). A request over a bound is a tool error that
+names it.
+
+Shapes:
+
+- `BookSummary`: `id`, `title`, `authors[]`, `series?`, `series_number?`,
+  `genres[]`, `language`, `year?`, `excerpt?`, `has_description`, `link`.
+  `excerpt` is the description with markup stripped, at most 300 characters, cut
+  at a word boundary with `…` appended when cut. `link` is
+  `{PUBLIC_URL}/books/{id}`, or `/books/{id}` when `PUBLIC_URL` is unset.
+- `BookDetail`: `BookSummary` without `excerpt`, plus `description?`,
+  `publisher?`, `rating?`, `identifiers[{type,value}]`, `formats[]` and
+  `library{id,name}`.
+- `SimilarCandidate`: `BookSummary` plus `reason`
+  (`distinctive_terms`, `same_series`, `same_author` or `shared_genres`) and, for
+  `distinctive_terms` only, `matched_terms[]`. Candidates are in rank order and
+  never include the source book; an unknown `id` is a `book not found` tool error.
+  `distinctive_terms` compares descriptions only: the source description's most
+  distinctive words (weighted by how rare they are among descriptions) are matched
+  against other books' descriptions, never their titles, authors or series, which
+  the `same_series` and `same_author` reasons cover.
+
+The authoritative contract is `specs/001-mcp-book-discovery/contracts/mcp-tools.md`.
 
 ---
 

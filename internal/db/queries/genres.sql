@@ -76,6 +76,11 @@ FROM genres g
 WHERE bg.book_id IN (sqlc.slice('book_ids'))
 ORDER BY bg.book_id, g.name_fold;
 
+-- GenreExists reports whether a genre with exactly this display name exists;
+-- the MCP search tool uses it to reject a genre not taken from list_facets.
+-- name: GenreExists :one
+SELECT EXISTS (SELECT 1 FROM genres WHERE name = ?) AS found;
+
 -- InsertGenre upserts by name_fold; see InsertAuthor.
 -- name: InsertGenre :one
 INSERT INTO genres (name, name_fold)
@@ -99,3 +104,14 @@ WHERE book_id = ?;
 SELECT COUNT(*)
 FROM book_genres
 WHERE book_id = ?;
+
+-- name: ListGenreMateIDs :many
+-- Other books sharing a genre with the given book, most shared genres first.
+SELECT other.book_id
+FROM book_genres src
+         JOIN book_genres other ON other.genre_id = src.genre_id
+WHERE src.book_id = sqlc.arg(book_id)
+  AND other.book_id <> sqlc.arg(book_id)
+GROUP BY other.book_id
+ORDER BY COUNT(*) DESC, other.book_id
+LIMIT sqlc.arg(lim);

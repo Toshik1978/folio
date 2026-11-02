@@ -14,5 +14,6 @@ func TestDB(t *testing.T) {
 	suite.Run(t, new(connSuite))
 	suite.Run(t, new(writeGuardSuite))
 	suite.Run(t, new(deepIndexWorkSuite))
+	suite.Run(t, new(similarSuite))
 	suite.Run(t, new(readFailuresSuite))
 }

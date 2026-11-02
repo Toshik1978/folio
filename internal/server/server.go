@@ -21,8 +21,9 @@ type Registrar interface {
 
 // Handlers are the built HTTP handlers, supplied by the composition root.
 type Handlers struct {
-	API  []Registrar // mounted under /api in order
-	OPDS Registrar   // mounted at /opds
+	API  []Registrar  // mounted under /api in order
+	OPDS Registrar    // mounted at /opds
+	MCP  http.Handler // mounted at /mcp when non-nil
 }
 
 func New(log *slog.Logger, h Handlers, env string, noColor bool, publicURL string) *chi.Mux {
@@ -56,6 +57,15 @@ func newWithFS(log *slog.Logger, h Handlers, env string, noColor bool, publicURL
 	r.Route("/opds", func(o chi.Router) {
 		h.OPDS.Register(o)
 	})
+
+	if h.MCP != nil {
+		// No sameSiteGuard/formBodyGuard: Claude.ai posts JSON-RPC cross-origin
+		// (no Origin or a foreign one) and authentication is external. Unknown
+		// sub-paths 404 in the sub-router instead of reaching the SPA catch-all.
+		r.Route("/mcp", func(m chi.Router) {
+			m.Handle("/", h.MCP)
+		})
+	}
 
 	// Web handlers
 	r.HandleFunc("/*", webHandler(fs))

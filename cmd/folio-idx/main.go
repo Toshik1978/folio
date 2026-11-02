@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"runtime/debug"
 	"syscall"
 	"time"
 
@@ -23,6 +24,7 @@ import (
 	"github.com/Toshik1978/folio/internal/ingest"
 	"github.com/Toshik1978/folio/internal/libtype"
 	"github.com/Toshik1978/folio/internal/logging"
+	"github.com/Toshik1978/folio/internal/mcpserver"
 	"github.com/Toshik1978/folio/internal/metasearch"
 	msamazon "github.com/Toshik1978/folio/internal/metasearch/providers/amazon"
 	msgoodreads "github.com/Toshik1978/folio/internal/metasearch/providers/goodreads"
@@ -139,6 +141,7 @@ func run() int { //revive:disable:function-length
 				settings.New(log, authn),
 			},
 			OPDS: opds.New(log, database, coverStore, backfiller, authn, cfg.PublicURL),
+			MCP:  mcpserver.New(log, database, cfg.PublicURL, buildVersion()),
 		}, cfg.Env, cfg.NoColorEnabled(), cfg.PublicURL),
 		ReadTimeout:  15 * time.Second,
 		WriteTimeout: 60 * time.Second,
@@ -195,4 +198,13 @@ func shutdown(log *slog.Logger, srv *http.Server, syncEngine *sync.Engine, broke
 		log.Error("graceful shutdown failed", slog.Any("error", err))
 	}
 	syncEngine.Stop()
+}
+
+// buildVersion reports the module version stamped into the binary, or "dev"
+// when build info is unavailable or carries no version.
+func buildVersion() string {
+	if info, ok := debug.ReadBuildInfo(); ok && info.Main.Version != "" {
+		return info.Main.Version
+	}
+	return "dev"
 }

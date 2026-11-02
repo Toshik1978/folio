@@ -23,7 +23,7 @@ Every state-changing route passes the existing `sameSiteGuard` and `formBodyGuar
 {"running": true, "current": 2, "kind": "deep_index", "queued": [1]}
 ```
 
-- `kind` is `"sync"` or `"deep_index"`. It is omitted when nothing is running.
+- `kind` is `"sync"` or `"deep_index"`. It is omitted when nothing is running. A sync's post-sync fill of the books it inserted relabels the run `"deep_index"` while the fill runs.
 - `queued` stays a list of library ids, to stay backward compatible.
 - `progress` and `library` events are unchanged. A Deep Index run emits `progress` with `{library, processed, total}` and, at the end, `library {id, status: "active"}`, so the UI refetches.
 

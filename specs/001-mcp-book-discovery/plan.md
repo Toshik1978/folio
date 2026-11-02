@@ -8,7 +8,7 @@
 
 Two parts, delivered in order.
 
-1. **Deep Index**: fill missing book descriptions from local files. It can be triggered per library ("Deep Index") or for every library ("Deep Index All"). It also runs automatically for the books a sync run inserted. For INPX, a worker pool opens each archive once and parses only the FB2 `<description>` header. A single writer persists results in batches of 500. The full-text index switches to an FTS5 **contentless-delete** table, so the description text is stored only once.
+1. **Deep Index**: fill missing book descriptions from local files. It can be triggered per library ("Deep Index") or for every library ("Deep Index All"). It also runs automatically for the books a sync run inserted. A worker pool groups books by the archive of their best file, opens each archive once, and reads each book through the shared book reader (for FB2, only the `<description>` header). A single writer persists results in batches of 500. The full-text index switches to an FTS5 **contentless-delete** table, so the description text is stored only once.
 2. **`/mcp` endpoint**: a read-only, stateless Streamable-HTTP MCP server built on the official Go SDK, with five tools: `list_libraries`, `list_facets`, `search_books`, `get_book`, `similar_books`. Every book in a result carries a `{PUBLIC_URL}/books/{id}` link. Auth is delegated to Cloudflare Access (OAuth for MCP), and Folio adds no auth code.
 
 Research and the decisions behind this plan: [research.md](./research.md).
@@ -38,10 +38,13 @@ Research and the decisions behind this plan: [research.md](./research.md).
 
 **Storage**: Folio SQLite at `/data/folio.db`.
 - Migration `006`: `books_fts` becomes contentless-delete, plus an `fts5vocab` row table named `books_fts_vocab`.
+- Migration `008`: `books_fts_vocab` is replaced by the `fts5vocab` col table `books_fts_vocab_col`, so "similar books" weighs terms by the annotation column alone.
+- Migration `009`: the partial index `idx_books_described` over books with a description, for the "similar books" document count.
 - New sqlc queries:
-  - unchecked books for a library, with their preferred file;
+  - unchecked books for a library: a count (`CountDeepIndexWork`) and a page of them with all their files (`ListDeepIndexWork`);
   - languages with counts per library;
-  - book refs by ids, for the batch fill.
+  - annotation fill only when NULL (`SetBookAnnotationIfNull`, `BookHasAnnotation`);
+  - series, author and genre mates of a book, for "similar books".
 
 **Testing**: Go testify suites (one `Test<Package>` per package). Vitest for the SPA. Fixtures:
 - small INPX/ZIP files with FB2 entries under `testdata/`, covering windows-1251, a missing annotation, a corrupt entry and a PDF;
@@ -59,7 +62,7 @@ Research and the decisions behind this plan: [research.md](./research.md).
 **Constraints**:
 - Sources stay read-only.
 - No online calls from Deep Index or MCP.
-- Memory stays bounded: about one decoded description header per worker, and a 500-row batch.
+- Memory stays bounded: about one decoded description header per worker, a 500-row batch, and a 5,000-book page of the work list.
 - Write-guard holds are per batch, so web-UI edits never wait behind a run for long.
 
 **Scale/Scope**: hundreds of thousands of books in a few hundred archives (hundreds of GB). Expected database growth is about 0.5–0.8 GB (SC-004 allows up to 1 GB).
@@ -73,7 +76,7 @@ Research and the decisions behind this plan: [research.md](./research.md).
 | I. Read-only sources | PASS | Archives are opened read-only and stream-decoded. Writes go only to `/data/folio.db`. `annotation` is set only when NULL, so manual or enriched data is never overwritten. |
 | II. Single CGO-free binary | PASS | The SDK and its dependencies are pure Go. `/mcp` is a sub-router with SPA-fallback protection, and a test is added for it. |
 | III. Resource efficiency & minimal egress | PASS | Deep Index and MCP make no outbound calls. Worker count is bounded by GOMAXPROCS. Header-only parsing keeps memory small. |
-| IV. Schema & query discipline | PASS | Goose migration 006. Static queries go through sqlc. Dynamic FTS and filter SQL stays in bob (`booksfilter.go`, `fts.go`), and every value is parameterized. |
+| IV. Schema & query discipline | PASS | Goose migrations 006, 008 and 009. Static queries go through sqlc. Dynamic FTS and filter SQL stays in bob (`booksfilter.go`, `fts.go`), and every value is parameterized. |
 | V. Testify suites | PASS | New packages each get a runner file. All tests are suite methods and hermetic, using fixtures and `t.TempDir()`. |
 | VI. Idiomatic Go & explicit deps | PASS | The new dependency was approved and gets recorded in `CLAUDE.md`. Interfaces are declared at the consumer. Wiring happens in `cmd/folio-idx/main.go` only. |
 | VII. Security boundaries | PASS | `/mcp` has no app auth, like `/api`, and the docs require an external authenticator (Cloudflare Access OAuth). It is read-only, so the state-changing CSRF guard does not apply. Links use `PUBLIC_URL`, never `X-Forwarded-Host`. |
@@ -98,24 +101,24 @@ Post-design re-check: PASS (no change).
 - Replace `updateBookFTSColumn` and its four wrappers with `RefreshBookFTS(ctx, dbtx, bookID)`. It reads the title, the authors in `book_authors` order, the series name and the annotation, then does a full-row `UPDATE`, or an `INSERT` if the row is missing. Callers to switch over: `ingest/merge.go` (`applyFTS`, authors relink), `ingest/backfill.go`, `api/enrich.go` (enrichment and Fix Match).
 
 **FB2 header parser (`internal/ebook`)**:
-- `ParseFB2Description(io.Reader) (Metadata, error)` reads tokens up to `<description>`, decodes that element, then stops.
+- `parseFB2Header(io.Reader) (Metadata, error)` reads tokens up to `<description>`, decodes that element, then stops. It also stops at the first `<body>` or `<binary>`, so a well-formed FB2 without a `<description>` reads as empty metadata.
+- It was first shipped as the exported `ParseFB2Description`; since feature 002 (unified book reading) it is reached through the FB2 parser's `Metadata` in the `ebook.Dispatcher`.
 - It shares the charset decoder, the annotation normalizer and the identifier extraction with the full parser.
 
 **DeepIndexer (`internal/ingest/deepindex.go`)**:
 - `Run(ctx, library, scope, reporter) (DeepIndexResult, error)`.
-- Scope is either `All` or `ImportedAt(stamp)`.
+- Scope is either `DeepIndexAll()` or `DeepIndexImportedAt(stamp)`.
 - Flow:
-  1. Load the work list with sqlc.
-  2. `reporter.SetTotal`.
-  3. INPX books: group by archive and hand each archive to a worker.
-  4. Other library types: per-book `Extractor.Backfill`.
-  5. Results go through a channel to a single writer.
-  6. Writer: each batch of 500 commits under `WriteGuard.WithTx` and calls `reporter.Add`.
+  1. Count the work with sqlc (`CountDeepIndexWork`) and call `reporter.SetTotal`.
+  2. Load the work list a page of 5,000 books at a time, in book-id order (`ListDeepIndexWork` with `after_id`/`lim`), each book with all its files.
+  3. Group each page's books by the archive of their top-ranked file (the reader ranks EPUB, FB2, MOBI; PDF is not read for descriptions) and hand each group to a worker, which opens the archive once. A book not in an archive is a job of its own. This applies to every library type.
+  4. Results go through a channel to a single writer.
+  5. Writer: each batch of 500 commits under `WriteGuard.WithTx` and calls `reporter.Add`.
 - Skip rules:
   - PDF-only books are marked checked.
-  - Read or parse errors leave the book unchecked.
+  - Read or parse errors leave the book unchecked. A failure that may pass (I/O, an unreadable archive) is retried by the next run; a missing entry or unparseable file is recorded in `book_read_failures` and not read again until the file or the reader version changes (feature 002).
   - An entry with no annotation is marked checked.
-- Result counts: `checked`, `filled`, `skipped`, `errors`.
+- Result counts: `checked`, `filled`, `skipped`, `broken`, `known_broken`, `errors`.
 
 **Engine (`internal/sync`)**:
 - `syncReq{id, force, kind}`; dedup is per `(id, kind)`.
@@ -140,26 +143,29 @@ Post-design re-check: PASS (no change).
 ### Part 2: MCP endpoint
 
 **Search filter (`internal/db/booksfilter.go`)**:
-- `quoteToken` supports a trailing `*` as a prefix match.
+- `quoteSearchToken` supports a trailing `*` as a prefix match, and drops a token with no letter or digit (punctuation or `*` only).
 - `BookFilter` gains `AnyTerms []string` (an OR group), `YearFrom` and `YearTo`.
+- bm25 ties are broken by book id, so offset paging is stable.
+- `SearchTerms` exposes each token and its prefix length, so `search_books` can bound a request's cost before running it.
 
 **Package `internal/mcpserver`**:
-- `New(log, database, publicURL, genres) http.Handler` builds an `mcp.Server` with the five tools and returns `mcp.NewStreamableHTTPHandler(..., Stateless: true, JSONResponse: true)`.
-- Each tool is a typed `mcp.AddTool` handler over a small consumer-declared interface (`catalog`), backed by `db` and `dbq`.
+- `New(log, database, publicURL, version) http.Handler` builds an `mcp.Server` with the five tools and returns `mcp.NewStreamableHTTPHandler(..., Stateless: true, JSONResponse: true, DisableLocalhostProtection: true)`. The SDK's localhost Host-header guard is off because cloudflared or another proxy may reach Folio over loopback with the public Host.
+- Each tool is a typed `mcp.AddTool` handler that queries the `*sql.DB` through `db` and `dbq`.
+- `search_books` bounds its input: at most 20 `any_terms`, 500 characters per text field, 40 words across all fields, 10 prefix terms, and 3 letters before a `*`.
 - Contract: [contracts/mcp-tools.md](./contracts/mcp-tools.md).
 
 **Similar books (`internal/db/similar.go`)**:
-1. Pick distinctive terms: tokenize the stripped annotation in Go, take document frequency from `books_fts_vocab`, and keep the top 8 by tf·idf among terms with df > 1.
-2. Build candidates from the bm25-ranked OR match on those terms, plus same-series books, same-author books, and genre overlap.
-3. Merge and dedupe, excluding the source book, and attach a `reason` to each.
-4. Limit to 20 by default, 50 at most.
+1. Pick distinctive terms: tokenize the stripped annotation in Go, take the annotation-column document frequency from `books_fts_vocab_col`, with N the number of described books, and keep the top 8 by tf·idf among terms with df > 1.
+2. Build candidates from the bm25-ranked OR match on those terms, scoped to the annotation column, plus same-series books, same-author books, and genre overlap.
+3. Merge and dedupe in that order, excluding the source book, and attach a `reason` to each.
+4. Limit to 20 by default, 50 at most. A candidate deleted by a concurrent sync before it is loaded is dropped.
 
 **Server (`internal/server/server.go`)**:
 - `Handlers.MCP http.Handler`.
 - `r.Route("/mcp", ...)` with no CSRF or form guards.
 - `TestAPIAndOPDSFallbackProtection` gets cases for `/mcp/*`.
 
-**Composition**: `cmd/folio-idx/main.go` builds `mcpserver.New(log, database, cfg.PublicURL, ...)` and creates `ingest.NewDeepIndexer`, which it injects into `sync.New`.
+**Composition**: `cmd/folio-idx/main.go` builds `mcpserver.New(log, database, cfg.PublicURL, buildVersion())` and creates `ingest.NewDeepIndexer`, which it injects into `sync.New` with the `sync.WithDeepIndexer` option.
 
 ### Documentation (same change, constitution "Documentation")
 
@@ -195,11 +201,13 @@ specs/001-mcp-book-discovery/
 internal/
 ├── db/
 │   ├── migrations/006_fts_contentless.sql      # new
+│   ├── migrations/008_fts_vocab_col.sql        # new: annotation-column vocab
+│   ├── migrations/009_books_described_index.sql # new: described-books index
 │   ├── queries/books.sql                       # + unchecked work list, languages w/ counts
 │   ├── fts.go                                  # RefreshBookFTS replaces column updates
 │   ├── booksfilter.go                          # prefix terms, AnyTerms, YearFrom/To
 │   └── similar.go                              # new: distinctive terms + candidates
-├── ebook/fb2.go                                # + ParseFB2Description
+├── ebook/fb2.go                                # + header-only FB2 parse
 ├── ingest/
 │   ├── deepindex.go                            # new: DeepIndexer
 │   ├── ingest.go / driver.go                   # Result.ImportedAt
@@ -209,7 +217,7 @@ internal/
 │   ├── sync.go, sync_handler.go                # deep-index all
 │   └── enrich.go                               # → RefreshBookFTS
 ├── sync/engine.go, reporter.go                 # request kind, post-sync fill, Status.Kind
-├── mcpserver/                                  # new: server.go, tools.go, links.go, mcpserver_test.go
+├── mcpserver/                                  # new: server.go, tools.go, summary.go, links.go, + tests
 └── server/server.go                            # /mcp route
 cmd/folio-idx/main.go                           # wiring
 web/src/

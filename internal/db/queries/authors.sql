@@ -104,3 +104,14 @@ ON CONFLICT DO NOTHING;
 DELETE
 FROM book_authors
 WHERE book_id = ?;
+
+-- name: ListAuthorMateIDs :many
+-- Other books sharing an author with the given book, most shared authors first.
+SELECT other.book_id
+FROM book_authors src
+         JOIN book_authors other ON other.author_id = src.author_id
+WHERE src.book_id = sqlc.arg(book_id)
+  AND other.book_id <> sqlc.arg(book_id)
+GROUP BY other.book_id
+ORDER BY COUNT(*) DESC, other.book_id
+LIMIT sqlc.arg(lim);

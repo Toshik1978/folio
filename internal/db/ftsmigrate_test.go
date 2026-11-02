@@ -26,6 +26,7 @@ const (
 	versionBeforeFTSRowid = 4
 	versionFTSRowid       = 5
 	versionFTSContentless = 6
+	versionFTSVocabCol    = 8
 )
 
 // SetupTest opens a database migrated only as far as 004, i.e. with books_fts
@@ -204,6 +205,23 @@ func (s *ftsMigrationSuite) TestVocabReturnsDocumentFrequency() {
 
 	s.Equal(2, s.count(`SELECT doc FROM books_fts_vocab WHERE term = 'zeppelins'`))
 	s.Equal(1, s.count(`SELECT doc FROM books_fts_vocab WHERE term = 'petrov'`))
+}
+
+// TestVocabColCountsPerColumn checks migration 008 swaps the row vocab view for
+// a per-column one, so a description's document frequency ignores titles and
+// authors, and that its Down leg restores the row view.
+func (s *ftsMigrationSuite) TestVocabColCountsPerColumn() {
+	s.migrateToContentless()
+	s.Require().NoError(goose.UpTo(s.db, "migrations", versionFTSVocabCol))
+
+	s.Equal(2, s.count(`SELECT doc FROM books_fts_vocab_col WHERE term = 'zeppelins' AND col = 'annotation'`))
+	s.Equal(1, s.count(`SELECT doc FROM books_fts_vocab_col WHERE term = 'alpha' AND col = 'title'`))
+	s.Zero(s.count(`SELECT count(*) FROM books_fts_vocab_col WHERE term = 'alpha' AND col = 'annotation'`))
+	s.Zero(s.count(`SELECT count(*) FROM sqlite_master WHERE name = 'books_fts_vocab'`))
+
+	s.Require().NoError(goose.DownTo(s.db, "migrations", versionFTSContentless))
+	s.Equal(2, s.count(`SELECT doc FROM books_fts_vocab WHERE term = 'zeppelins'`))
+	s.Zero(s.count(`SELECT count(*) FROM sqlite_master WHERE name = 'books_fts_vocab_col'`))
 }
 
 // TestContentlessDownRebuildsFromBooks checks the Down leg restores a content

@@ -45,7 +45,8 @@ internal/db/migrations/
 ├── 004_book_cover_state.sql           # cover state columns on books
 ├── 005_fts_rowid_key.sql              # books_fts keyed by rowid (= books.id) instead of a book_id column
 ├── 006_fts_contentless.sql            # books_fts becomes contentless-delete; adds the books_fts_vocab view
-└── 007_book_read_failures.sql         # book_read_failures: remembered unreadable sources, per book and flow
+├── 007_book_read_failures.sql         # book_read_failures: remembered unreadable sources, per book and flow
+└── 008_fts_vocab_col.sql              # books_fts_vocab (row view) replaced by books_fts_vocab_col (per-column view)
 ```
 
 The migration files are embedded into the binary (`go:embed`) and run
@@ -313,7 +314,7 @@ CREATE VIRTUAL TABLE books_fts USING fts5(
     tokenize = 'unicode61 remove_diacritics 1'
 );
 
-CREATE VIRTUAL TABLE books_fts_vocab USING fts5vocab (books_fts, 'row');
+CREATE VIRTUAL TABLE books_fts_vocab_col USING fts5vocab (books_fts, 'col'); -- migration 008
 ```
 
 - **Keyed by rowid.** An index row's `rowid` is `books.id`; there is no `book_id`
@@ -330,8 +331,11 @@ CREATE VIRTUAL TABLE books_fts_vocab USING fts5vocab (books_fts, 'row');
   `books` / joins first and call it inside the same transaction. `InsertBookFTS`
   writes the row for a new book. Both are built with `bob` rather than sqlc
   (sqlc cannot parse a table with a `rowid` column).
-- **`books_fts_vocab`** is an `fts5vocab` `row` view over the index; it exposes
-  the document frequency of each term.
+- **`books_fts_vocab_col`** (migration 008) is an `fts5vocab` `col` view over the
+  index: one row per (term, column) with that column's document frequency. "Similar
+  books" reads the `annotation` rows, so a word's weight depends on descriptions
+  only. It replaced 006's `books_fts_vocab` `row` view, which counted a book for a
+  match in any column. Both are views; neither stores data.
 - `unicode61 remove_diacritics 1` normalizes accented characters for multilingual search.
 - The up leg of 006 re-tokenizes every row once, on the first startup that carries it.
   The down leg is lossy: it rebuilds rows from `books` with the raw (unstripped)

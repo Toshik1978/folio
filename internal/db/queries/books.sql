@@ -279,6 +279,16 @@ FROM books b
 WHERE (CAST(@library_id AS INTEGER) = 0 OR b.library_id = @library_id)
 ORDER BY b.language;
 
+-- ListLanguagesWithCounts returns each non-empty language code with its book
+-- count, most common first (ties by code). library_id 0 means all libraries.
+-- name: ListLanguagesWithCounts :many
+SELECT b.language, COUNT(*) AS book_count
+FROM books b
+WHERE b.language <> ''
+  AND (CAST(@library_id AS INTEGER) = 0 OR b.library_id = @library_id)
+GROUP BY b.language
+ORDER BY book_count DESC, b.language ASC;
+
 -- GetCoverState returns the lazy cover-extraction marker for a book
 -- (0=unknown, 1=has real cover, 2=parsed/none). Drives the cover serve path.
 -- name: GetCoverState :one
@@ -335,6 +345,15 @@ FROM (SELECT p.id
          JOIN book_files f ON f.book_id = b.id
          LEFT JOIN book_read_failures rf ON rf.book_id = b.id AND rf.flow = 'metadata'
 ORDER BY f.source_path, b.id;
+
+-- name: ListSeriesMateIDs :many
+-- Other books of a series, in reading order (unnumbered last); "books like this".
+SELECT id
+FROM books
+WHERE series_id = sqlc.arg(series_id)
+  AND id <> sqlc.arg(book_id)
+ORDER BY series_number IS NULL, series_number, id
+LIMIT sqlc.arg(lim);
 
 -- ResetCoverState forgets a book's imported or lazily extracted cover after its
 -- file changed, so the next view re-extracts it: cover_state back to unknown and

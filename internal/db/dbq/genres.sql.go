@@ -36,6 +36,19 @@ func (q *Queries) DeleteBookGenres(ctx context.Context, bookID int64) error {
 	return err
 }
 
+const genreExists = `-- name: GenreExists :one
+SELECT EXISTS (SELECT 1 FROM genres WHERE name = ?) AS found
+`
+
+// GenreExists reports whether a genre with exactly this display name exists;
+// the MCP search tool uses it to reject a genre not taken from list_facets.
+func (q *Queries) GenreExists(ctx context.Context, name string) (bool, error) {
+	row := q.db.QueryRowContext(ctx, genreExists, name)
+	var found bool
+	err := row.Scan(&found)
+	return found, err
+}
+
 const genreFirstChars = `-- name: GenreFirstChars :many
 SELECT DISTINCT substr(g.name_fold, 1, 1) AS first_char
 FROM genres g
@@ -104,6 +117,46 @@ func (q *Queries) InsertGenre(ctx context.Context, arg InsertGenreParams) (int64
 	var id int64
 	err := row.Scan(&id)
 	return id, err
+}
+
+const listGenreMateIDs = `-- name: ListGenreMateIDs :many
+SELECT other.book_id
+FROM book_genres src
+         JOIN book_genres other ON other.genre_id = src.genre_id
+WHERE src.book_id = ?1
+  AND other.book_id <> ?1
+GROUP BY other.book_id
+ORDER BY COUNT(*) DESC, other.book_id
+LIMIT ?2
+`
+
+type ListGenreMateIDsParams struct {
+	BookID int64
+	Lim    int64
+}
+
+// Other books sharing a genre with the given book, most shared genres first.
+func (q *Queries) ListGenreMateIDs(ctx context.Context, arg ListGenreMateIDsParams) ([]int64, error) {
+	rows, err := q.db.QueryContext(ctx, listGenreMateIDs, arg.BookID, arg.Lim)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []int64
+	for rows.Next() {
+		var book_id int64
+		if err := rows.Scan(&book_id); err != nil {
+			return nil, err
+		}
+		items = append(items, book_id)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const listGenres = `-- name: ListGenres :many

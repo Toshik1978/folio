@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"testing/fstest"
 
@@ -13,6 +14,7 @@ import (
 	"github.com/stretchr/testify/suite"
 
 	"github.com/Toshik1978/folio/internal/api"
+	"github.com/Toshik1978/folio/internal/mcpserver"
 	"github.com/Toshik1978/folio/internal/sync"
 )
 
@@ -47,6 +49,12 @@ func defaultHandlers() Handlers {
 		API:  []Registrar{stubRegistrar{path: "/ping"}},
 		OPDS: stubOPDS{},
 	}
+}
+
+func mcpHandlers() Handlers {
+	h := defaultHandlers()
+	h.MCP = mcpserver.New(slog.New(slog.DiscardHandler), nil, "", "dev")
+	return h
 }
 
 func TestServer(t *testing.T) {
@@ -195,8 +203,10 @@ func (s *serverTestSuite) TestAPIAndOPDSFallbackProtection() {
 		{"/api/v1/invalid-route"},
 		{"/opds/invalid-route"},
 		{"/opds/nope/deep"},
+		{"/mcp/unknown"},
+		{"/mcp/unknown/deep"},
 	}
-	router := newWithFS(slog.New(slog.DiscardHandler), defaultHandlers(), "production", true, "", http.FS(s.testFS))
+	router := newWithFS(slog.New(slog.DiscardHandler), mcpHandlers(), "production", true, "", http.FS(s.testFS))
 
 	for _, tc := range testCases {
 		s.Run(tc.path, func() {
@@ -211,6 +221,72 @@ func (s *serverTestSuite) TestAPIAndOPDSFallbackProtection() {
 				"expected status %d (Not Found) for path %q, got %d", http.StatusNotFound, tc.path, resp.StatusCode)
 		})
 	}
+}
+
+func (s *serverTestSuite) TestMCPPostWithoutOriginReachesHandler() {
+	router := newWithFS(
+		slog.New(slog.DiscardHandler),
+		mcpHandlers(),
+		"production",
+		true,
+		"https://folio.example",
+		http.FS(s.testFS),
+	)
+	body := `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"t","version":"0"}}}`
+
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/mcp", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	s.Equal(http.StatusOK, w.Code)
+	s.Contains(w.Header().Get("Content-Type"), "application/json")
+	s.Contains(w.Body.String(), `"name":"folio"`)
+}
+
+func (s *serverTestSuite) TestMCPPostForeignOriginNotGuarded() {
+	router := newWithFS(
+		slog.New(slog.DiscardHandler),
+		mcpHandlers(),
+		"production",
+		true,
+		"https://folio.example",
+		http.FS(s.testFS),
+	)
+	body := `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"t","version":"0"}}}`
+
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/mcp", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
+	req.Header.Set("Origin", "https://claude.ai")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	s.Equal(http.StatusOK, w.Code)
+}
+
+func (s *serverTestSuite) TestMCPMethodNotAllowed() {
+	router := newWithFS(slog.New(slog.DiscardHandler), mcpHandlers(), "production", true, "", http.FS(s.testFS))
+
+	for _, method := range []string{http.MethodGet, http.MethodDelete} {
+		s.Run(method, func() {
+			req := httptest.NewRequestWithContext(context.Background(), method, "/mcp", http.NoBody)
+			w := httptest.NewRecorder()
+			router.ServeHTTP(w, req)
+			s.Equal(http.StatusMethodNotAllowed, w.Code)
+		})
+	}
+}
+
+func (s *serverTestSuite) TestMCPNotMountedWhenNil() {
+	router := newWithFS(slog.New(slog.DiscardHandler), defaultHandlers(), "production", true, "", http.FS(s.testFS))
+
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/mcp", strings.NewReader("{}"))
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	s.NotContains(w.Body.String(), "jsonrpc")
 }
 
 func (s *serverTestSuite) TestStaticAssetsFallbackProtection() {

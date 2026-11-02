@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"strings"
+	"unicode"
 
 	"github.com/stephenafamo/bob"
 	"github.com/stephenafamo/bob/dialect/sqlite"
@@ -29,7 +30,8 @@ func (f FieldFilter) search() bool { return f.Value != "" && !f.Exact }
 // and the remaining fields are SQL equality constraints. With no FTS term the
 // listing is ordered newest first.
 type BookFilter struct {
-	Query     string      // free-text FTS across all columns
+	Query     string      // free-text FTS across all columns; a token ending in * is a prefix match
+	AnyTerms  []string    // OR group of terms (each a token or AND of words), ANDed with Query
 	Title     FieldFilter // partial → title: FTS; exact → books.title =
 	Author    FieldFilter // partial → authors: FTS; exact → authors.name =
 	Series    FieldFilter // partial → series: FTS; exact → series.name =
@@ -38,6 +40,8 @@ type BookFilter struct {
 	LibraryID int64       // when non-zero, restrict to this library
 	Lang      string      // language code, e.g. "en"
 	Publisher string      // exact publisher name
+	YearFrom  int         // inclusive lower bound on books.year; 0 = unset
+	YearTo    int         // inclusive upper bound on books.year; 0 = unset
 	// Unreadable restricts to books whose metadata read failed at ReaderVersion
 	// (a book_read_failures row, flow 'metadata'). Rows from an older reader
 	// version are stale and do not count.
@@ -66,17 +70,71 @@ func quoteToken(tok string) string {
 	return `"` + strings.ReplaceAll(tok, `"`, `""`) + `"`
 }
 
+// quoteSearchToken quotes one whitespace-delimited token for FTS5. A token with
+// trailing * becomes a prefix query ("stem"*, the * outside the quotes); the
+// stem is quoted like any other token, so quotes in it cannot inject syntax.
+// Returns "" for a token with no letter, digit or private-use rune once the
+// trailing *s are removed (a lone "*", "—", "-*"): the tokenizer would turn it
+// into an empty phrase, which inside an AND matches nothing and zeroes the
+// whole search, so it is dropped instead.
+func quoteSearchToken(tok string) string {
+	stem := strings.TrimRight(tok, "*")
+	if !strings.ContainsFunc(stem, isFTSWordRune) {
+		return ""
+	}
+	if len(stem) < len(tok) {
+		return quoteToken(stem) + "*"
+	}
+
+	return quoteToken(tok)
+}
+
+// HasSearchTokens reports whether value yields at least one FTS token, i.e.
+// contains a word that is not just punctuation or stars.
+func HasSearchTokens(value string) bool {
+	return len(ftsTokens(value)) > 0
+}
+
+// lastWordRunes counts the word runes of the last word in s, ignoring any
+// trailing separators: for "co-op." it is 2 ("op").
+func lastWordRunes(s string) int {
+	rs := []rune(s)
+	end := len(rs)
+	for end > 0 && !isFTSWordRune(rs[end-1]) {
+		end--
+	}
+	start := end
+	for start > 0 && isFTSWordRune(rs[start-1]) {
+		start--
+	}
+
+	return end - start
+}
+
+// isFTSWordRune reports whether r is part of a token for the unicode61 tokenizer.
+func isFTSWordRune(r rune) bool {
+	return unicode.IsLetter(r) || unicode.IsNumber(r) || unicode.Is(unicode.Co, r)
+}
+
+// ftsTokens splits value on whitespace and quotes each surviving token.
+func ftsTokens(value string) []string {
+	var out []string
+	for t := range strings.FieldsSeq(value) {
+		if q := quoteSearchToken(t); q != "" {
+			out = append(out, q)
+		}
+	}
+
+	return out
+}
+
 // ftsClause builds an AND-of-tokens FTS5 expression for value, optionally scoped
 // to a single column (empty col = all columns). Returns "" when value has no
 // tokens. The whole clause is parenthesized so clauses compose under AND.
 func ftsClause(col, value string) string {
-	tokens := strings.Fields(value)
-	if len(tokens) == 0 {
+	quoted := ftsTokens(value)
+	if len(quoted) == 0 {
 		return ""
-	}
-	quoted := make([]string, len(tokens))
-	for i, t := range tokens {
-		quoted[i] = quoteToken(t)
 	}
 	expr := strings.Join(quoted, " AND ")
 	if len(quoted) > 1 {
@@ -89,21 +147,77 @@ func ftsClause(col, value string) string {
 	return "(" + expr + ")"
 }
 
+// anyClause builds the OR group for terms: "(t1 OR t2 ...)". A multi-word term
+// is the AND of its words (all must appear, in any order). Blank terms are
+// dropped; returns "" when none remain.
+func anyClause(terms []string) string {
+	var alts []string
+	for _, term := range terms {
+		toks := ftsTokens(term)
+		switch len(toks) {
+		case 0:
+		case 1:
+			alts = append(alts, toks[0])
+		default:
+			alts = append(alts, "("+strings.Join(toks, " AND ")+")")
+		}
+	}
+	if len(alts) == 0 {
+		return ""
+	}
+
+	return "(" + strings.Join(alts, " OR ") + ")"
+}
+
+// SearchTerm is one token of a search value as the FTS match uses it.
+type SearchTerm struct {
+	// Prefix is set for a token ending in *, which expands across the vocabulary.
+	Prefix bool
+	// PrefixRunes is, for a prefix token, the letters and digits of the word
+	// the * applies to (the last word of the stem, as the tokenizer splits it):
+	// the shorter it is, the more of the vocabulary it expands to.
+	PrefixRunes int
+}
+
+// SearchTerms returns the tokens value contributes to a search, in order, so a
+// caller can bound a request's cost before running it. Tokens dropped from the
+// match (punctuation or stars only) are not returned.
+func SearchTerms(value string) []SearchTerm {
+	var out []SearchTerm
+	for t := range strings.FieldsSeq(value) {
+		if quoteSearchToken(t) == "" {
+			continue
+		}
+		stem := strings.TrimRight(t, "*")
+		if len(stem) == len(t) {
+			out = append(out, SearchTerm{})
+			continue
+		}
+		out = append(out, SearchTerm{Prefix: true, PrefixRunes: lastWordRunes(stem)})
+	}
+
+	return out
+}
+
 // ftsMatch assembles the single FTS5 MATCH expression from the free-text query
 // and any non-exact facet filters. Returns "" when there is nothing to match.
 func (f BookFilter) ftsMatch() string {
 	var clauses []string
-	if c := ftsClause("", f.Query); c != "" {
-		clauses = append(clauses, c)
+	add := func(c string) {
+		if c != "" {
+			clauses = append(clauses, c)
+		}
 	}
+	add(ftsClause("", f.Query))
+	add(anyClause(f.AnyTerms))
 	if f.Title.search() {
-		clauses = append(clauses, ftsClause("title", f.Title.Value))
+		add(ftsClause("title", f.Title.Value))
 	}
 	if f.Author.search() {
-		clauses = append(clauses, ftsClause("authors", f.Author.Value))
+		add(ftsClause("authors", f.Author.Value))
 	}
 	if f.Series.search() {
-		clauses = append(clauses, ftsClause("series", f.Series.Value))
+		add(ftsClause("series", f.Series.Value))
 	}
 
 	return strings.Join(clauses, " AND ")
@@ -116,7 +230,9 @@ func FilterBooks(ctx context.Context, db *sql.DB, f BookFilter) ([]dbq.Book, err
 	mods = append(mods, sm.Columns(bookColumns...))
 	switch {
 	case f.ftsMatch() != "":
-		mods = append(mods, sm.OrderBy("bm25(books_fts)"))
+		// The id tie-break keeps offset paging stable: books with equal column
+		// lengths (e.g. INPX records without annotations) tie on bm25.
+		mods = append(mods, sm.OrderBy("bm25(books_fts)"), sm.OrderBy("b.id").Desc())
 	case f.Sort == "rating":
 		// Unrated books (NULL) sort last; ties broken by recency.
 		mods = append(mods,
@@ -238,6 +354,16 @@ func (f BookFilter) filterMods() []bob.Mod[*dialect.SelectQuery] {
 			sm.Where(sqlite.Quote("g", "name").EQ(sqlite.Arg(f.Genre))),
 		)
 	}
+	mods = append(mods, f.scalarMods()...)
+
+	return mods
+}
+
+// scalarMods builds the plain column constraints (library, format, language,
+// year range, publisher); each value is bound as an argument.
+func (f BookFilter) scalarMods() []bob.Mod[*dialect.SelectQuery] {
+	var mods []bob.Mod[*dialect.SelectQuery]
+
 	if f.LibraryID != 0 {
 		mods = append(mods, sm.Where(sqlite.Quote("b", "library_id").EQ(sqlite.Arg(f.LibraryID))))
 	}
@@ -256,6 +382,12 @@ func (f BookFilter) filterMods() []bob.Mod[*dialect.SelectQuery] {
 	}
 	if f.Lang != "" {
 		mods = append(mods, sm.Where(sqlite.Quote("b", "language").EQ(sqlite.Arg(f.Lang))))
+	}
+	if f.YearFrom != 0 {
+		mods = append(mods, sm.Where(sqlite.Quote("b", "year").GTE(sqlite.Arg(f.YearFrom))))
+	}
+	if f.YearTo != 0 {
+		mods = append(mods, sm.Where(sqlite.Quote("b", "year").LTE(sqlite.Arg(f.YearTo))))
 	}
 	if f.Publisher != "" {
 		mods = append(mods, sm.Where(sqlite.Quote("b", "publisher").EQ(sqlite.Arg(f.Publisher))))

@@ -16,6 +16,7 @@
      |                       |
      |-- /api/* ---> auth    |
      |-- /*    ---> auth     |
+     |-- /mcp  ---> auth     |   (Claude.ai, OAuth)
      |-- /opds* --> direct --+
      |                       |
      +----------+------------+
@@ -33,6 +34,8 @@
   |   |           SPA        | |
   |   |  /opds/*  Basic Auth | |
   |   |           + Atom XML | |
+  |   |  /mcp     MCP tools  | |
+  |   |           (no auth)  | |
   |   |                      | |
   |   |  +------+ +-------+  | |
   |   |  |SQLite| |go-chi |  | |
@@ -95,6 +98,7 @@ folio/
 │   ├── settings/           # /api/settings handler (thin adapter over the auth service)
 │   ├── auth/               # OPDS Basic Auth: credential storage, hashing, middleware
 │   ├── opds/               # OPDS catalog handlers + hand-rolled Atom XML (/opds/*)
+│   ├── mcpserver/          # Read-only MCP server (/mcp): list_libraries, list_facets, search_books, get_book
 │   ├── server/             # Router assembly, middleware, SPA serving
 │   ├── db/                 # SQLite open/migrations, sqlc queries (dbq/), dynamic book filter (Bob)
 │   ├── ingest/             # Source parsers (calibre/inpx/folder) + reconciliation/merge

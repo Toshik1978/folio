@@ -55,7 +55,8 @@ serving from the embed mechanism (enables test injection via `fstest.MapFS`).
 Handlers arrive already constructed by the composition root, each satisfying the
 local `Registrar` interface (`Register(chi.Router)`); `server` knows nothing about
 their concrete types. The root router wires the built-in health route, mounts the
-ordered API + OPDS registrars, and adds the SPA catch-all:
+ordered API + OPDS registrars, mounts the optional MCP handler, and adds the SPA
+catch-all:
 
 ```go
 r.Route("/api", func(api chi.Router) {
@@ -65,6 +66,9 @@ r.Route("/api", func(api chi.Router) {
     }
 })
 r.Route("/opds", func(o chi.Router) { h.OPDS.Register(o) }) // internal/opds
+if h.MCP != nil {                                           // internal/mcpserver
+    r.Route("/mcp", func(m chi.Router) { m.Handle("/", h.MCP) })
+}
 r.HandleFunc("/*", webHandler(fs))                          // SPA + static assets
 ```
 
@@ -79,12 +83,17 @@ Applied globally on the root router, in this order:
 | `middleware.Recoverer` | Panic recovery → `500` |
 
 The OPDS sub-router adds HTTP Basic Auth on its protected group (see
-[NETWORKING.md](./NETWORKING.md)).
+[NETWORKING.md](./NETWORKING.md)). The `/api` group additionally carries
+`sameSiteGuard` and `formBodyGuard` (CSRF). `/mcp` carries **neither** and no
+application auth: Claude.ai posts JSON-RPC cross-origin and authentication is
+external (see [NETWORKING.md](./NETWORKING.md#mcp-endpoint-mcp-and-claudeai)). Its
+sub-router handles only `/mcp`, so unknown `/mcp/*` paths return `404` rather than
+falling through to the SPA.
 
 ### Route Table
 
 `/api/*` is mounted from `internal/api` (`Routes()`), `/opds/*` from
-`internal/opds`; both are listed with their full external paths.
+`internal/opds`, `/mcp` from `internal/mcpserver`; all are listed with their full external paths.
 
 | Method | Path | Description |
 | :--- | :--- | :--- |
@@ -122,6 +131,7 @@ The OPDS sub-router adds HTTP Basic Auth on its protected group (see
 | `GET` | `/opds/books/{id}/files/{fileID}` | OPDS file download (Basic Auth) |
 | `GET` | `/opds/books/{id}/cover` | Book cover image (unauthenticated) |
 | `GET` | `/opds/books/{id}/cover/thumbnail` | Book cover thumbnail (unauthenticated) |
+| `POST` | `/mcp` | MCP (Streamable HTTP, stateless): `list_libraries`, `list_facets`, `search_books`, `get_book` — no app auth (see [API.md](./API.md#mcp-endpoint-mcp)) |
 | `GET` | `/*` | SPA: serve embedded static asset or fall back to `index.html` |
 
 Full request/response shapes for these endpoints live in
@@ -251,6 +261,11 @@ internal/
 │   ├── booksfilter.go     #   dynamic book filter (Bob builder; see DATABASE.md)
 │   ├── migrations/        #   goose numbered SQL (consolidated; see DATABASE.md)
 │   └── dbq/               #   sqlc-generated queries + models
+├── mcpserver/             # Read-only MCP server (/mcp): book discovery tools
+│   ├── server.go          #   New(log, db, publicURL, version) → stateless Streamable HTTP handler
+│   ├── tools.go           #   list_libraries / list_facets / search_books / get_book
+│   ├── summary.go         #   BookSummary / BookDetail shapes, excerpt building
+│   └── links.go           #   bookLink: {PUBLIC_URL}/books/{id}
 ├── bookfile/              # Shared file-format helpers (content types, ext)
 ├── sync/                  # Background sync engine
 │   ├── engine.go          #   New(), Start(), Stop(), triggers, Status()
@@ -365,6 +380,7 @@ srv := &http.Server{Addr: ":" + cfg.Port, Handler: server.New(log, server.Handle
         settings.New(log, authn),
     },
     OPDS: opds.New(log, database, coverStore, authn, cfg.PublicURL),
+    MCP:  mcpserver.New(log, database, cfg.PublicURL, buildVersion()),
 }, cfg.Env, cfg.NoColorEnabled())}
 ```
 
@@ -397,6 +413,7 @@ Verified import graph (`go list`):
 | `sync` | `db/dbq`, `ingest`, `events` |
 | `api` | `db`, `db/dbq`, `sync`, `bookfile`, `htmltext`, `ebook`, `googlebooks`, `events` |
 | `opds` | `db`, `db/dbq`, `bookfile` |
+| `mcpserver` | `db`, `db/dbq`, `htmltext` |
 | `server` | `api` |
 
 `settings` imports no internal package at all (it drives the auth service purely
@@ -426,3 +443,16 @@ types the `/api/sync/events` SSE stream frames.
   implementations in `ingest`/`covers`/`auth`/`sync` satisfy them structurally, so
   `api` never imports `ingest`, `opds`/`settings` never import `auth`/`covers`, and
   `server` stays free of leaf imports.
+
+### `internal/mcpserver`
+
+A read-only MCP server (`github.com/modelcontextprotocol/go-sdk`) exposing four
+tools: `list_libraries`, `list_facets`, `search_books` and `get_book`. `New`
+returns an `http.Handler` (stateless Streamable HTTP, JSON responses) that
+`server` mounts at `/mcp` through the `Handlers.MCP` field; `server` sees only
+`http.Handler`. The server identity is `folio` / `Folio library`, with the version
+supplied by `buildVersion()` in `main.go` (the module version, or `dev`). Searches
+go through the same `db` dynamic filter as the web UI, so a trailing `*` is a
+prefix match and results rank by BM25. Result links are built from `PUBLIC_URL`.
+The package performs no authentication and makes no outbound calls. Tool
+contracts are in [API.md](./API.md#mcp-endpoint-mcp).
