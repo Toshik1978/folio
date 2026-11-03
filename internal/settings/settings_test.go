@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -103,6 +104,11 @@ func (s *settingsSuite) TestPutPartialLeavesPassNil() {
 func (s *settingsSuite) TestPutInvalidBodyIs400() {
 	s.Equal(http.StatusBadRequest, s.do(http.MethodPut, `not-json`).Code)
 	s.Equal(0, s.svc.setCalls)
+}
+
+func (s *settingsSuite) TestPutBusyIs503() {
+	s.svc.setErr = fmt.Errorf("save opds credentials: %w", context.DeadlineExceeded)
+	s.Equal(http.StatusServiceUnavailable, s.do(http.MethodPut, `{"opds_user":"reader"}`).Code)
 }
 
 func (s *settingsSuite) TestPutSetErrorIs500() {

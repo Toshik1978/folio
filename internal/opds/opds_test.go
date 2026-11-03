@@ -59,7 +59,7 @@ func (s *baseSuite) SetupTest() {
 	s.db = database
 	s.q = dbq.New(database)
 	s.covers = store
-	s.authn = auth.New(slog.New(slog.DiscardHandler), database)
+	s.authn = auth.New(slog.New(slog.DiscardHandler), database, db.NewWriteGuard())
 	s.handler = New(slog.New(slog.DiscardHandler), database, store, nil, s.authn, "")
 
 	r := chi.NewRouter()

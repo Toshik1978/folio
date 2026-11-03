@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/suite"
 	"golang.org/x/crypto/bcrypt"
@@ -23,9 +24,10 @@ const (
 type authSuite struct {
 	suite.Suite
 
-	db   *sql.DB
-	q    *dbq.Queries
-	auth *Authenticator
+	db    *sql.DB
+	q     *dbq.Queries
+	auth  *Authenticator
+	guard *db.WriteGuard
 }
 
 func TestAuth(t *testing.T) {
@@ -38,7 +40,8 @@ func (s *authSuite) SetupTest() {
 	s.Require().NoError(err)
 	s.db = database
 	s.q = dbq.New(database)
-	s.auth = New(slog.New(slog.DiscardHandler), database)
+	s.guard = db.NewWriteGuard()
+	s.auth = New(slog.New(slog.DiscardHandler), database, s.guard)
 }
 
 func (s *authSuite) TearDownTest() {
@@ -82,13 +85,28 @@ func (s *authSuite) TestProtectedWhenConfigured() {
 }
 
 func (s *authSuite) TestWithRealmOverride() {
-	a := New(slog.New(slog.DiscardHandler), s.db, WithRealm("Custom Realm"))
+	a := New(slog.New(slog.DiscardHandler), s.db, db.NewWriteGuard(), WithRealm("Custom Realm"))
 	s.Require().NoError(a.SetCredentials(context.Background(), new(testUser), new(testPass)))
 	guarded := a.Middleware(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {}))
 	r := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", http.NoBody)
 	w := httptest.NewRecorder()
 	guarded.ServeHTTP(w, r)
 	s.Contains(w.Header().Get("WWW-Authenticate"), "Custom Realm")
+}
+
+func (s *authSuite) TestSetCredentialsWaitsForTheWriteGuard() {
+	s.Require().NoError(s.guard.Lock(context.Background()))
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	user := "reader"
+	err := s.auth.SetCredentials(ctx, &user, nil)
+	s.Require().ErrorIs(err, context.DeadlineExceeded, "a busy guard fails fast, not on SQLite's busy timeout")
+	s.guard.Unlock()
+
+	s.Require().NoError(s.auth.SetCredentials(context.Background(), &user, nil))
+	got, _, err := s.auth.View(context.Background())
+	s.Require().NoError(err)
+	s.Equal("reader", got)
 }
 
 func (s *authSuite) TestSetCredentialsHashesAndPersists() {

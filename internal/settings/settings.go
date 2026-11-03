@@ -5,6 +5,7 @@ package settings
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 
@@ -68,8 +69,13 @@ func (h *Handler) update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.auth.SetCredentials(r.Context(), req.OPDSUser, req.OPDSPass); err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			h.writeError(w, http.StatusServiceUnavailable, "busy, try again")
+			return
+		}
 		h.log.Error("save settings", slog.Any("error", err))
 		h.writeError(w, http.StatusInternalServerError, "failed to save settings")
+
 		return
 	}
 

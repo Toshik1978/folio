@@ -14,9 +14,11 @@ import (
 	"log/slog"
 	"net/http"
 	"sync/atomic"
+	"time"
 
 	"golang.org/x/crypto/bcrypt"
 
+	"github.com/Toshik1978/folio/internal/db"
 	"github.com/Toshik1978/folio/internal/db/dbq"
 )
 
@@ -24,10 +26,16 @@ import (
 // override is supplied via WithRealm.
 const defaultRealm = "OPDS Library Manager"
 
+// writeAcquireBudget bounds how long a credentials save waits for the write
+// guard, so a save during a long sync fails fast (the handler answers 503)
+// instead of waiting on SQLite's busy timeout and failing with a 500.
+const writeAcquireBudget = 2 * time.Second
+
 // Authenticator owns OPDS credential storage, verification, and the auth caches.
 type Authenticator struct {
 	log       *slog.Logger
 	db        *sql.DB
+	guard     *db.WriteGuard
 	q         *dbq.Queries
 	realm     string
 	dummyHash []byte
@@ -47,11 +55,13 @@ func WithRealm(realm string) Option {
 	}
 }
 
-// New builds an Authenticator over the folio database.
-func New(log *slog.Logger, database *sql.DB, opts ...Option) *Authenticator {
+// New builds an Authenticator over the folio database. guard is the
+// process-wide write guard every database writer shares.
+func New(log *slog.Logger, database *sql.DB, guard *db.WriteGuard, opts ...Option) *Authenticator {
 	a := &Authenticator{
 		log:       log,
 		db:        database,
+		guard:     guard,
 		q:         dbq.New(database),
 		realm:     defaultRealm,
 		dummyHash: mustDummyHash(),

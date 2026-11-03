@@ -130,7 +130,7 @@ queue; it is never persisted to the database.
 | Method | Path | Description | Response |
 | :--- | :--- | :--- | :--- |
 | `GET` | `/api/settings` | Current application settings | JSON object |
-| `PUT` | `/api/settings` | Update settings | JSON updated settings |
+| `PUT` | `/api/settings` | Update settings | JSON updated settings; 503 `busy, try again` while a sync holds the write guard |
 
 #### Settings Object (JSON)
 

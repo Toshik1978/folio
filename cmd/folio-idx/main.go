@@ -125,7 +125,7 @@ func run() int { //revive:disable:function-length
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	authn := auth.New(log, database)
+	authn := auth.New(log, database, writeGuard)
 	authn.WarnIfUnprotected(ctx)
 
 	// One broker fans live sync events to SSE subscribers; it is shared by the

@@ -76,31 +76,31 @@ func (a *Authenticator) SetCredentials(ctx context.Context, user, pass *string) 
 // writeCredentials persists the provided settings in a single transaction, so a
 // failure between the two upserts can't leave the username changed but the
 // password not (or vice versa). A nil user or empty passHash is left unchanged.
+// It runs under the write guard; a guard not taken within writeAcquireBudget
+// fails with an error matching context.DeadlineExceeded.
 func (a *Authenticator) writeCredentials(ctx context.Context, user *string, passHash string) error {
-	tx, err := a.db.BeginTx(ctx, nil)
+	gctx, cancel := context.WithTimeout(ctx, writeAcquireBudget)
+	defer cancel()
+
+	err := a.guard.WithTx(gctx, a.db, func(tx *sql.Tx) error {
+		q := a.q.WithTx(tx)
+		if user != nil {
+			err := q.UpsertSetting(gctx, dbq.UpsertSettingParams{Key: db.SettingOPDSUser, Value: *user})
+			if err != nil {
+				return fmt.Errorf("upsert opds user: %w", err)
+			}
+		}
+		if passHash != "" {
+			err := q.UpsertSetting(gctx, dbq.UpsertSettingParams{Key: db.SettingOPDSPassHash, Value: passHash})
+			if err != nil {
+				return fmt.Errorf("upsert opds pass: %w", err)
+			}
+		}
+
+		return nil
+	})
 	if err != nil {
-		return fmt.Errorf("begin settings tx: %w", err)
-	}
-	defer func() { _ = tx.Rollback() }() // no-op once committed
-
-	q := a.q.WithTx(tx)
-	if user != nil {
-		if err := q.UpsertSetting(ctx, dbq.UpsertSettingParams{Key: db.SettingOPDSUser, Value: *user}); err != nil {
-			return fmt.Errorf("upsert opds user: %w", err)
-		}
-	}
-	if passHash != "" {
-		err := q.UpsertSetting(
-			ctx,
-			dbq.UpsertSettingParams{Key: db.SettingOPDSPassHash, Value: passHash},
-		)
-		if err != nil {
-			return fmt.Errorf("upsert opds pass: %w", err)
-		}
-	}
-
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit settings tx: %w", err)
+		return fmt.Errorf("save opds credentials: %w", err)
 	}
 
 	return nil
