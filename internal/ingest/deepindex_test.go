@@ -6,6 +6,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
@@ -124,6 +125,8 @@ func (s *deepIndexSuite) TestCountsAreCorrect() {
 	res, err := s.indexer().Run(context.Background(), s.lib, DeepIndexAll(), rep)
 	s.Require().NoError(err)
 
+	s.Len(res.NewlyBroken, 2)
+	res.NewlyBroken = nil
 	s.Equal(DeepIndexResult{Checked: 8, Filled: 6, Skipped: 0, Broken: 2}, res)
 	s.Equal(10, rep.total)
 	s.Equal(10, rep.added)
@@ -200,6 +203,8 @@ func (s *deepIndexSuite) TestExistingAnnotationIsNotOverwritten() {
 	res, err := s.indexer().Run(context.Background(), s.lib, DeepIndexAll(), nopReporter{})
 	s.Require().NoError(err)
 
+	s.Len(res.NewlyBroken, 2)
+	res.NewlyBroken = nil
 	s.Equal(DeepIndexResult{Checked: 8, Filled: 5, Skipped: 1, Broken: 2}, res)
 	got := s.book(diUTF8)
 	s.Equal("Ручное описание", got.Annotation.String)
@@ -373,6 +378,8 @@ func (s *deepIndexSuite) TestPagedRunMatchesOneRun() {
 	res, err := d.Run(context.Background(), s.lib, DeepIndexAll(), rep)
 	s.Require().NoError(err)
 
+	s.Len(res.NewlyBroken, 2)
+	res.NewlyBroken = nil
 	s.Equal(DeepIndexResult{Checked: 8, Filled: 6, Broken: 2}, res)
 	s.Equal(10, rep.total)
 	s.Equal(10, rep.added)
@@ -464,6 +471,8 @@ func (s *deepIndexSuite) TestMissingArchiveCountsAsErrors() {
 
 	// Archive b holds book 5 (FB2, unreadable now) and book 6 (PDF-only, which
 	// needs no read and is still marked checked).
+	s.Len(res.NewlyBroken, 2)
+	res.NewlyBroken = nil
 	s.Equal(DeepIndexResult{Checked: 7, Filled: 5, Broken: 2, Errors: 1}, res)
 	s.False(s.checkedTitles()[diBig])
 	s.True(s.checkedTitles()[diPDF])
@@ -531,6 +540,44 @@ func (s *deepIndexFolderSuite) seedBook(libraryID int64, dir, title, format stri
 	s.Require().NoError(os.WriteFile(filepath.Join(dir, name), []byte("x"), 0o644))
 
 	return id
+}
+
+// TestNewlyBrokenSampleIsCapped runs over 7 newly broken books: Broken is the
+// total, the sample holds 5 with their reasons, and a re-run reports none.
+func (s *deepIndexFolderSuite) TestNewlyBrokenSampleIsCapped() {
+	dir := s.T().TempDir()
+	src := s.insertLibrary("folder", dir)
+
+	reasons := map[int64]ebook.Reason{}
+	errFor := map[string]error{}
+	for i := range 7 {
+		title := fmt.Sprintf("Broken %d", i)
+		id := s.seedBook(src.ID, dir, title, "fb2")
+		if i%2 == 0 {
+			errFor[title+".fb2"], reasons[id] = fmt.Errorf("bad: %w", ebook.ErrMalformed), ebook.ReasonCorrupt
+		} else {
+			errFor[title+".fb2"], reasons[id] = fmt.Errorf("big: %w", ebook.ErrTooLarge), ebook.ReasonTooLarge
+		}
+	}
+	reader := &scriptedReader{Dispatcher: newTestDispatcher(), errFor: errFor}
+	d := NewDeepIndexer(s.log, s.db, db.NewWriteGuard(), NewExtractor(s.db, s.log, reader, db.NewWriteGuard()))
+
+	res, err := d.Run(context.Background(), src, DeepIndexAll(), nopReporter{})
+	s.Require().NoError(err)
+	s.Equal(7, res.Broken)
+	s.Require().Len(res.NewlyBroken, brokenSampleSize)
+	seen := map[int64]bool{}
+	for _, b := range res.NewlyBroken {
+		s.Equal(reasons[b.BookID], b.Reason)
+		s.False(seen[b.BookID], "no duplicates")
+		seen[b.BookID] = true
+	}
+
+	res, err = d.Run(context.Background(), src, DeepIndexAll(), nopReporter{})
+	s.Require().NoError(err)
+	s.Zero(res.Broken)
+	s.Equal(7, res.KnownBroken)
+	s.Empty(res.NewlyBroken)
 }
 
 func (s *deepIndexFolderSuite) TestFolderLibraryReadsThroughExtractor() {

@@ -102,7 +102,7 @@ func (s *idMatchSuite) TestHealAlreadySplitOnResync() {
 	a.DeriveIdentity, b.DeriveIdentity = true, true
 	s.Require().NoError(rc.upsert(ctx, a))
 	s.Require().NoError(rc.upsert(ctx, b))
-	_, err = rc.prune(ctx)
+	_, _, err = rc.prune(ctx)
 	s.Require().NoError(err)
 	s.Require().NoError(im2.commit())
 

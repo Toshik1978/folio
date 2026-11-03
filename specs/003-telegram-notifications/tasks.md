@@ -214,11 +214,11 @@ description: "Task list for Telegram Notifications"
 
 **Independent Test**: quickstart §3 (exactly one `failed` for three failing syncs, one `recovered`, a new `failed` after a restart, no `recovered` after a purge), §4 (one unreadable summary with 5 items and `…and 2 more`, none on re-run) and §5 (25/100 alerts, 19/100 and 25/300 do not). A forced handler panic yields one crash message; repeating it within the hour yields no more until the follow-up.
 
-- [ ] T013 [P] [US2] Add the "already reported" context mark in new file `internal/logging/reported.go` (moved forward from plan.md Phase C, because the Phase B crash and run-failure logs need it).
+- [x] T013 [P] [US2] Add the "already reported" context mark in new file `internal/logging/reported.go` (moved forward from plan.md Phase C, because the Phase B crash and run-failure logs need it).
   - `func MarkReported(ctx context.Context) context.Context` and `func IsReported(ctx context.Context) bool`, using an unexported context key type. `MarkReported(nil)` is not supported; callers pass `context.Background()` when they have no context. No output change: the mark is invisible in log lines.
 
   Tests (`internal/logging/logging_test.go` already has `TestLogging` → `loggingSuite`; add a `reportedSuite` in `reported_test.go` and wire it with one `suite.Run` line): unmarked `context.Background()` → false; marked → true; a child `context.WithValue` of a marked context stays marked; a record logged with a marked context renders byte-identically to an unmarked one.
-- [ ] T014 [P] [US2] Add crash de-duplication and the crash messages in new file `internal/notify/crash.go`.
+- [x] T014 [P] [US2] Add crash de-duplication and the crash messages in new file `internal/notify/crash.go`.
   - `ReportCrash(place, detail string, recovered any, stack []byte)`: returns at once when off or not ready (FR-015); never panics (it recovers its own formatting).
   - When `recovered` implements `interface{ CrashPlace() string; CrashStack() []byte }`, the place becomes `CrashPlace()`, the stack `CrashStack()`, and the caller's place and detail become `via` = `"<outer place> (<outer detail>)"`; the message's `Where:` reads `via <outer place> (<outer detail>)`.
   - `firstAppFrame(stack []byte) string`: first frame inside the module, skipping `runtime/`, `runtime/debug`, `internal/notify` and the recover helpers (`server.recoverer`, `sync.(*Engine).safeSync.func`, `ebook.(*Dispatcher).run.func`, `db.(*WriteGuard).WithTx.func`); renders `pkg.Func (path/file.go:line)` with a module-relative path; `""` when none.
@@ -238,19 +238,19 @@ description: "Task list for Telegram Notifications"
   - off → nothing enqueued, nothing stored; switching off clears the map;
   - `firstAppFrame` over a captured `debug.Stack()` from a helper in this package's test returns a module-relative frame and skips the runtime frames;
   - a crash message is enqueued on the urgent lane, a repeat follow-up on the batch lane.
-- [ ] T015 [P] [US2] Wrap write-path panics in `internal/db/writeguard.go`.
+- [x] T015 [P] [US2] Wrap write-path panics in `internal/db/writeguard.go`.
   - `type TxPanic struct{ Value any; Stack []byte }` with `Error() string` (`"panic in write transaction: <value>"`), `Unwrap() error` (the value when it is an `error`, else nil), `CrashPlace() string` (`"database write path"`), `CrashStack() []byte`.
   - The `WithTx` recover rolls back and re-panics with `&TxPanic{Value: p, Stack: debug.Stack()}`; a value that is already a `*TxPanic` is re-panicked as is. No reporter dependency in `db`.
   - Doc: `docs/DATABASE.md`, the write-guard section notes the `*TxPanic` re-panic and why (the outer recover reports it once).
 
   Tests (`writeGuardSuite`): `TestPanicRollsBackAndWraps` — a panic inside `fn` after an insert leaves no row, the recovered value is a `*TxPanic` with the original value, a non-empty stack and `CrashPlace() == "database write path"`; a nested `WithTx` panic is wrapped once; `errors.Is(p, http.ErrAbortHandler)` holds when the original value is `http.ErrAbortHandler`; the guard is released after the panic.
-- [ ] T016 [P] [US2] Report parser crashes from `internal/ebook/dispatch.go`.
+- [x] T016 [P] [US2] Report parser crashes from `internal/ebook/dispatch.go`.
   - `type CrashReporter interface{ ReportCrash(place, detail string, recovered any, stack []byte) }`; `type Option func(*Dispatcher)`; `func WithCrashReporter(r CrashReporter) Option`; `NewStandardDispatcher(opts ...Option) *Dispatcher` (`NewDispatcher(parsers ...Parser)` unchanged; test fakes get no reporter). The existing `cmd/folio-idx/main.go` call compiles unchanged.
   - In `run`'s recover: `stack := debug.Stack()`, `err = &PanicError{Value: r}`, then, when a reporter is set, `ReportCrash("book-file reading", format+" parser, "+what+" read", r, stack)`. `src.Name` (a file name, catalog content) is never passed.
   - Doc: `docs/EBOOK-PARSING.md`, the Dispatcher section notes the optional crash reporter, that the reporter receives no file name, and that the book itself is listed once in the run's unreadable summary as `crashed`.
 
   Tests (`ebookSuite` / `dispatchSuite`): `TestPanicReportsCrash` — a panicking fake parser under a recording reporter gives `place == "book-file reading"`, a detail containing the format and `metadata read`/`cover read` but not the source name, a non-empty stack, and the caller still gets `*PanicError`; `TestNoReporterStillRecovers`; the existing `TestPublicSurfaceFormatAgnostic` still passes with the new names.
-- [ ] T017 [US2] Replace chi's `middleware.Recoverer` with a slog-aware recoverer (after T013, T015).
+- [x] T017 [US2] Replace chi's `middleware.Recoverer` with a slog-aware recoverer (after T013, T015).
   - New file `internal/server/recoverer.go`: `type CrashReporter interface{ ReportCrash(place, detail string, recovered any, stack []byte) }`; `func recoverer(log *slog.Logger, crashes CrashReporter) func(http.Handler) http.Handler`. On panic:
     - when the value is, or (through `errors.Is` and `TxPanic.Unwrap`) wraps, `http.ErrAbortHandler` → re-panic the original value unchanged;
     - otherwise `log.ErrorContext(logging.MarkReported(r.Context()), "http handler panicked", method, route pattern from `chi.RouteContext`, panic, stack)`; call `crashes.ReportCrash("web request handling", "<METHOD> <route pattern>", v, debug.Stack())` when non-nil (never the raw path or query); write 500 unless the request is a connection upgrade.
@@ -264,7 +264,7 @@ description: "Task list for Telegram Notifications"
   - `TestRecovererReraisesAbortHandler`: `panic(http.ErrAbortHandler)` propagates out of the middleware and nothing is reported;
   - with `Crashes == nil` a panic still gives 500;
   - the SSE suite still passes.
-- [ ] T018 [US2] Add run outcomes and the failing/recovered state machine in new file `internal/notify/runs.go` (after T014: both extend `resetCollected` and the `Service` fields in `notify.go`).
+- [x] T018 [US2] Add run outcomes and the failing/recovered state machine in new file `internal/notify/runs.go` (after T014: both extend `resetCollected` and the `Service` fields in `notify.go`).
   - Types per data-model.md "Outcome types": `RunKind` (`RunSync`, `RunDeepIndex`, `String()` → `sync` / `deep index`), `RunStatus` (`RunFailed`, `RunCompleted`), `UnreadableBook{BookID int64; Reason string}`, `RunOutcome{LibraryID; Library; Kind; Status; Reason; CrashReported; PerBookErrors; FillFailed; NewlyUnreadable; UnreadableSample; BooksBefore; BooksRemoved}`.
   - `RunFinished(o RunOutcome)`: returns at once when off; applies the data-model transitions verbatim:
     - `HEALTHY ── RunFailed (CrashReported=false) ──▶ FAILING`: send "failed";
@@ -284,7 +284,7 @@ description: "Task list for Telegram Notifications"
   - a completed run with `PerBookErrors > 0` counts as success (no `failed`, `recovered` after a failure);
   - off → nothing enqueued and no state; switching off clears the state;
   - two libraries keep independent state.
-- [ ] T019 [US3] Add the unreadable summary and the mass-removal alert to `internal/notify/runs.go` (after T018; same file).
+- [x] T019 [US3] Add the unreadable summary and the mass-removal alert to `internal/notify/runs.go` (after T018; same file).
   - On every `RunCompleted`, independently of the transition (data-model.md):
     - "unreadable summary: `NewlyUnreadable > 0`" → one `KindUnreadable`: `Library "<library>": <kind> found <N> newly unreadable book file(s)`, at most 5 `- <book-ref>: <reason>` lines from `UnreadableSample`, and `…and <N-5> more. They will not be reported again unless the files change.` only when N > 5. `<book-ref>` is `<PUBLIC_URL>/books/<id>` when a public URL is set, else `book #<id>`. Reason labels from the contracts/messages.md table (`corrupt`, `missing_entry`, `too_large`, `crashed`; any other value raw).
     - "mass removal: sync only, `BooksRemoved >= 20 && BooksRemoved*10 >= BooksBefore && BooksBefore > 0`" → one `KindMassRemoval`: `Library "<library>": sync removed <N> of <M> books (<P>%)` with `<P>` rounded down, and `The removal has been applied. If this was not expected, check that the library source is complete and mounted.`
@@ -297,14 +297,14 @@ description: "Task list for Telegram Notifications"
   - mass-removal thresholds: 19/100 no, 20/200 yes, 20/201 no, 25/100 yes (`25 of 100 books (25%)`), 25/300 no, `BooksBefore == 0` no, a deep index run with removals no;
   - a `RunCompleted` after a failure with `NewlyUnreadable > 0` → `recovered` and the summary (two messages);
   - `ReportCrash("book-file reading", …)` followed by a `RunCompleted` whose sample holds that book with reason `crashed` → exactly one `KindCrash` and one `KindUnreadable` listing the book once; nothing enters the error window.
-- [ ] T020 [P] [US3] Expose removed books and the newly-unreadable sample from `internal/ingest`.
+- [x] T020 [P] [US3] Expose removed books and the newly-unreadable sample from `internal/ingest`.
   - `internal/ingest/reconcile.go`: `prune` returns `(filesRemoved, booksRemoved int, err error)`; `booksRemoved` is the number of empty books it removed (`len` of the `ListEmptyBooksByLibrary` ids).
   - `internal/ingest/ingest.go`: `Result` gains `RemovedBooks int` (doc comment: books, whereas `Removed` stays files); `internal/ingest/driver.go` sets it. The `"sync done"` log is unchanged.
   - `internal/ingest/deepindex.go`: `type BrokenBook struct{ BookID int64; Reason ebook.Reason }`; `DeepIndexResult` gains `NewlyBroken []BrokenBook` (first `brokenSampleSize = 5` across batches); `commit` records the book and reason where it increments `tally.Broken`, and `Run` merges up to 5. `Broken` stays the total.
   - Callers: `internal/ingest/importer_idmatch_test.go` (`_, _, err = rc.prune(ctx)`), and every exact `DeepIndexResult{…}` assertion in `deepindex_test.go` (`NewlyBroken` compared separately or set).
 
   Tests: `reconcileReportSuite` (or `ingestSuite`) — a folder sync where one book with two files loses both and another loses one of two → `Removed == 3`, `RemovedBooks == 1`; `deepIndexSuite` — a run over 7 newly broken books gives `Broken == 7`, `len(NewlyBroken) == 5` with their reasons; a re-run gives `Broken == 0` and an empty sample.
-- [ ] T021 [US2] Report crashes and failed/recovered outcomes from `internal/sync` (after T013, T018).
+- [x] T021 [US2] Report crashes and failed/recovered outcomes from `internal/sync` (after T013, T018).
   - `internal/sync/engine.go`: `type Notifier interface{ ReportCrash(place, detail string, recovered any, stack []byte); RunFinished(o notify.RunOutcome); LibraryRemoved(id int64) }`; `func WithNotifier(n Notifier) Option`; unexported `e.notifyCrash`, `e.notifyRun`, `e.notifyLibraryRemoved` helpers that are no-ops for a nil notifier.
   - `safeSync` recover: `e.log.ErrorContext(logging.MarkReported(context.Background()), "sync panicked", library, panic, slog.String("stack", string(stack)))`; `ReportCrash("sync engine", "library \"<name>\" <sync|deep index>", r, stack)` with the name from a best-effort `GetLibrary` (fallback `#<id>`) and the kind from `req.kind`; then `RunFinished{Status: RunFailed, CrashReported: true, Reason: <panic text>}`; `markError` as today.
   - `runSync`: a non-cancel parser error → `e.log.ErrorContext(logging.MarkReported(ctx), "sync failed", …)` and `RunFinished{Kind: RunSync, Status: RunFailed, Reason: err.Error()}`.
@@ -324,7 +324,7 @@ description: "Task list for Telegram Notifications"
   - deep index failure and success outcomes; a deep index of a `pending_purge` library → nothing;
   - a completed purge → `LibraryRemoved(id)`;
   - a nil notifier changes nothing (existing tests unchanged).
-- [ ] T022 [US3] Fill the sync and Deep Index outcomes with counts in `internal/sync/engine.go` (after T020, T021).
+- [x] T022 [US3] Fill the sync and Deep Index outcomes with counts in `internal/sync/engine.go` (after T020, T021).
   - `guardedSync` reads `CountBooksByLibrary` (existing sqlc query) under the guard before `parser.Sync` → `BooksBefore`; `runSync` passes `res.RemovedBooks` → `BooksRemoved`.
   - `runDeepIndex` returns `(ingest.DeepIndexResult, error)`; `fillImported` returns the fill's result and error. `syncLibrary` merges them into the single sync outcome (`PerBookErrors: res.Errors`, `NewlyUnreadable: res.Broken`, `UnreadableSample` mapped from `NewlyBroken` with `string(Reason)`), so one sync gives one summary. A non-cancel fill failure sets `FillFailed: err.Error()` and stays a `RunCompleted` (the sync result stands; its error-window line arrives in T026).
   - `deepIndexLibrary` success → `RunCompleted{Kind: RunDeepIndex, PerBookErrors: res.Errors, NewlyUnreadable: res.Broken, UnreadableSample: …}`.
@@ -334,7 +334,7 @@ description: "Task list for Telegram Notifications"
   - a sync with a fill that returns `Broken: 7` and 5 `NewlyBroken` → one outcome carrying both, mapped reasons;
   - a fill failure → `RunCompleted` with `FillFailed` set, no `RunFailed`;
   - a deep index with `Errors: 3` → `PerBookErrors: 3`.
-- [ ] T023 [US2] Wire the producers in `cmd/folio-idx/main.go` (after T016, T017, T021, T022).
+- [x] T023 [US2] Wire the producers in `cmd/folio-idx/main.go` (after T016, T017, T021, T022).
   - `ebook.NewStandardDispatcher(ebook.WithCrashReporter(notifier))`; `sync.WithNotifier(notifier)` in `sync.New`; `server.Handlers{…, Crashes: notifier}`. The notifier is built before the dispatcher (reorder construction if needed; main stays free of logic).
   - Compile-time guards: `_ ebook.CrashReporter`, `_ server.CrashReporter`, `_ sync.Notifier` = `(*notify.Service)(nil)`.
   - Doc: `docs/BACKEND.md` composition-root description (construction order: base logger → db → notify → dispatcher/engine/server) and the dependency table (`ebook`, `db` and `logging` import nothing new).

@@ -117,6 +117,32 @@ func (s *folderSuite) writeFB2(path, title, first, last, series string, cover []
 	s.Require().NoError(os.WriteFile(path, []byte(content), 0o600))
 }
 
+// TestSyncReportsRemovedBooks proves Removed counts files while RemovedBooks
+// counts only the books left with no file.
+func (s *folderSuite) TestSyncReportsRemovedBooks() {
+	ctx := context.Background()
+	dir := s.T().TempDir()
+
+	s.writeFB2(filepath.Join(dir, "a1.fb2"), "Alpha", "Ann", "Author", "", nil)
+	s.writeFB2(filepath.Join(dir, "a2.fb2"), "Alpha", "Ann", "Author", "", nil)
+	s.writeFB2(filepath.Join(dir, "b1.fb2"), "Beta", "Bob", "Builder", "", nil)
+	s.writeFB2(filepath.Join(dir, "b2.fb2"), "Beta", "Bob", "Builder", "", nil)
+
+	src := s.insertLibrary("folder", dir)
+	parser := FolderParser{log: s.log, parser: newTestDispatcher()}
+	_, err := parser.Sync(ctx, src, s.db, s.store, nopReporter{})
+	s.Require().NoError(err)
+	s.Require().Len(s.booksByLibrary(src.ID), 2, "same-key files share one book")
+
+	for _, name := range []string{"a1.fb2", "a2.fb2", "b1.fb2"} {
+		s.Require().NoError(os.Remove(filepath.Join(dir, name)))
+	}
+	res, err := parser.Sync(ctx, src, s.db, s.store, nopReporter{})
+	s.Require().NoError(err)
+	s.Equal(3, res.Removed, "files")
+	s.Equal(1, res.RemovedBooks, "only Alpha lost every file")
+}
+
 func (s *folderSuite) TestSync() {
 	ctx := context.Background()
 	dir := s.T().TempDir()

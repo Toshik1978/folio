@@ -47,6 +47,13 @@ const (
 // *notify.Service drives the Telegram settings endpoints.
 var _ settings.TelegramService = (*notify.Service)(nil)
 
+// *notify.Service also receives the crash and run reports of every producer.
+var (
+	_ ebook.CrashReporter  = (*notify.Service)(nil)
+	_ server.CrashReporter = (*notify.Service)(nil)
+	_ sync.Notifier        = (*notify.Service)(nil)
+)
+
 func main() {
 	os.Exit(run())
 }
@@ -71,9 +78,6 @@ func run() int { //revive:disable:function-length
 	// the SQLite layer. Readers do not take it (WAL allows them alongside a writer).
 	writeGuard := db.NewWriteGuard()
 
-	// One ebook dispatcher owns the per-format parser set; injected into every consumer.
-	parser := ebook.NewStandardDispatcher()
-
 	// The notifier delivers opt-in Telegram messages to the owner's channel; its
 	// settings live in the database and it never blocks its producers.
 	notifier, err := notify.New(
@@ -86,6 +90,10 @@ func run() int { //revive:disable:function-length
 		log.Error("notifier init failed", slog.Any("error", err))
 		return 5
 	}
+
+	// One ebook dispatcher owns the per-format parser set; injected into every
+	// consumer. It reports recovered parser panics to the notifier.
+	parser := ebook.NewStandardDispatcher(ebook.WithCrashReporter(notifier))
 
 	// One extractor recovers covers and metadata from source files; it backs
 	// lazy cover serving and metadata backfill.
@@ -145,6 +153,7 @@ func run() int { //revive:disable:function-length
 		sync.WithEvents(broker),
 		sync.WithStatsObserver(catalogHandler),
 		sync.WithDeepIndexer(deepIndexer),
+		sync.WithNotifier(notifier),
 	)
 	if err != nil {
 		log.Error("sync engine init failed", slog.Any("error", err))
@@ -164,8 +173,9 @@ func run() int { //revive:disable:function-length
 				settings.New(log, authn),
 				settings.NewTelegram(log, notifier),
 			},
-			OPDS: opds.New(log, database, coverStore, backfiller, authn, cfg.PublicURL),
-			MCP:  mcpserver.New(log, database, cfg.PublicURL, buildVersion()),
+			OPDS:    opds.New(log, database, coverStore, backfiller, authn, cfg.PublicURL),
+			MCP:     mcpserver.New(log, database, cfg.PublicURL, buildVersion()),
+			Crashes: notifier,
 		}, cfg.Env, cfg.NoColorEnabled(), cfg.PublicURL),
 		ReadTimeout:  15 * time.Second,
 		WriteTimeout: 60 * time.Second,

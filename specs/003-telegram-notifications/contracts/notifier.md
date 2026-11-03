@@ -14,7 +14,7 @@
 ```go
 // CrashReporter receives parser panics recovered by the Dispatcher.
 type CrashReporter interface {
-    ReportCrash(place, detail string, recovered any, stack []byte)
+    ReportCrash(place, detail string, recovered any, stack []byte) bool // true when the crash message was queued
 }
 
 type Option func(*Dispatcher)
@@ -50,7 +50,7 @@ func (p *TxPanic) CrashStack() []byte   // stack captured inside WithTx
 
 ```go
 type CrashReporter interface {
-    ReportCrash(place, detail string, recovered any, stack []byte)
+    ReportCrash(place, detail string, recovered any, stack []byte) bool // true when the crash message was queued
 }
 
 type Handlers struct {
@@ -62,7 +62,7 @@ type Handlers struct {
 ```
 
 `recoverer(log, crashes)` replaces `middleware.Recoverer`. On a panic:
-- `http.ErrAbortHandler` (matched with `errors.Is` through `Unwrap`) is re-panicked with the original value;
+- `http.ErrAbortHandler` (matched with `errors.Is` through `Unwrap`) is re-panicked as the bare `http.ErrAbortHandler` (net/http compares it by equality);
 - otherwise it calls `log.ErrorContext(logging.MarkReported(ctx), "http handler panicked", method, route, panic, stack)` and `ReportCrash("web request handling", "<METHOD> <route pattern>", v, debug.Stack())`, then writes 500 unless the request is an upgrade.
 
 ### `internal/sync`: run outcomes and engine crashes
@@ -70,7 +70,7 @@ type Handlers struct {
 ```go
 // Notifier receives run outcomes and engine crashes. *notify.Service satisfies it.
 type Notifier interface {
-    ReportCrash(place, detail string, recovered any, stack []byte)
+    ReportCrash(place, detail string, recovered any, stack []byte) bool // true when the crash message was queued
     RunFinished(o notify.RunOutcome)
     LibraryRemoved(id int64)
 }
@@ -141,7 +141,7 @@ func (s *Service) Start()
 func (s *Service) Stop()
 
 // Producers
-func (s *Service) ReportCrash(place, detail string, recovered any, stack []byte)
+func (s *Service) ReportCrash(place, detail string, recovered any, stack []byte) (queued bool)
 func (s *Service) RunFinished(o RunOutcome)
 func (s *Service) LibraryRemoved(id int64)
 func (s *Service) LogError(ctx context.Context, r slog.Record)
@@ -193,4 +193,4 @@ var (
   | other `APIError` (400/401/403/404) | no |
 
   At most 3 attempts per message (1 + `len(Backoff)`), all inside `MessageBudget`; each attempt's deadline is the earlier of the 10 s client timeout and the end of the budget. A wait that would overrun the budget drops the message and records the failure.
-- Ordering: the sender always drains the urgent lane (crash messages) before the batch lane, then waits `Spacing` after each message.
+- Ordering: the sender always drains the urgent lane (crash messages) before the batch lane, then waits `Spacing` after each message. After a message dropped on a 429 it waits `max(Spacing, min(RetryAfter, 10 min))` instead, so queued messages wait out the flood ban in their bounded lanes rather than each being sent into it and dropped.

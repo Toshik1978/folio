@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -208,6 +210,41 @@ func (s *queueSuite) TestRetryAfterAboveCapDrops() {
 	s.Equal("Too Many Requests: retry after 5", st.LastFailureError)
 }
 
+// TestDroppedRateLimitPausesTheSender: a message dropped on a long 429 pauses
+// the next send for retry_after instead of sending it into the flood ban.
+func (s *queueSuite) TestDroppedRateLimitPausesTheSender() {
+	f := newFakeTelegram(func(_ *http.Request, n int) (int, string) {
+		if n == 0 {
+			return 429, `{"ok":false,"error_code":429,"description":"Too Many Requests: retry after 1",` +
+				`"parameters":{"retry_after":1}}`
+		}
+
+		return 200, okBody
+	})
+	defer f.srv.Close()
+	t := fastTiming()
+	t.MaxRetryAfter = 100 * time.Millisecond // retry_after 1s is above the cap: the first message drops
+	svc := s.newService(f, t, nil)
+	svc.Start()
+	svc.enqueue(message{kind: KindTest, text: "one"})
+	svc.enqueue(message{kind: KindTest, text: "two"})
+
+	s.Require().Eventually(func() bool { return f.count() == 2 }, waitFor, pollTick)
+	reqs := f.requests()
+	s.GreaterOrEqual(reqs[1].at.Sub(reqs[0].at), time.Second, "the second send waits out retry_after")
+	s.Contains(reqs[1].text, "two")
+}
+
+func (s *queueSuite) TestGapAfter() {
+	svc := &Service{timing: Timing{Spacing: 3 * time.Second}}
+	s.Equal(3*time.Second, svc.gapAfter(nil))
+	s.Equal(3*time.Second, svc.gapAfter(errors.New("boom")))
+	s.Equal(3*time.Second, svc.gapAfter(&APIError{Code: 400}))
+	s.Equal(3*time.Second, svc.gapAfter(&APIError{Code: 429, RetryAfter: time.Second}))
+	s.Equal(30*time.Second, svc.gapAfter(fmt.Errorf("send: %w", &APIError{Code: 429, RetryAfter: 30 * time.Second})))
+	s.Equal(maxFloodPause, svc.gapAfter(&APIError{Code: 429, RetryAfter: 24 * time.Hour}))
+}
+
 func (s *queueSuite) TestWaitOverrunningBudgetDrops() {
 	f := newFakeTelegram(reply(
 		429,
@@ -363,6 +400,22 @@ func (s *queueSuite) TestSwitchedOffBeforeSendDrops() {
 	svc.Stop() // drains the lanes before returning
 	s.Zero(f.count())
 	s.Equal(DeliveryStatus{}, svc.status.snapshot())
+}
+
+func (s *queueSuite) TestStopSkipsTheGapAfterTheLastMessage() {
+	f := newFakeTelegram(reply(200, okBody))
+	defer f.srv.Close()
+	t := fastTiming()
+	t.Spacing = 5 * time.Second // a gap after the last send would outlast StopDrain
+	t.StopDrain = 2 * time.Second
+	svc := s.newService(f, t, nil)
+	svc.enqueue(message{kind: KindTest, text: "last words"})
+
+	start := time.Now()
+	svc.Start()
+	svc.Stop()
+	s.Less(time.Since(start), time.Second, "Stop returns once the queue is drained")
+	s.Equal(1, f.count())
 }
 
 func (s *queueSuite) TestStopBoundedWhileEndpointHangs() {

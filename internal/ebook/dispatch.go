@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"path/filepath"
+	"runtime/debug"
 	"slices"
 	"strings"
 )
@@ -14,8 +15,24 @@ import (
 // It replaces the former package-global parser registry: the composition root
 // builds one Dispatcher from an explicit parser list and injects it.
 type Dispatcher struct {
-	parsers map[string]Parser // by extension key, e.g. ".fb2.zip"
-	labels  map[string]Parser // by stored format label, e.g. "fb2", "azw3"
+	parsers  map[string]Parser // by extension key, e.g. ".fb2.zip"
+	labels   map[string]Parser // by stored format label, e.g. "fb2", "azw3"
+	reporter CrashReporter     // optional; told about recovered parser panics
+}
+
+// CrashReporter is told about a parser panic the Dispatcher recovered. It
+// never receives the source's file name: that is catalog content. ReportCrash
+// reports whether the crash was queued as a message.
+type CrashReporter interface {
+	ReportCrash(place, detail string, recovered any, stack []byte) bool
+}
+
+// Option configures a Dispatcher built by NewStandardDispatcher.
+type Option func(*Dispatcher)
+
+// WithCrashReporter makes the Dispatcher report each recovered parser panic.
+func WithCrashReporter(r CrashReporter) Option {
+	return func(d *Dispatcher) { d.reporter = r }
 }
 
 // NewDispatcher builds a Dispatcher, indexing each parser by every extension it
@@ -39,8 +56,13 @@ func NewDispatcher(parsers ...Parser) *Dispatcher {
 
 // NewStandardDispatcher builds a Dispatcher over the standard parser set
 // (EPUB, FB2, MOBI family, PDF). The composition root and tests use it.
-func NewStandardDispatcher() *Dispatcher {
-	return NewDispatcher(epubParser{}, fb2Parser{}, mobiParser{}, pdfParser{})
+func NewStandardDispatcher(opts ...Option) *Dispatcher {
+	d := NewDispatcher(epubParser{}, fb2Parser{}, mobiParser{}, pdfParser{})
+	for _, opt := range opts {
+		opt(d)
+	}
+
+	return d
 }
 
 // Metadata selects the parser for src.Name's extension and reads src's
@@ -151,7 +173,11 @@ func (d *Dispatcher) run(
 	format := formatLabel(ext)
 	defer func() {
 		if r := recover(); r != nil {
+			stack := debug.Stack()
 			err = &PanicError{Value: r}
+			if d.reporter != nil {
+				d.reporter.ReportCrash("book-file reading", format+" parser, "+what+" read", r, stack)
+			}
 		}
 	}()
 

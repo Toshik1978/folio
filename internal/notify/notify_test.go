@@ -14,4 +14,6 @@ func TestNotify(t *testing.T) {
 	suite.Run(t, new(formatSuite))
 	suite.Run(t, new(queueSuite))
 	suite.Run(t, new(serviceSuite))
+	suite.Run(t, new(crashSuite))
+	suite.Run(t, new(runsSuite))
 }

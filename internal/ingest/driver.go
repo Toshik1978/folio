@@ -47,7 +47,7 @@ func runReconcile(
 		return Result{}, err2
 	}
 
-	removed, err := rc.prune(ctx)
+	removed, removedBooks, err := rc.prune(ctx)
 	if err != nil {
 		return Result{}, err
 	}
@@ -64,5 +64,5 @@ func runReconcile(
 			slog.Int64("library", library.ID), slog.Int("lifted", lifted))
 	}
 
-	return Result{Added: rc.added, Removed: removed, ImportedAt: now}, nil
+	return Result{Added: rc.added, Removed: removed, RemovedBooks: removedBooks, ImportedAt: now}, nil
 }

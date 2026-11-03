@@ -2,6 +2,9 @@ package db
 
 import (
 	"context"
+	"database/sql"
+	"log/slog"
+	"net/http"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -90,4 +93,73 @@ func (s *writeGuardSuite) TestLockHonorsCancellation() {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	s.Require().ErrorIs(g.Lock(ctx), context.Canceled)
+}
+
+// recoverTx runs fn and returns the value it panicked with (nil if none).
+func recoverTx(fn func()) (got any) {
+	defer func() { got = recover() }()
+	fn()
+
+	return nil
+}
+
+// TestPanicRollsBackAndWraps asserts a panic inside a write transaction rolls
+// back, surfaces as a *TxPanic carrying the original value and a stack, wraps
+// only once across nested WithTx calls, unwraps to an error value, and releases
+// the guard.
+func (s *writeGuardSuite) TestPanicRollsBackAndWraps() {
+	database, err := Open(slog.New(slog.DiscardHandler), s.T().TempDir())
+	s.Require().NoError(err)
+	defer database.Close()
+	ctx := context.Background()
+	_, err = database.ExecContext(ctx, `CREATE TABLE guard_probe (v INTEGER)`)
+	s.Require().NoError(err)
+
+	g := NewWriteGuard()
+	got := recoverTx(func() {
+		_ = g.WithTx(ctx, database, func(tx *sql.Tx) error {
+			_, ierr := tx.ExecContext(ctx, `INSERT INTO guard_probe (v) VALUES (1)`)
+			s.Require().NoError(ierr)
+			panic("boom")
+		})
+	})
+	var tp *TxPanic
+	s.Require().ErrorAs(asError(got), &tp)
+	s.Equal("boom", tp.Value)
+	s.NotEmpty(tp.Stack)
+	s.Equal(tp.Stack, tp.CrashStack())
+	s.Equal("database write path", tp.CrashPlace())
+	s.Equal("panic in write transaction: boom", tp.Error())
+	s.NoError(tp.Unwrap())
+
+	var n int
+	s.Require().NoError(database.QueryRowContext(ctx, `SELECT COUNT(*) FROM guard_probe`).Scan(&n))
+	s.Zero(n)
+
+	lctx, cancel := context.WithTimeout(ctx, time.Second)
+	defer cancel()
+	s.Require().NoError(g.Lock(lctx)) // guard was released
+	g.Unlock()
+
+	// Nested: the inner panic is wrapped once; the outer passes it through.
+	other, err := Open(slog.New(slog.DiscardHandler), s.T().TempDir())
+	s.Require().NoError(err)
+	defer other.Close()
+	g2 := NewWriteGuard()
+	g3 := NewWriteGuard()
+	got = recoverTx(func() {
+		_ = g2.WithTx(ctx, database, func(*sql.Tx) error {
+			return g3.WithTx(ctx, other, func(*sql.Tx) error { panic(http.ErrAbortHandler) })
+		})
+	})
+	outer, ok := got.(*TxPanic)
+	s.Require().True(ok)
+	s.Equal(http.ErrAbortHandler, outer.Value)
+	s.Require().ErrorIs(outer, http.ErrAbortHandler)
+}
+
+func asError(v any) error {
+	e, _ := v.(error)
+
+	return e
 }

@@ -432,6 +432,12 @@ different book (see [Stable identity](#stable-identity-library_key)).
    then returns `503` ("indexing in progress; retry shortly") rather than blocking past
    the server's 60s `WriteTimeout`. Best-effort write-on-read paths (lazy metadata
    backfill, enrichment mark-checked) skip the write and retry on a later view.
+   `WithTx` rolls back a panicking transaction and re-panics with a `*db.TxPanic`
+   (original value plus the stack captured at the recover point; `Unwrap` exposes an
+   error value, so `errors.Is(p, http.ErrAbortHandler)` still works). An already-wrapped
+   `*TxPanic` passes through unchanged, so nested write paths wrap once and the outer
+   recover reports the crash once, with the panicking frames. `TxPanic` exposes
+   `CrashPlace()`/`CrashStack()` for the crash reporter; `db` has no reporter dependency.
 2. **Debouncing** — `fsnotify` file-write events start a 10-second cooldown timer. Subsequent mutations reset the timer. This avoids parsing partially transferred files.
 3. **Checkpoint gating** — Before reading a source the engine compares the parser's current artifact fingerprint (`Checkpointer.Checkpoint`) with the stored `libraries.checkpoint`; an unchanged Calibre/INPX source is skipped entirely. The fingerprint is computed once, *before* the read, and that pre-read value is what gets stored on success — so an artifact modified mid-sync mismatches on the next pass and is re-read instead of skipped. Folder is event-driven (fsnotify) and has no single artifact, so it always walks. A manual "Sync Now" bypasses the gate.
 4. **Reconciliation (no wipe-and-reinsert)** — Each run upserts books by `(library_id, library_key)` and diffs their files by `source_path`+size, writing only real changes, then prunes files that vanished and books left with no files. Because IDs are not regenerated, `/books/{id}` links and cached covers survive re-syncs. Metadata a grouped book lacks (annotation, series, publisher, year, rating) is gap-filled from whichever edition carries it.

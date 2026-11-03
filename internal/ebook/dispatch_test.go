@@ -271,3 +271,56 @@ func (s *dispatchSuite) TestSupportedAndFormat() {
 	s.Equal("mobi", s.d.Format("book.mobi"))
 	s.Empty(s.d.Format("book.xyz"))
 }
+
+// recordingReporter captures what the dispatcher hands a CrashReporter.
+type recordingReporter struct {
+	place, detail string
+	recovered     any
+	stack         []byte
+	calls         int
+}
+
+func (r *recordingReporter) ReportCrash(place, detail string, recovered any, stack []byte) bool {
+	r.calls++
+	r.place, r.detail, r.recovered, r.stack = place, detail, recovered, stack
+
+	return true
+}
+
+func (s *dispatchSuite) TestPanicReportsCrash() {
+	rep := &recordingReporter{}
+	d := NewDispatcher(panicParser{})
+	WithCrashReporter(rep)(d)
+	src := Source{Name: "secret-title.boom", R: strings.NewReader(""), Size: 0}
+
+	_, err := d.Metadata(context.Background(), s.log, src)
+	var pe *PanicError
+	s.Require().ErrorAs(err, &pe)
+	s.Equal(1, rep.calls)
+	s.Equal("book-file reading", rep.place)
+	s.Contains(rep.detail, "boom parser")
+	s.Contains(rep.detail, "metadata read")
+	s.NotContains(rep.detail, "secret-title")
+	s.Equal("kaboom", rep.recovered)
+	s.NotEmpty(rep.stack)
+
+	_, err = d.Cover(context.Background(), s.log, src)
+	s.Require().ErrorAs(err, &pe)
+	s.Equal(2, rep.calls)
+	s.Contains(rep.detail, "cover read")
+	s.NotContains(rep.detail, "secret-title")
+}
+
+func (s *dispatchSuite) TestNoReporterStillRecovers() {
+	d := NewDispatcher(panicParser{})
+	src := Source{Name: "x.boom", R: strings.NewReader(""), Size: 0}
+
+	_, err := d.Metadata(context.Background(), s.log, src)
+	var pe *PanicError
+	s.Require().ErrorAs(err, &pe)
+}
+
+func (s *dispatchSuite) TestStandardDispatcherAcceptsReporter() {
+	s.NotNil(NewStandardDispatcher(WithCrashReporter(&recordingReporter{})))
+	s.NotNil(NewStandardDispatcher())
+}

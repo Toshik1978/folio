@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"runtime/debug"
 	stdsync "sync"
 	"time"
 
@@ -18,12 +19,15 @@ import (
 	"github.com/Toshik1978/folio/internal/db/dbq"
 	"github.com/Toshik1978/folio/internal/events"
 	"github.com/Toshik1978/folio/internal/ingest"
+	"github.com/Toshik1978/folio/internal/logging"
+	"github.com/Toshik1978/folio/internal/notify"
 )
 
 // Library status values. A healthy library is "active"; "syncing" is reported
 // in-memory via Status rather than persisted (the worker leaves the DB status
 // untouched while running and writes "error" only on failure).
 const (
+	statusError             = "error"
 	statusPendingPurge      = "pending_purge"
 	statusPurged            = "purged"
 	purgeCheckInterval      = time.Minute
@@ -46,6 +50,15 @@ func (k reqKind) String() string {
 	}
 
 	return "sync"
+}
+
+// runKind maps the request kind to the kind a run outcome reports.
+func (k reqKind) runKind() notify.RunKind {
+	if k == kindDeepIndex {
+		return notify.RunDeepIndex
+	}
+
+	return notify.RunSync
 }
 
 // syncReq is a queued unit of work: a library, what to run against it, and
@@ -96,6 +109,18 @@ type StatsObserver interface {
 	StatsChanged()
 }
 
+// Notifier receives crash reports and run outcomes for the owner's
+// notifications. *notify.Service satisfies it. Its methods never block. A nil
+// Notifier disables reporting.
+type Notifier interface {
+	ReportCrash(place, detail string, recovered any, stack []byte) bool
+	RunFinished(o notify.RunOutcome)
+	LibraryRemoved(id int64)
+}
+
+// The production notifier satisfies the consumer interface.
+var _ Notifier = (*notify.Service)(nil)
+
 // Engine owns the worker goroutine, the gocron scheduler, and the optional
 // file-system watcher. Construct it with New and call Start once.
 type Engine struct {
@@ -136,6 +161,7 @@ type Engine struct {
 	watcher   *watcher
 
 	statsObserver StatsObserver
+	notifier      Notifier // optional; nil disables owner notifications
 }
 
 // New builds an engine over the given database, parser registry, and cover
@@ -196,6 +222,12 @@ func WithStatsObserver(obs StatsObserver) Option {
 	return func(e *Engine) { e.statsObserver = obs }
 }
 
+// WithNotifier wires the notifier the Engine reports crashes, run outcomes,
+// and removed libraries to.
+func WithNotifier(n Notifier) Option {
+	return func(e *Engine) { e.notifier = n }
+}
+
 // Start launches the worker, scheduler, and folder watchers, then kicks off an
 // initial sync of every library and an immediate purge sweep. It never blocks.
 func (e *Engine) Start() {
@@ -203,7 +235,12 @@ func (e *Engine) Start() {
 	e.scheduler.start()
 
 	ctx := context.Background()
-	if err := e.scheduler.every(purgeCheckInterval, func() { e.checkPurge(context.Background()) }); err != nil {
+	// gocron recovers a panicking job silently, so the sweep reports its own.
+	sweep := func() {
+		defer e.recoverCrash("purge sweep", nil)
+		e.checkPurge(context.Background())
+	}
+	if err := e.scheduler.every(purgeCheckInterval, sweep); err != nil {
 		e.log.Error("schedule purge checker", slog.Any("error", err))
 	}
 	// Create the watcher before Reschedule so the initial Reschedule attaches the
@@ -453,16 +490,84 @@ func (e *Engine) worker() {
 
 // safeSync runs one library sync under a panic guard so a parser/IO panic on the
 // worker goroutine can never crash the process. On a panic it marks the library
-// errored and the worker proceeds to the next item. The write guard is released
-// correctly because syncLibrary defers its unlock.
+// errored, reports the crash and the failed run, and the worker proceeds to the
+// next item. The write guard is released correctly because syncLibrary defers
+// its unlock.
 func (e *Engine) safeSync(req syncReq) {
 	defer func() {
 		if r := recover(); r != nil {
-			e.log.Error("sync panicked", slog.Int64("library", req.id), slog.Any("panic", r))
-			e.markError(context.Background(), req.id, fmt.Errorf("sync panicked: %v", r))
+			stack := debug.Stack()
+			ctx := context.Background()
+			// Marked: the crash report below stands in for the tapped log record.
+			e.log.ErrorContext(logging.MarkReported(ctx), "sync panicked",
+				slog.Int64("library", req.id), slog.Any("panic", r), slog.String("stack", string(stack)))
+			name := e.libraryName(ctx, req.id)
+			// A crash folded into an open de-dup window (or dropped) sent no
+			// message, so the run failure must then speak for itself.
+			crashSent := e.notifyCrash("sync engine",
+				fmt.Sprintf("library %q %s", name, req.kind.runKind()), r, stack)
+			e.notifyRun(notify.RunOutcome{
+				LibraryID:     req.id,
+				Library:       name,
+				Kind:          req.kind.runKind(),
+				Status:        notify.RunFailed,
+				Reason:        fmt.Sprint(r),
+				CrashReported: crashSent,
+			})
+			e.markError(ctx, req.id, fmt.Errorf("sync panicked: %v", r))
 		}
 	}()
 	e.syncLibrary(req)
+}
+
+// libraryName is the library's name for a crash report, best-effort: "#<id>"
+// when the row cannot be read.
+func (e *Engine) libraryName(ctx context.Context, id int64) string {
+	src, err := dbq.New(e.db).GetLibrary(ctx, id)
+	if err != nil {
+		return fmt.Sprintf("#%d", id)
+	}
+
+	return src.Name
+}
+
+// notifyCrash reports a recovered panic and whether it was queued as a
+// message; a no-op (false) without a notifier.
+func (e *Engine) notifyCrash(place, detail string, recovered any, stack []byte) bool {
+	return e.notifier != nil && e.notifier.ReportCrash(place, detail, recovered, stack)
+}
+
+// notifyRun reports how a library run ended; a no-op without a notifier.
+func (e *Engine) notifyRun(o notify.RunOutcome) {
+	if e.notifier != nil {
+		e.notifier.RunFinished(o)
+	}
+}
+
+// notifyLibraryRemoved reports a purged library; a no-op without a notifier.
+func (e *Engine) notifyLibraryRemoved(id int64) {
+	if e.notifier != nil {
+		e.notifier.LibraryRemoved(id)
+	}
+}
+
+// runOutcome is the outcome of one run of kind against src, with no counts.
+func runOutcome(src dbq.Library, kind notify.RunKind, status notify.RunStatus, reason string) notify.RunOutcome {
+	return notify.RunOutcome{LibraryID: src.ID, Library: src.Name, Kind: kind, Status: status, Reason: reason}
+}
+
+// addDeepIndexCounts records a deep index run's per-book retries and newly
+// unreadable books (total and sample) on o.
+func addDeepIndexCounts(o *notify.RunOutcome, res ingest.DeepIndexResult) {
+	o.PerBookErrors = res.Errors
+	o.NewlyUnreadable = res.Broken
+	if len(res.NewlyBroken) == 0 {
+		return
+	}
+	o.UnreadableSample = make([]notify.UnreadableBook, len(res.NewlyBroken))
+	for i, b := range res.NewlyBroken {
+		o.UnreadableSample[i] = notify.UnreadableBook{BookID: b.BookID, Reason: string(b.Reason)}
+	}
 }
 
 // runContext returns the context one queued run executes under: it is
@@ -496,23 +601,76 @@ func (e *Engine) syncLibrary(req syncReq) {
 
 	// The fill runs only once guardedSync has returned and so released the
 	// whole-run write guard: the indexer takes the guard per batch itself.
-	src, res, ok := e.guardedSync(ctx, req)
-	if ok && res.Added > 0 {
-		e.fillImported(ctx, src, res.ImportedAt)
+	run, ok := e.guardedSync(ctx, req)
+	if !ok {
+		return
 	}
+	// The fill's counts join the sync's outcome: one sync gives one summary.
+	out := run.outcome
+	if run.result.Added > 0 {
+		fill, err := e.safeFill(ctx, run.library, run.result.ImportedAt)
+		addDeepIndexCounts(&out, fill)
+		if err != nil && !errors.Is(err, context.Canceled) {
+			out.FillFailed = err.Error()
+		}
+	}
+	e.notifyRun(out)
+}
+
+// safeFill runs fillImported under its own panic guard. The sync has already
+// committed by then, so a panic in the fill must not unwind into safeSync,
+// which would report the sync as failed and lose its outcome; it is reported
+// as a crash and becomes the fill's error instead.
+func (e *Engine) safeFill(ctx context.Context, src dbq.Library, stamp int64) (res ingest.DeepIndexResult, err error) {
+	defer e.recoverCrash(fmt.Sprintf("library %q post-sync fill", src.Name), func(r any) {
+		err = fmt.Errorf("post-sync fill panicked: %v", r)
+	})
+
+	return e.fillImported(ctx, src, stamp)
+}
+
+// recoverCrash guards engine work that runs outside safeSync: it must be
+// deferred directly (recover only works there). A panic is logged (marked
+// reported), sent as a "sync engine" crash with detail, then handed to onPanic
+// when non-nil.
+func (e *Engine) recoverCrash(detail string, onPanic func(r any)) {
+	r := recover() //nolint:revive // recoverCrash is itself always the deferred call, so recover works here
+	if r == nil {
+		return
+	}
+	e.reportPanic(detail, r, debug.Stack())
+	if onPanic != nil {
+		onPanic(r)
+	}
+}
+
+// reportPanic logs a recovered panic as reported and sends it as a crash.
+func (e *Engine) reportPanic(detail string, r any, stack []byte) {
+	e.log.ErrorContext(logging.MarkReported(context.Background()), "engine task panicked",
+		slog.String("task", detail), slog.Any("panic", r), slog.String("stack", string(stack)))
+	e.notifyCrash("sync engine", detail, r, stack)
+}
+
+// completedSync is a sync run whose parser succeeded: the library it ran
+// against, the parser's result, and the run's outcome with its book counts,
+// not yet reported.
+type completedSync struct {
+	library dbq.Library
+	result  ingest.Result
+	outcome notify.RunOutcome
 }
 
 // guardedSync runs one sync request under the whole-run write guard. ok is true
 // only when the parser ran and succeeded; a skipped, refused, or failed sync
-// reports false.
-func (e *Engine) guardedSync(ctx context.Context, req syncReq) (dbq.Library, ingest.Result, bool) {
+// reports false, having reported its own outcome if it has one.
+func (e *Engine) guardedSync(ctx context.Context, req syncReq) (completedSync, bool) {
 	// Hold the single-writer guard for the whole run so a concurrent library
 	// purge (HTTP "Purge Now" or the deadline sweep) — and any API write — waits
 	// rather than racing the sync at the SQLite layer. The acquire honors ctx, so a
 	// shutdown signalled while we are still queued behind another writer cancels the
 	// run cleanly instead of blocking teardown.
 	if err := e.writeGuard.Lock(ctx); err != nil {
-		return dbq.Library{}, ingest.Result{}, false
+		return completedSync{}, false
 	}
 	defer e.writeGuard.Unlock()
 
@@ -523,16 +681,18 @@ func (e *Engine) guardedSync(ctx context.Context, req syncReq) (dbq.Library, ing
 		if !errors.Is(err, sql.ErrNoRows) { // a missing library was deleted before its turn
 			e.log.Error("load library", slog.Int64("library", req.id), slog.Any("error", err))
 		}
-		return dbq.Library{}, ingest.Result{}, false
+		return completedSync{}, false
 	}
 	if src.Status == statusPendingPurge {
-		return src, ingest.Result{}, false // do not sync libraries awaiting deletion
+		return completedSync{}, false // do not sync libraries awaiting deletion
 	}
 
-	parser, ok := e.parsers[src.Type]
-	if !ok {
-		e.markError(ctx, req.id, fmt.Errorf("no parser for library type %q", src.Type))
-		return src, ingest.Result{}, false
+	parser, found := e.parsers[src.Type]
+	if !found {
+		cause := fmt.Errorf("no parser for library type %q", src.Type)
+		e.markError(ctx, req.id, cause)
+		e.notifyRun(runOutcome(src, notify.RunSync, notify.RunFailed, cause.Error()))
+		return completedSync{}, false
 	}
 
 	// Fingerprint the artifact once, before reading it. Storing this pre-read
@@ -547,20 +707,30 @@ func (e *Engine) guardedSync(ctx context.Context, req syncReq) (dbq.Library, ing
 		// would make every connected client refetch on each unchanged cycle.
 		e.stampLastSync(ctx, req.id)
 		e.recheckSkipped(ctx, parser, src)
-		return src, ingest.Result{}, false // unchanged artifact: skip read + reconcile
+		// A skip is a successful check: it ends a failing streak like a full run.
+		e.notifyRun(runOutcome(src, notify.RunSync, notify.RunCompleted, ""))
+		return completedSync{}, false // unchanged artifact: skip read + reconcile
 	}
 
-	res, ok := e.runSync(ctx, parser, src, req, fp)
+	// Counted under the guard, before the parser runs, so the mass-removal
+	// check compares against the catalog this run started from.
+	before, err := q.CountBooksByLibrary(ctx, src.ID)
+	if err != nil {
+		e.log.Warn("count books before sync", slog.Int64("library", src.ID), slog.Any("error", err))
+	}
 
-	return src, res, ok
+	res, out, ok := e.runSync(ctx, parser, src, req, fp, int(before))
+
+	return completedSync{library: src, result: res, outcome: out}, ok
 }
 
 // runSync executes the parser for one library, records the outcome, and stores
 // the pre-read checkpoint fingerprint on success. ok reports whether the sync
-// succeeded.
+// succeeded; out is then its completed outcome, carrying booksBefore and the
+// books the run removed.
 func (e *Engine) runSync(
-	ctx context.Context, parser Parser, src dbq.Library, req syncReq, fp string,
-) (ingest.Result, bool) {
+	ctx context.Context, parser Parser, src dbq.Library, req syncReq, fp string, booksBefore int,
+) (ingest.Result, notify.RunOutcome, bool) {
 	e.log.Info(
 		"sync start",
 		slog.Int64("library", req.id),
@@ -573,12 +743,15 @@ func (e *Engine) runSync(
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
 			e.log.Info("sync interrupted by shutdown", slog.Int64("library", req.id))
-			return res, false
+			return res, notify.RunOutcome{}, false
 		}
-		e.log.Error("sync failed", slog.Int64("library", req.id), slog.Any("error", err))
+		// Marked: the run-failed notification below stands in for the tapped log record.
+		e.log.ErrorContext(logging.MarkReported(ctx), "sync failed",
+			slog.Int64("library", req.id), slog.Any("error", err))
 		e.markError(context.Background(), req.id, err)
+		e.notifyRun(runOutcome(src, notify.RunSync, notify.RunFailed, err.Error()))
 
-		return res, false
+		return res, notify.RunOutcome{}, false
 	}
 
 	persistCtx := context.WithoutCancel(ctx) // keep values, drop cancellation
@@ -587,7 +760,11 @@ func (e *Engine) runSync(
 	e.log.Info("sync done",
 		slog.Int64("library", req.id), slog.Int("added", res.Added), slog.Int("removed", res.Removed))
 
-	return res, true
+	out := runOutcome(src, notify.RunSync, notify.RunCompleted, "")
+	out.BooksBefore = booksBefore
+	out.BooksRemoved = res.RemovedBooks
+
+	return res, out, true
 }
 
 // fillImported fills descriptions for the books one sync run inserted (those
@@ -595,24 +772,27 @@ func (e *Engine) runSync(
 // sync's queue turn but after the sync's write guard is released, and reports
 // progress as a deep index run. A failure is logged and leaves the library's
 // status alone: the sync itself succeeded, and the books stay unchecked for a
-// later Deep Index. Without a deep indexer it does nothing.
-func (e *Engine) fillImported(ctx context.Context, src dbq.Library, stamp int64) {
+// later Deep Index. Without a deep indexer it does nothing. It returns the
+// fill's result and error so the caller can fold them into the sync's outcome.
+func (e *Engine) fillImported(ctx context.Context, src dbq.Library, stamp int64) (ingest.DeepIndexResult, error) {
 	if e.deepIndexer == nil {
-		return
+		return ingest.DeepIndexResult{}, nil
 	}
 	e.setCurrentKind(kindDeepIndex)
 
 	reporter, finish := e.beginProgress(src.ID)
-	err := e.runDeepIndex(ctx, src, ingest.DeepIndexImportedAt(stamp), reporter)
+	res, err := e.runDeepIndex(ctx, src, ingest.DeepIndexImportedAt(stamp), reporter)
 	finish() // emit the final frame even if the run errored
 	if err != nil {
 		if !errors.Is(err, context.Canceled) {
 			e.log.Warn("post-sync fill failed; the sync result stands",
 				slog.Int64("library", src.ID), slog.Any("error", err))
 		}
-		return
+		return res, err
 	}
 	e.emitLibrary(src.ID, "active") // descriptions changed: clients refetch
+
+	return res, nil
 }
 
 // setCurrentKind relabels the current run (a sync's post-sync fill reports as
@@ -642,44 +822,55 @@ func (e *Engine) deepIndexLibrary(ctx context.Context, id int64) {
 	}
 
 	reporter, finish := e.beginProgress(id)
-	err = e.runDeepIndex(ctx, src, ingest.DeepIndexAll(), reporter)
+	res, err := e.runDeepIndex(ctx, src, ingest.DeepIndexAll(), reporter)
 	finish() // emit the final frame even if the run errored
 	if err != nil {
 		if !errors.Is(err, context.Canceled) {
-			e.log.Error("deep index failed", slog.Int64("library", id), slog.Any("error", err))
+			// Marked: the run-failed notification below stands in for the tapped log record.
+			e.log.ErrorContext(logging.MarkReported(ctx), "deep index failed",
+				slog.Int64("library", id), slog.Any("error", err))
 			e.markError(context.Background(), id, err)
+			e.notifyRun(runOutcome(src, notify.RunDeepIndex, notify.RunFailed, err.Error()))
 		}
+
 		return
 	}
 	e.emitLibrary(id, "active")
+	out := runOutcome(src, notify.RunDeepIndex, notify.RunCompleted, "")
+	addDeepIndexCounts(&out, res)
+	e.notifyRun(out)
 }
 
 // runDeepIndex runs the deep indexer over one library with the given scope and
-// logs its start, completion, or shutdown interruption; the caller logs a
-// failure and decides what it means for the library. The caller must not hold
-// the write guard: the indexer takes it per batch.
+// logs its start, completion, or shutdown interruption, returning the run's
+// result; the caller logs a failure and decides what it means for the library.
+// The caller must not hold the write guard: the indexer takes it per batch.
 func (e *Engine) runDeepIndex(
 	ctx context.Context, src dbq.Library, scope ingest.DeepIndexScope, rep ingest.Reporter,
-) error {
+) (ingest.DeepIndexResult, error) {
 	e.log.Info("deep index start", slog.Int64("library", src.ID), slog.String("type", src.Type))
 	res, err := e.deepIndexer.Run(ctx, src, scope, rep)
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
 			e.log.Info("deep index interrupted by shutdown", slog.Int64("library", src.ID))
 		}
-		return fmt.Errorf("deep index: %w", err)
+		return res, fmt.Errorf("deep index: %w", err)
 	}
 	e.log.Info("deep index done", slog.Int64("library", src.ID),
 		slog.Int("checked", res.Checked), slog.Int("filled", res.Filled),
 		slog.Int("skipped", res.Skipped), slog.Int("errors", res.Errors))
 
-	return nil
+	return res, nil
 }
 
 // shouldSkip reports whether a sync pass can be skipped because the artifact
 // fingerprint is unchanged (non-forced run with a valid, matching checkpoint).
 func (e *Engine) shouldSkip(req syncReq, src dbq.Library, fp string) bool {
-	return !req.force && fp != "" && src.Checkpoint.Valid && src.Checkpoint.String == fp
+	// A library whose last run failed (a sync or a Deep Index) is read in full:
+	// a skip would report it recovered, and flip it back to active, without
+	// having read anything.
+	return !req.force && src.Status != statusError && fp != "" &&
+		src.Checkpoint.Valid && src.Checkpoint.String == fp
 }
 
 // fingerprint returns the parser's current artifact fingerprint, or "" when the

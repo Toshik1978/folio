@@ -99,6 +99,12 @@ type Service struct {
 	urgent chan message // KindCrash only, drained first
 	batch  chan message // every other kind
 
+	crashMu sync.Mutex             // guards crashes: ReportCrash runs on any goroutine, tick on the ticker
+	crashes map[string]*crashEntry // open crash de-duplication windows, at most maxCrashEntries
+
+	failingMu sync.Mutex     // guards failing: runs finish on any goroutine
+	failing   map[int64]bool // library IDs whose last run failed
+
 	dropMu  sync.Mutex
 	dropped int // messages dropped on a full lane since the last success
 
@@ -267,13 +273,17 @@ func (s *Service) tickLoop(ctx context.Context) {
 	}
 }
 
-// tick closes the time windows that have expired at now. Empty in this phase;
-// later tasks add the crash and error windows.
-func (s *Service) tick(time.Time) {}
+// tick closes the time windows that have expired at now.
+func (s *Service) tick(now time.Time) {
+	s.tickCrashes(now)
+}
 
 // flush closes every open window into the queue on Stop. Empty in this phase.
 func (s *Service) flush(time.Time) {}
 
 // resetCollected discards all in-memory collected state when notifications
-// are switched off. Empty in this phase; UpdateTelegram calls it.
-func (s *Service) resetCollected() {}
+// are switched off; UpdateTelegram calls it.
+func (s *Service) resetCollected() {
+	s.resetCrashes()
+	s.resetFailing()
+}

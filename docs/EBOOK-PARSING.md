@@ -39,6 +39,14 @@ one and injects it; tests use it too. The concrete parsers are unexported and
 only `NewStandardDispatcher` assembles them. `NewDispatcher(parsers ...Parser)`
 exists so tests can register fake `Parser`s; it panics on a duplicate extension.
 
+`NewStandardDispatcher` accepts options. `WithCrashReporter(r)` installs an
+optional `CrashReporter` (`ReportCrash(place, detail string, recovered any,
+stack []byte) bool`, true when the crash was queued as a message); when a parser panics the dispatcher still recovers it into a
+`*PanicError`, then reports it with place `book-file reading` and a detail such
+as `epub parser, metadata read`. The reporter receives no file name (that is
+catalog content); the book itself is listed once in the run's unreadable
+summary as `crashed`.
+
 The exported surface is **format-agnostic**: no exported identifier (type,
 function, constant, variable, or method of an exported type) has a camelCase
 word equal to a format label or extension (`epub`, `fb2`, `fbz`, `mobi`, `azw`,

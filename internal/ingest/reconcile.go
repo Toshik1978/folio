@@ -83,11 +83,12 @@ func (rc *reconciler) markSeen(sourcePath string) {
 
 // prune deletes files no longer present in the library, then removes any book
 // left with no files (covering both pruned files and books emptied by a file
-// moving to a new grouping key).
-func (rc *reconciler) prune(ctx context.Context) (int, error) {
+// moving to a new grouping key). It returns the number of files and of books
+// removed.
+func (rc *reconciler) prune(ctx context.Context) (filesRemoved, booksRemoved int, err error) {
 	q, err := rc.im.getQueries(ctx)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	removed := 0
 	for path, f := range rc.prev {
@@ -95,20 +96,20 @@ func (rc *reconciler) prune(ctx context.Context) (int, error) {
 			continue
 		}
 		if delErr := q.DeleteBookFile(ctx, f.ID); delErr != nil {
-			return removed, fmt.Errorf("delete file %d: %w", f.ID, delErr)
+			return removed, 0, fmt.Errorf("delete file %d: %w", f.ID, delErr)
 		}
 		removed++
 	}
 
 	ids, err := q.ListEmptyBooksByLibrary(ctx, rc.libraryID)
 	if err != nil {
-		return removed, fmt.Errorf("list empty books: %w", err)
+		return removed, 0, fmt.Errorf("list empty books: %w", err)
 	}
-	for _, bookID := range ids {
+	for i, bookID := range ids {
 		if err := rc.im.remove(ctx, bookID); err != nil {
-			return removed, err
+			return removed, i, err
 		}
 	}
 
-	return removed, nil
+	return removed, len(ids), nil
 }

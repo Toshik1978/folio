@@ -384,7 +384,7 @@ func (s *engineSuite) TestCheckpointPersistsWhenRunContextCancelled() {
 	// The stubParser ignores ctx cancellation and returns success, exercising
 	// exactly the window where the context is cancelled between Sync returning
 	// and the persist calls.
-	s.engine.runSync(ctx, s.parser, src, syncReq{id: src.ID}, fp)
+	s.engine.runSync(ctx, s.parser, src, syncReq{id: src.ID}, fp, 0)
 
 	// Both the last-sync timestamp and the checkpoint must be written despite
 	// the cancelled context.

@@ -4,7 +4,37 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"runtime/debug"
 )
+
+// TxPanic is the value WithTx re-panics with after rolling back a panicked
+// write transaction. It carries the original panic value and the stack captured
+// at the recover point, so an outer recover can report the crash once with the
+// frames of the panicking code. It deliberately has no reporter dependency; a
+// crash reporter recognises it through CrashPlace and CrashStack.
+type TxPanic struct { //nolint:errname // name fixed by the crash-reporting contract
+	Value any
+	Stack []byte
+}
+
+// Error implements error.
+func (p *TxPanic) Error() string { return fmt.Sprintf("panic in write transaction: %v", p.Value) }
+
+// Unwrap returns the panic value when it is an error, so errors.Is/As see
+// through the wrapper (e.g. http.ErrAbortHandler); otherwise nil.
+func (p *TxPanic) Unwrap() error {
+	if err, ok := p.Value.(error); ok {
+		return err
+	}
+
+	return nil
+}
+
+// CrashPlace names where the panic happened, for crash reports.
+func (p *TxPanic) CrashPlace() string { return "database write path" }
+
+// CrashStack returns the stack captured when the panic was recovered.
+func (p *TxPanic) CrashStack() []byte { return p.Stack }
 
 // WriteGuard serializes write transactions across the whole process. SQLite
 // permits a single writer at a time; even in WAL mode two connections that both
@@ -53,7 +83,8 @@ func (g *WriteGuard) Lock(ctx context.Context) error {
 func (g *WriteGuard) Unlock() { <-g.ch }
 
 // WithTx runs fn inside a write transaction while holding the guard, committing
-// on success and rolling back on error or panic. It honors ctx for acquisition:
+// on success and rolling back on error or panic. A panic is re-raised as a
+// *TxPanic (once; an already-wrapped one passes through). It honors ctx for acquisition:
 // if the guard cannot be taken before ctx is done it returns ctx.Err() without
 // opening a transaction.
 func (g *WriteGuard) WithTx(ctx context.Context, sqldb *sql.DB, fn func(*sql.Tx) error) (err error) {
@@ -69,7 +100,10 @@ func (g *WriteGuard) WithTx(ctx context.Context, sqldb *sql.DB, fn func(*sql.Tx)
 	defer func() {
 		if p := recover(); p != nil {
 			_ = tx.Rollback()
-			panic(p)
+			if tp, ok := p.(*TxPanic); ok {
+				panic(tp) // already wrapped by an inner write path
+			}
+			panic(&TxPanic{Value: p, Stack: debug.Stack()})
 		}
 		if err != nil {
 			_ = tx.Rollback()

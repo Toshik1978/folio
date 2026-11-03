@@ -259,13 +259,21 @@ by default:** nothing is sent until the owner saves a bot token and a channel ID
 and enables notifications (`/api/settings/telegram`).
 
 - **What's sent:** a message prefixed with the instance identity (so several
-  instances can share one channel) and its text. In this phase that is the test
-  message sent from the settings screen; later phases add further kinds of
-  failure notification.
+  instances can share one channel) and its text. The kinds are: the test message
+  sent from the settings screen; recovered crashes; a library run that failed
+  and the later run that recovered; newly unreadable book files; and a sync that
+  removed many books. A message carries library names, run kinds, counts,
+  error or panic texts (each capped at 300 characters; they may include file
+  paths inside a library), one code frame for a crash, book IDs or links to
+  the instance, and short reason labels.
+- **Never sent:** book titles, authors or descriptions taken from catalog
+  metadata, book contents, per-book read detail, raw request paths or queries,
+  credentials, or the bot token.
 - **Content rule** (constitution v1.1.0, Principle III exception): a message may
   carry library names, error texts (including file paths inside a library), and
   book IDs or links to the instance. It never carries book titles taken from
-  catalog metadata, book contents, credentials, tokens, or request headers.
+  catalog metadata, book contents, credentials, tokens, or request headers; a
+  title that is part of a file name inside an allowed file path is permitted.
 - **Failure mode:** best-effort. Each request has a 10s HTTP timeout; a
   delivery makes up to 3 attempts within a 30s budget. Messages go through a
   bounded in-memory queue, so producers never block or do I/O, and when the
@@ -374,7 +382,8 @@ redirected to or rejected by Access, not answered by Folio.
    notification exception: messages to the channel the owner configured may carry
    library names, error texts (including file paths inside a library), and book
    IDs or links to the instance, but never book titles taken from catalog
-   metadata, book contents, credentials, or tokens. It is off by default.
+   metadata, book contents, credentials, or tokens (a title that is part of a
+   file name inside an allowed file path is permitted). It is off by default.
 7. **CSRF guard on `/api`** — State-changing API calls are protected by an
    origin-based, token-less CSRF guard (`sameSiteGuard` + `formBodyGuard`) that
    does not depend on any proxy's cookie `SameSite` policy. It is *not* a

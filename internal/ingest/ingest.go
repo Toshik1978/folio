@@ -29,8 +29,12 @@ type CoverStore interface {
 
 // Result summarises what a single Sync run changed.
 type Result struct {
-	Added   int
+	Added int
+	// Removed counts files pruned from the library.
 	Removed int
+	// RemovedBooks counts books deleted because they were left with no file;
+	// Removed counts files, so several files of one book make Removed larger.
+	RemovedBooks int
 	// ImportedAt is the run's imported_at stamp, shared by every book the run
 	// inserted; it scopes a post-sync Deep Index to those books.
 	ImportedAt int64

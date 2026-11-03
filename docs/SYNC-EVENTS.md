@@ -271,7 +271,7 @@ _ = http.NewResponseController(w).SetWriteDeadline(time.Time{})
 ```
 
 **Compression.** The middleware chain (`internal/server/server.go`) is
-`proxyHeaders → (dev) Logger → Recoverer` — there is **no** `middleware.Compress`,
+`proxyHeaders → (dev) Logger → recoverer` — there is **no** `middleware.Compress`,
 so no gzip buffering to defeat.
 
 **Flow:**

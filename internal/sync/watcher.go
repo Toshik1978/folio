@@ -7,6 +7,7 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	stdsync "sync"
 	"time"
 
@@ -26,6 +27,7 @@ func (e *Engine) initWatcher() error {
 	if err != nil {
 		return err
 	}
+	w.crashed = func(r any, stack []byte) { e.reportPanic("folder watcher", r, stack) }
 	w.run()
 	e.watcher = w
 
@@ -57,6 +59,7 @@ type watcher struct {
 	fsw      *fsnotify.Watcher
 	debounce time.Duration
 	trigger  func(libraryID int64)
+	crashed  func(r any, stack []byte) // told about a panic handling one event; nil = log only
 	stop     chan struct{}
 
 	reconcileMu stdsync.Mutex // serializes reconcile() against itself
@@ -200,7 +203,7 @@ func (w *watcher) run() {
 				if !ok {
 					return
 				}
-				w.handle(ev)
+				w.handleSafely(ev)
 			case err, ok := <-w.fsw.Errors:
 				if !ok {
 					return
@@ -209,6 +212,24 @@ func (w *watcher) run() {
 			}
 		}
 	}()
+}
+
+// handleSafely handles one event under a panic guard, so a panic drops that
+// event instead of killing the process (the loop runs on its own goroutine).
+func (w *watcher) handleSafely(ev fsnotify.Event) {
+	defer func() {
+		r := recover()
+		if r == nil {
+			return
+		}
+		stack := debug.Stack()
+		if w.crashed != nil {
+			w.crashed(r, stack)
+		} else {
+			w.log.Error("fsnotify event panicked", slog.Any("panic", r), slog.String("stack", string(stack)))
+		}
+	}()
+	w.handle(ev)
 }
 
 func (w *watcher) handle(ev fsnotify.Event) {

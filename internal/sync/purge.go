@@ -64,6 +64,9 @@ func (e *Engine) stopped() bool {
 // retry. Stop waits for in-flight purges via e.bg.
 func (e *Engine) RequestPurge(id int64) {
 	e.bg.Go(func() {
+		// An unrecovered panic here (e.g. a re-raised db.TxPanic) would kill the
+		// process; the row stays pending_purge for the deadline sweep instead.
+		defer e.recoverCrash(fmt.Sprintf("library #%d purge", id), nil)
 		if err := e.PurgeLibrary(context.Background(), id); err != nil {
 			e.log.Error("purge library", slog.Int64("library", id), slog.Any("error", err))
 		}
@@ -146,6 +149,7 @@ func (e *Engine) purgeLibrary(ctx context.Context, id int64) error {
 	// finishes after the handler's 202) leaves the deleted library stuck on
 	// "Pending Purge" until a manual reload.
 	e.emitLibrary(id, statusPurged)
+	e.notifyLibraryRemoved(id)
 
 	return nil
 }

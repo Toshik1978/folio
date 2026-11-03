@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"log/slog"
@@ -14,6 +15,7 @@ import (
 	"github.com/stretchr/testify/suite"
 
 	"github.com/Toshik1978/folio/internal/api"
+	"github.com/Toshik1978/folio/internal/db"
 	"github.com/Toshik1978/folio/internal/mcpserver"
 	"github.com/Toshik1978/folio/internal/sync"
 )
@@ -631,4 +633,118 @@ func (s *serverTestSuite) TestProxyHeadersClampsForwardedProto() {
 	r.Header.Set("X-Forwarded-Proto", "https")
 	h.ServeHTTP(httptest.NewRecorder(), r)
 	s.Equal("https", got)
+}
+
+// boomRegistrar registers GET /boom/{id} panicking with val.
+type boomRegistrar struct{ val any }
+
+func (b boomRegistrar) Register(r chi.Router) {
+	r.Get("/boom/{id}", func(http.ResponseWriter, *http.Request) { panic(b.val) })
+}
+
+type crashCall struct {
+	place, detail string
+	recovered     any
+	stack         []byte
+}
+
+type fakeCrashes struct{ calls []crashCall }
+
+func (f *fakeCrashes) ReportCrash(place, detail string, recovered any, stack []byte) bool {
+	f.calls = append(f.calls, crashCall{place, detail, recovered, stack})
+
+	return true
+}
+
+func (s *serverTestSuite) boomServer(val any, crashes CrashReporter, logBuf *bytes.Buffer) http.Handler {
+	h := defaultHandlers()
+	h.API = append(h.API, boomRegistrar{val: val})
+	h.Crashes = crashes
+	log := slog.New(slog.NewTextHandler(logBuf, nil))
+
+	return newWithFS(log, h, "production", true, "", http.FS(s.testFS))
+}
+
+func (s *serverTestSuite) TestRecovererReportsAnd500() {
+	fc := &fakeCrashes{}
+	var buf bytes.Buffer
+	srv := s.boomServer("kaboom", fc, &buf)
+
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, boomRequest(s, "/api/boom/7?q=x"))
+
+	s.Equal(http.StatusInternalServerError, rec.Code)
+	s.Require().Len(fc.calls, 1)
+	s.Equal("web request handling", fc.calls[0].place)
+	s.Equal("GET /api/boom/{id}", fc.calls[0].detail)
+	s.Equal("kaboom", fc.calls[0].recovered)
+	s.NotEmpty(fc.calls[0].stack)
+	s.Equal(1, strings.Count(buf.String(), "level=ERROR"))
+	s.Contains(buf.String(), "http handler panicked")
+	s.NotContains(buf.String(), "/api/boom/7")
+	s.NotContains(buf.String(), "q=x")
+}
+
+func (s *serverTestSuite) TestRecovererReportsTxPanicPlace() {
+	fc := &fakeCrashes{}
+	var buf bytes.Buffer
+	tp := &db.TxPanic{Value: "inner", Stack: []byte("stack")}
+	srv := s.boomServer(tp, fc, &buf)
+
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, boomRequest(s, "/api/boom/7"))
+
+	s.Equal(http.StatusInternalServerError, rec.Code)
+	s.Require().Len(fc.calls, 1)
+	s.Same(tp, fc.calls[0].recovered)
+}
+
+func (s *serverTestSuite) TestRecovererReraisesAbortHandler() {
+	for name, val := range map[string]any{
+		"direct":  http.ErrAbortHandler,
+		"txpanic": &db.TxPanic{Value: http.ErrAbortHandler},
+	} {
+		fc := &fakeCrashes{}
+		var buf bytes.Buffer
+		srv := s.boomServer(val, fc, &buf)
+
+		rec := httptest.NewRecorder()
+		s.PanicsWithValue(http.ErrAbortHandler, func() {
+			srv.ServeHTTP(rec, boomRequest(s, "/api/boom/7"))
+		}, name)
+		s.Empty(fc.calls, name)
+		s.Empty(buf.String(), name)
+	}
+}
+
+func (s *serverTestSuite) TestRecovererNilCrashesStill500() {
+	var buf bytes.Buffer
+	srv := s.boomServer("kaboom", nil, &buf)
+
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, boomRequest(s, "/api/boom/7"))
+
+	s.Equal(http.StatusInternalServerError, rec.Code)
+	s.Equal(1, strings.Count(buf.String(), "level=ERROR"))
+}
+
+func (s *serverTestSuite) TestRecovererSkips500OnUpgrade() {
+	var buf bytes.Buffer
+	srv := s.boomServer("kaboom", nil, &buf)
+
+	rec := httptest.NewRecorder()
+	req := boomRequest(s, "/api/boom/7")
+	req.Header.Set("Connection", "Upgrade")
+	req.Header.Set("Upgrade", "websocket")
+	srv.ServeHTTP(rec, req)
+
+	s.Equal(http.StatusOK, rec.Code, "no 500 written on upgrade")
+	s.False(rec.Flushed)
+}
+
+func boomRequest(s *serverTestSuite, target string) *http.Request {
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, target, http.NoBody)
+	s.Require().NoError(err)
+
+	return req
 }

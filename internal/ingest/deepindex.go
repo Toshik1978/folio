@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"runtime"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"time"
@@ -41,6 +42,16 @@ func DeepIndexImportedAt(stamp int64) DeepIndexScope {
 	return DeepIndexScope{importedAt: sql.NullInt64{Int64: stamp, Valid: true}}
 }
 
+// brokenSampleSize caps DeepIndexResult.NewlyBroken.
+const brokenSampleSize = 5
+
+// BrokenBook is one book a deep index run newly recorded as unreadable, with
+// the reason it was recorded under.
+type BrokenBook struct {
+	BookID int64
+	Reason ebook.Reason
+}
+
 // DeepIndexResult counts the outcome of a deep index run. Every book the run
 // committed lands in exactly one of Checked, Broken, KnownBroken or Errors;
 // Filled and Skipped are subsets of Checked. A book whose batch was not committed (the run was
@@ -61,6 +72,9 @@ type DeepIndexResult struct {
 	// good (see ReadBroken) and recorded in book_read_failures. They stay
 	// unchecked.
 	Broken int
+	// NewlyBroken samples the books counted in Broken: the first
+	// brokenSampleSize in commit order. Broken stays the total.
+	NewlyBroken []BrokenBook
 	// KnownBroken is the number of books skipped without opening any entry
 	// because their stored record still applies: same reader version, same
 	// file fingerprint. They stay unchecked and nothing is written.
@@ -77,6 +91,7 @@ func (r *DeepIndexResult) add(part DeepIndexResult) {
 	r.Filled += part.Filled
 	r.Skipped += part.Skipped
 	r.Broken += part.Broken
+	r.NewlyBroken = appendBrokenSample(r.NewlyBroken, part.NewlyBroken)
 	r.KnownBroken += part.KnownBroken
 	r.Errors += part.Errors
 }
@@ -269,8 +284,29 @@ func (d *DeepIndexer) jobs(library dbq.Library, books []deepIndexBook) []deepInd
 	return jobs
 }
 
+// WorkerPanic is the value process re-panics with on the calling goroutine
+// after a worker goroutine panicked outside the parser (whose panics the
+// Dispatcher already recovers). An unrecovered panic on a worker would kill the
+// process; re-raising it where the caller's recover (the sync engine's) can see
+// it keeps the process alive. It carries the worker's stack so a crash reporter
+// names the panicking frames, recognised through CrashPlace and CrashStack.
+type WorkerPanic struct { //nolint:errname // mirrors db.TxPanic
+	Value any
+	Stack []byte
+}
+
+// Error implements error.
+func (p *WorkerPanic) Error() string { return fmt.Sprintf("panic in deep index worker: %v", p.Value) }
+
+// CrashPlace names where the panic happened, for crash reports.
+func (p *WorkerPanic) CrashPlace() string { return "book-file reading" }
+
+// CrashStack returns the stack captured when the worker's panic was recovered.
+func (p *WorkerPanic) CrashStack() []byte { return p.Stack }
+
 // process runs the bounded worker pool and the single writer (the calling
-// goroutine). It returns only after every worker has exited.
+// goroutine). It returns only after every worker has exited; a worker panic is
+// re-raised here as a *WorkerPanic once the pool has stopped.
 func (d *DeepIndexer) process(
 	ctx context.Context, library dbq.Library, jobs []deepIndexJob, rep Reporter,
 ) (DeepIndexResult, error) {
@@ -291,9 +327,19 @@ func (d *DeepIndexer) process(
 		}
 	}()
 
-	var wg sync.WaitGroup
+	var (
+		wg        sync.WaitGroup
+		panicOnce sync.Once
+		panicked  *WorkerPanic
+	)
 	for range max(1, min(runtime.GOMAXPROCS(0), len(jobs))) {
 		wg.Go(func() {
+			defer func() {
+				if r := recover(); r != nil {
+					panicOnce.Do(func() { panicked = &WorkerPanic{Value: r, Stack: debug.Stack()} })
+					cancel() // stop the writer and the other workers
+				}
+			}()
 			for job := range jobCh {
 				d.runJob(ctx, library, job, results)
 			}
@@ -310,6 +356,10 @@ func (d *DeepIndexer) process(
 	// none is left blocked and no archive is still open when Run returns.
 	cancel()
 	for range results {
+	}
+	// results is closed only after wg.Wait, so panicked is settled here.
+	if panicked != nil {
+		panic(panicked)
 	}
 
 	return res, err
@@ -391,6 +441,13 @@ func (d *DeepIndexer) write(
 	}
 }
 
+// appendBrokenSample appends from to sample, keeping at most brokenSampleSize.
+func appendBrokenSample(sample, from []BrokenBook) []BrokenBook {
+	room := max(0, brokenSampleSize-len(sample))
+
+	return append(sample, from[:min(room, len(from))]...)
+}
+
 // commit writes one batch in a single transaction under the write guard and
 // returns its tally, which only counts once the transaction has committed. A
 // done book is persisted, its read failure record deleted and it is marked
@@ -454,6 +511,8 @@ func (d *DeepIndexer) apply(
 		}
 		if recorded {
 			tally.Broken++
+			sample := []BrokenBook{{BookID: o.bookID, Reason: o.res.Reason}}
+			tally.NewlyBroken = appendBrokenSample(tally.NewlyBroken, sample)
 		}
 
 		return recorded, nil

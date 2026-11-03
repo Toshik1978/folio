@@ -83,7 +83,7 @@ Applied globally on the root router, in this order:
 | :--- | :--- |
 | `proxyHeaders` (custom) | Sets `URL.Scheme` from `X-Forwarded-Proto` (falling back to the TLS state). It deliberately does **not** honor `X-Forwarded-Host` — see [NETWORKING.md](./NETWORKING.md#canonical-host-public_url-not-x-forwarded-host) |
 | `middleware.Logger` (chi) | Request logging via chi's logger, bridged to the `log/slog` logger through a `slogger` adapter (`Print` → `slog.Info`) — **registered only when `env == "development"`** |
-| `middleware.Recoverer` | Panic recovery → `500` |
+| `recoverer` (`internal/server/recoverer.go`) | Panic recovery: logs the panic and stack through `slog` at Error (marked reported), hands it to `Handlers.Crashes` (a crash reporter; nil = log only) with the chi route pattern, and answers `500` (skipped for connection upgrades). `http.ErrAbortHandler` (direct or wrapped) is re-raised as the bare sentinel. Replaces chi's `middleware.Recoverer` |
 
 The OPDS sub-router adds HTTP Basic Auth on its protected group (see
 [NETWORKING.md](./NETWORKING.md)). The `/api` group additionally carries
@@ -208,7 +208,7 @@ This groups `go test` output by suite, isolates fixtures per concern, and gives 
 | `internal/api` | `TestAPI` | REST handlers over a temp DB: `booksSuite`, `librariesSuite`, `listsSuite`, `metaSuite` |
 | `internal/opds` | `TestOPDS` | Catalog handlers: `authSuite` (Basic Auth), `downloadSuite`, `feedsSuite` (golden-file feed XML), `enrichSuite` (offline metadata backfill on the acquisition feed) |
 | `internal/db` | `TestDB` | `booksFilterSuite` — the Bob dynamic book filter + `scanBook`/`GetBook` column-drift guard |
-| `internal/notify` | `TestNotify` | Telegram notifier: settings store, Telegram client (against an `httptest` fake), delivery queue/status and the test send |
+| `internal/notify` | `TestNotify` | Telegram notifier: settings store, Telegram client (against an `httptest` fake), delivery queue/status, the test send and crash de-duplication |
 | `internal/sync` | `TestSync` | Sync engine: `engineSuite`, `schedulerSuite`, `watcherSuite` (fsnotify debounce) |
 
 ### Fixtures & hermeticity
@@ -241,7 +241,8 @@ internal/
 ├── logging/               # slog logger construction                      [leaf]
 ├── server/                # Router assembly + global middleware
 │   ├── server.go          #   New(log, Handlers, env, noColor) → *chi.Mux; Registrar iface
-│   └── middleware.go      #   proxyHeaders + slog request-logger bridge
+│   ├── middleware.go      #   proxyHeaders + slog request-logger bridge
+│   └── recoverer.go       #   slog-aware panic recovery + crash report
 ├── api/                   # REST handlers (/api/*) — books, lists, libraries,
 │   │                      #   sync, stats, facets, health; JSON responses
 │   ├── base.go            #   shared response helpers (writeJSON / writeError)
@@ -256,7 +257,8 @@ internal/
 │   └── telegram.go        #   /api/settings/telegram handler; TelegramService iface
 │                          #   satisfied by *notify.Service
 ├── notify/                # Opt-in Telegram owner notifications: settings store,
-│                          #   Bot API client, bounded send queue, delivery status
+│                          #   Bot API client, bounded send queue, delivery status,
+│                          #   crash reports de-duplicated for an hour (crash.go)
 ├── auth/                  # OPDS Basic Auth: credential storage, hashing,
 │   ├── auth.go            #   Authenticator: Middleware, View/SetCredentials, caches
 │   └── store.go           #   settings-table credential persistence
@@ -361,8 +363,11 @@ quota) and backs on-view online enrichment; the cover store doubles as the
 credentials and is shared by the settings and opds handlers. One
 `notify.Service` (built over the store, the Telegram client for
 `cfg.TelegramAPIBase` and `cfg.PublicURL`) delivers the opt-in Telegram messages;
-it is created right after the write guard, started after the sync engine, and
-stopped after it on shutdown. It backs the `/api/settings/telegram` handler
+construction order is base logger, database and write guard, notifier, then the
+dispatcher, sync engine and server: the notifier is created before the dispatcher
+because it is injected into all three producers (`ebook.WithCrashReporter`,
+`sync.WithNotifier`, `server.Handlers.Crashes`). It is started after the sync
+engine and stopped after it on shutdown. It backs the `/api/settings/telegram` handler
 through the `settings.TelegramService` interface. An `events.Broker`
 (created here) is shared by the sync engine (publisher) and the API SSE handler
 (subscriber). `main` assembles the per-library-type parser
@@ -371,20 +376,20 @@ lets the engine notify the handler when stats change so it invalidates its cache
 
 ```go
 writeGuard := db.NewWriteGuard()
-parser := ebook.NewStandardDispatcher()
-extractor := ingest.NewExtractor(database, log, parser, writeGuard)
-coverStore, _ := covers.NewStore(cfg.DataDir, extractor, ingest.NewCoverState(database))
-enricher := ingest.NewEnricher(database, googlebooks.NewClient(log, cfg.GoogleKey))
 notifier, _ := notify.New(log, notify.NewStore(database, writeGuard),
     notify.NewClient(cfg.TelegramAPIBase, &http.Client{Timeout: 10 * time.Second}),
     notify.WithPublicURL(cfg.PublicURL))
+parser := ebook.NewStandardDispatcher(ebook.WithCrashReporter(notifier))
+extractor := ingest.NewExtractor(database, log, parser, writeGuard)
+coverStore, _ := covers.NewStore(cfg.DataDir, extractor, ingest.NewCoverState(database))
+enricher := ingest.NewEnricher(database, googlebooks.NewClient(log, cfg.GoogleKey))
 authn := auth.New(log, database)
 authn.WarnIfUnprotected(ctx)
 broker := events.NewBroker()
 catalogHandler := api.NewCatalog(log, database)
 syncEngine, _ := sync.New(
     log, database, parserMap, coverStore, extractor, // parsers get parser.Rank
-    sync.WithEvents(broker), sync.WithStatsObserver(catalogHandler))
+    sync.WithEvents(broker), sync.WithStatsObserver(catalogHandler), sync.WithNotifier(notifier))
 syncEngine.Start()
 notifier.Start()
 
@@ -397,8 +402,9 @@ srv := &http.Server{Addr: ":" + cfg.Port, Handler: server.New(log, server.Handle
         settings.New(log, authn),
         settings.NewTelegram(log, notifier),
     },
-    OPDS: opds.New(log, database, coverStore, authn, cfg.PublicURL),
-    MCP:  mcpserver.New(log, database, cfg.PublicURL, buildVersion()),
+    OPDS:    opds.New(log, database, coverStore, authn, cfg.PublicURL),
+    MCP:     mcpserver.New(log, database, cfg.PublicURL, buildVersion()),
+    Crashes: notifier,
 }, cfg.Env, cfg.NoColorEnabled())}
 ```
 
@@ -430,7 +436,7 @@ Verified import graph (`go list`):
 | `ebook` | `htmltext` |
 | `auth` | `db/dbq` |
 | `ingest` | `db`, `db/dbq`, `ebook`, `htmltext`, `googlebooks` |
-| `sync` | `db/dbq`, `ingest`, `events` |
+| `sync` | `db/dbq`, `ingest`, `events`, `notify`, `logging` |
 | `api` | `db`, `db/dbq`, `sync`, `bookfile`, `htmltext`, `ebook`, `googlebooks`, `events` |
 | `opds` | `db`, `db/dbq`, `bookfile` |
 | `mcpserver` | `db`, `db/dbq`, `htmltext` |

@@ -18,11 +18,11 @@ type message struct {
 	text string
 }
 
-// enqueue puts m on its lane without blocking. A full lane drops m and records
-// the failure; a closed intake drops it silently.
-func (s *Service) enqueue(m message) {
+// enqueue puts m on its lane without blocking and reports whether it did. A
+// full lane drops m and records the failure; a closed intake drops it silently.
+func (s *Service) enqueue(m message) bool {
 	if s.closed.Load() {
-		return
+		return false
 	}
 	lane := s.batch
 	if m.kind == KindCrash {
@@ -30,12 +30,15 @@ func (s *Service) enqueue(m message) {
 	}
 	select {
 	case lane <- m:
+		return true
 	default:
 		s.dropMu.Lock()
 		s.dropped++
 		n := s.dropped
 		s.dropMu.Unlock()
 		s.status.recordFailure(s.now(), fmt.Sprintf("queue full: %d message(s) dropped", n))
+
+		return false
 	}
 }
 
@@ -47,13 +50,36 @@ func (s *Service) sender(ctx context.Context) {
 		if !ok {
 			return
 		}
-		if !s.deliver(ctx, m) {
+		attempted, err := s.deliver(ctx, m)
+		if !attempted {
 			continue
 		}
-		if !sleep(ctx, s.timing.Spacing) {
+		if s.drained() {
+			// Nothing left to space out: on shutdown the gap would only eat
+			// into Stop's drain budget.
+			return
+		}
+		if !sleep(ctx, s.gapAfter(err)) {
 			return
 		}
 	}
+}
+
+// maxFloodPause caps how long one 429 can pause the sender. A longer flood
+// ban is not lost: the next send gets a fresh 429 with the time remaining.
+const maxFloodPause = 10 * time.Minute
+
+// gapAfter is the wait before the next send. After a message dropped on a 429
+// it is Telegram's retry_after, so the queued messages wait out the flood ban
+// in their (bounded) lanes instead of each being sent into it, dropped, and
+// prolonging the ban; otherwise it is Spacing.
+func (s *Service) gapAfter(err error) time.Duration {
+	ae, ok := errors.AsType[*APIError](err)
+	if !ok || ae.Code != http.StatusTooManyRequests {
+		return s.timing.Spacing
+	}
+
+	return max(s.timing.Spacing, min(ae.RetryAfter, maxFloodPause))
 }
 
 // next returns the next message, always preferring the urgent lane. It reports
@@ -76,6 +102,13 @@ func (s *Service) next(ctx context.Context) (message, bool) {
 	}
 }
 
+// drained reports whether intake is closed and both lanes are empty, so no
+// message can follow: enqueue refuses once closed is set (a send racing that
+// store is as lost as one made after Stop).
+func (s *Service) drained() bool {
+	return s.closed.Load() && len(s.urgent) == 0 && len(s.batch) == 0
+}
+
 // leftover takes a message still queued after intake closed, urgent first,
 // without blocking.
 func (s *Service) leftover() (message, bool) {
@@ -93,13 +126,13 @@ func (s *Service) leftover() (message, bool) {
 }
 
 // deliver sends m under the Config in force now and records the outcome. It
-// reports whether a send was attempted.
-func (s *Service) deliver(ctx context.Context, m message) bool {
+// reports whether a send was attempted and, when it failed, the final error.
+func (s *Service) deliver(ctx context.Context, m message) (attempted bool, err error) {
 	cfg := s.cfg.Load()
 	if cfg == nil || !cfg.Enabled || !cfg.Ready() {
-		return false
+		return false, nil
 	}
-	err := s.sendWithRetry(ctx, *cfg, m.text)
+	err = s.sendWithRetry(ctx, *cfg, m.text)
 	switch {
 	case err == nil:
 		s.dropMu.Lock()
@@ -113,7 +146,7 @@ func (s *Service) deliver(ctx context.Context, m message) bool {
 		s.status.recordFailure(s.now(), err.Error())
 	}
 
-	return true
+	return true, err
 }
 
 // sendWithRetry makes up to 1+len(Backoff) attempts inside MessageBudget. It

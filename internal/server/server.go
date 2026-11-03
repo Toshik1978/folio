@@ -24,6 +24,8 @@ type Handlers struct {
 	API  []Registrar  // mounted under /api in order
 	OPDS Registrar    // mounted at /opds
 	MCP  http.Handler // mounted at /mcp when non-nil
+
+	Crashes CrashReporter // receives recovered handler panics; nil = log only
 }
 
 func New(log *slog.Logger, h Handlers, env string, noColor bool, publicURL string) *chi.Mux {
@@ -41,7 +43,7 @@ func newWithFS(log *slog.Logger, h Handlers, env string, noColor bool, publicURL
 		})
 		r.Use(middleware.Logger)
 	}
-	r.Use(middleware.Recoverer)
+	r.Use(recoverer(log, h.Crashes))
 
 	r.Route("/api", func(api chi.Router) {
 		// Token-less CSRF defense: reject cross-site state-changing calls, then

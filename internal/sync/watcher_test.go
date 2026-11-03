@@ -3,9 +3,12 @@ package sync
 import (
 	"context"
 	"database/sql"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/fsnotify/fsnotify"
 
 	"github.com/Toshik1978/folio/internal/libtype"
 )
@@ -85,4 +88,23 @@ func (s *watcherSuite) TestReschedulePicksUpRuntimeFolderLibrary() {
 	s.markPendingPurge(src.ID, sql.NullInt64{})
 	s.Require().NoError(s.engine.Reschedule(context.Background()))
 	s.Zero(s.engine.watcher.watchedLibraryCount())
+}
+
+// TestHandlePanicIsReported: a panic while handling one event is reported and
+// dropped; it must not escape the event loop's goroutine and kill the process.
+func (s *watcherSuite) TestHandlePanicIsReported() {
+	dir := s.T().TempDir()
+	sub := filepath.Join(dir, "new")
+	s.Require().NoError(os.Mkdir(sub, 0o700))
+	var crashes []any
+	w := &watcher{
+		log:     slog.New(slog.DiscardHandler),
+		dirs:    map[string]int64{dir: 1},
+		timers:  map[int64]*time.Timer{},
+		crashed: func(r any, _ []byte) { crashes = append(crashes, r) },
+		// fsw is nil, so watching the new subdirectory panics.
+	}
+
+	s.NotPanics(func() { w.handleSafely(fsnotify.Event{Name: sub, Op: fsnotify.Create}) })
+	s.Len(crashes, 1)
 }

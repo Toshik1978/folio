@@ -10,6 +10,7 @@ import (
 
 func TestLogging(t *testing.T) {
 	suite.Run(t, new(loggingSuite))
+	suite.Run(t, new(reportedSuite))
 }
 
 type loggingSuite struct {
