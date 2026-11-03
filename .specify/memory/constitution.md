@@ -38,8 +38,17 @@ Rationale: a single process, port, and artifact minimizes moving parts for self-
   `docs/NETWORKING.md` (currently: metadata/cover providers such as Google Books). They MUST
   NOT transmit catalog contents or credentials, and their failure MUST NOT break a user-facing
   request.
+- Exception, owner notifications: failure notifications sent to the messaging channel the owner
+  configured MAY carry library names, error texts (including file paths inside a library), and
+  book IDs or links to the instance. They MUST NOT carry book titles taken from catalog
+  metadata, book contents, credentials, or tokens; a title that is part of a file name inside an
+  allowed file path is permitted. The channel MUST be opt-in (off by default), and every other rule in
+  this principle still applies to it.
 
 Rationale: Folio's audience runs it on modest hardware and expects a quiet, private service.
+A failure notice that cannot name the library or the error is not actionable; the owner's own
+channel is a destination the owner chose, so diagnostics may go there, but catalog contents
+and secrets still may not.
 
 ### IV. Schema & Query Discipline
 
@@ -145,4 +154,4 @@ delegates the rest to proven infrastructure.
   maintainer; unjustified violations block the change.
 - Runtime development guidance for agents and contributors lives in `.claude/CLAUDE.md`.
 
-**Version**: 1.0.0 | **Ratified**: 2026-11-01 | **Last Amended**: 2026-11-01
+**Version**: 1.1.0 | **Ratified**: 2026-11-01 | **Last Amended**: 2026-11-03
