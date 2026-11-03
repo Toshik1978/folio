@@ -9,6 +9,102 @@ Versions follow [semver](https://semver.org). Commits follow
 
 ---
 
+## v1.7.0 — 2026-11-03
+
+This release is about **knowing what is in your library and hearing when
+something goes wrong with it**. Folio now reads descriptions straight out of
+your book files when the catalog has none, tells you which books it cannot read
+and why, can let an AI assistant search the catalog for you, and can message you
+on Telegram when a sync fails or the server crashes.
+
+Underneath, every format — EPUB, FB2, MOBI and PDF — is now read through one
+code path, whether the file sits in a folder or inside a ZIP or INPX archive.
+That path is hardened against malformed files, which is what makes the
+unreadable-book records trustworthy: a broken file is reported with a reason
+instead of failing differently depending on where it lives.
+
+### Highlights
+
+- **Deep Index fills in missing descriptions from the books themselves.** INPX
+  catalogs and many retail files carry no annotation in the index. Deep Index
+  opens the book file and takes the description from it — on demand per library
+  or for all libraries from Settings, and automatically for newly imported books
+  after each sync. It reads only local files and never writes to them.
+- **Unreadable books are visible.** A file Folio cannot read is recorded once,
+  with the reason (corrupt, too large, missing from its archive, or crashed the
+  reader), and re-checked only when the file changes. Book details show why,
+  the search bar has an **Unreadable** filter chip, and the Settings library
+  table links each library's unreadable count straight to that filter.
+- **An MCP endpoint lets Claude.ai search your library.** `/mcp` serves a
+  read-only Model Context Protocol server with five tools, including
+  `search_books` and `similar_books` ("books like this one", matched on
+  descriptions). Every tool is read-only and makes no outbound calls. See the
+  upgrade note below before exposing it.
+- **Telegram notifications.** Settings gains a Telegram section — bot token,
+  chat, optional topic, and a test send. Folio then messages you when it
+  crashes (reported on the next start), when a sync run fails or recovers, when
+  new unreadable books appear, and when a sync removes many books at once. Other
+  errors are batched into one summary every five minutes rather than sent one by
+  one. Notifications are off until you configure them.
+- **A smaller search index.** The full-text index no longer stores a second copy
+  of every title, author, series and description; it keeps only what search
+  needs. Same queries, same ranking.
+
+### Notable fixes
+
+- **Saving OPDS credentials during a sync no longer fails with a 500.** It now
+  waits its turn like every other settings write, and answers `503 busy, try
+  again` if a sync holds the database for too long.
+
+### Upgrading
+
+- **`/mcp` has no authentication of its own.** If Folio is reachable from
+  outside, make sure your authenticator covers `/mcp` before you upgrade — an
+  Access policy scoped to the web UI paths alone leaves it open, and anyone who
+  can reach it can search every book's metadata. For Claude.ai you also need an
+  authenticator that speaks OAuth for MCP clients, such as Cloudflare Access;
+  `docs/NETWORKING.md` walks through the setup. Set `PUBLIC_URL` so result links
+  are absolute.
+- **The first start after upgrading rebuilds the search index.** A schema
+  migration re-tokenizes every book once, before Folio begins serving, so expect
+  a pause proportional to catalog size. Back up `/data` first
+  (`sqlite3 /data/folio.db "VACUUM INTO '/backup/folio.db'"`) and leave disk
+  headroom: the old and new index coexist until the rebuild finishes.
+- **Deep Index is not run over your existing books automatically.** Only books
+  imported after the upgrade are covered on their own; run **Deep Index All**
+  from Settings once to backfill the rest.
+
+### Features
+
+- [c3b3168](https://github.com/Toshik1978/folio/commit/c3b31688590a0725ba6ad309a3f2d7b52dc603aa) feat: Deep Index — fill book descriptions from local files
+- [3eb4432](https://github.com/Toshik1978/folio/commit/3eb44321f411256c6f6117b1528e0952c89a7cff) feat: read every book format through one random-access source
+- [4553286](https://github.com/Toshik1978/folio/commit/455328676d9e846e7d90902668856e3c7dbe87e1) feat: record unreadable books and show which and why
+- [87f96e9](https://github.com/Toshik1978/folio/commit/87f96e9f4b0f28171dbca1a3a0a14741308c9b35) feat: read-only MCP endpoint with search_books and similar_books
+- [e5916ab](https://github.com/Toshik1978/folio/commit/e5916ab0cf900a4713219e9da8578ba61becfabc) feat: configure and test Telegram notifications
+- [0df31df](https://github.com/Toshik1978/folio/commit/0df31df3da017ed12ec58a0af500a655567f68cb) feat: notify crashes, failed runs, unreadable books and mass removals
+- [7856faa](https://github.com/Toshik1978/folio/commit/7856faa7aabde264d25c83b3b9efb7404104294f) feat: group other errors into a 5-minute summary
+
+### Bug Fixes
+
+- [e2bb276](https://github.com/Toshik1978/folio/commit/e2bb276573b310e69035c5388d2b904de2721ef8) fix(lint): drop unused revive nolint directive in metasearch (#54)
+- [c547638](https://github.com/Toshik1978/folio/commit/c547638083824720051ad9e9225abb4d85cea116) fix: save OPDS credentials under the write guard
+
+### Others
+
+- [3fc9e1f](https://github.com/Toshik1978/folio/commit/3fc9e1fa64c8e06bfbcbb0cd4da300f357027f1c) build: bump Go to 1.27 and float the linter with CI
+- [cc7be9d](https://github.com/Toshik1978/folio/commit/cc7be9d8d80c3328943da4e98f8e2dee1db13728) docs: drop the AI attribution rule
+- [5bb2c0d](https://github.com/Toshik1978/folio/commit/5bb2c0debbb1046eadbc523ac4c5f9b76a763adf) build(beads): rebuild the beads DB on branch switch and require the merge driver
+- [6323e54](https://github.com/Toshik1978/folio/commit/6323e54a2cb507467ad42da726a1b49ce53568ab) docs: move CLAUDE.md into .claude/
+- [5874a55](https://github.com/Toshik1978/folio/commit/5874a554623242c5e53309fb25761bdef6fabd1f) docs: add Spec Kit and ratify constitution v1.0.0
+- [ab16a29](https://github.com/Toshik1978/folio/commit/ab16a29b62bd6a4e4a6a9cd48fb9c04421fa7667) ci: group Dependabot security updates
+- [d369b78](https://github.com/Toshik1978/folio/commit/d369b78de134363a5f64ed518cf6ec5e555c2657) ci: run CI weekly
+- [7ecea16](https://github.com/Toshik1978/folio/commit/7ecea1656c5c69a444d2c9a0d9d00d75171296fc) docs: amend constitution to v1.1.0
+- [c7c04b8](https://github.com/Toshik1978/folio/commit/c7c04b82507a377ee3daf76d6c5e15ca6ca60048) refactor: drop interface guards and group methods by receiver
+- [9327ce9](https://github.com/Toshik1978/folio/commit/9327ce9cbe552a2558009dcd0ea1bc4ab99dff87) build: enforce Go source-layout conventions in lint
+- [6258c2e](https://github.com/Toshik1978/folio/commit/6258c2ef136162967f47c1fa16f523d5c3fc3a61) docs: bring the docs in line with the code
+
+---
+
 ## v1.6.1 — 2026-08-02
 
 This release is about **how much of a sync is spent maintaining the search
