@@ -219,15 +219,6 @@ func (s *Store) coverBytesForThumb(ctx context.Context, bookID int64) ([]byte, b
 	return data, true
 }
 
-// serveImmutableFile serves an on-disk JPEG with the year-long immutable policy.
-// Used for both real covers and thumbnails, whose bytes are pinned by the caller's
-// ?v= cache buster.
-func serveImmutableFile(w http.ResponseWriter, r *http.Request, path string) {
-	w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
-	w.Header().Set("Content-Type", "image/jpeg")
-	http.ServeFile(w, r, path)
-}
-
 // serveBytes serves freshly-extracted bytes with the cache policy they merit.
 func (s *Store) serveBytes(w http.ResponseWriter, data []byte) {
 	if bytes.Equal(data, placeholderJPEG) {
@@ -344,4 +335,13 @@ func (s *Store) servePlaceholder(w http.ResponseWriter) {
 	w.Header().Set("Content-Type", "image/jpeg")
 	w.Header().Set("Content-Length", strconv.Itoa(len(placeholderJPEG)))
 	_, _ = w.Write(placeholderJPEG)
+}
+
+// serveImmutableFile serves an on-disk JPEG with the year-long immutable policy.
+// Used for both real covers and thumbnails, whose bytes are pinned by the caller's
+// ?v= cache buster.
+func serveImmutableFile(w http.ResponseWriter, r *http.Request, path string) {
+	w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+	w.Header().Set("Content-Type", "image/jpeg")
+	http.ServeFile(w, r, path)
 }

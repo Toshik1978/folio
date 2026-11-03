@@ -138,18 +138,6 @@ func (s *Source) lookupVolume(ctx context.Context, q metasearch.Query) (gb.Volum
 	}
 }
 
-// firstVolume maps a (volumes, err) result to the first volume, ok=false when empty.
-func firstVolume(vols []gb.Volume, err error) (gb.Volume, bool, error) {
-	if err != nil {
-		return gb.Volume{}, false, fmt.Errorf("google books search: %w", err)
-	}
-	if len(vols) == 0 {
-		return gb.Volume{}, false, nil
-	}
-
-	return vols[0], true, nil
-}
-
 // fillCover gap-fills meta.Cover by downloading the volume's thumbnail (best
 // effort — a failed image fetch just leaves Cover empty, matching the legacy
 // enricher).
@@ -186,6 +174,18 @@ func (s *Source) toVolume(v gb.Volume) metasearch.Volume {
 		Year:         ebook.ParseYear(v.VolumeInfo.PublishedDate),
 		ThumbnailURL: httpsURL(v.VolumeInfo.ImageLinks.Thumbnail),
 	}
+}
+
+// firstVolume maps a (volumes, err) result to the first volume, ok=false when empty.
+func firstVolume(vols []gb.Volume, err error) (gb.Volume, bool, error) {
+	if err != nil {
+		return gb.Volume{}, false, fmt.Errorf("google books search: %w", err)
+	}
+	if len(vols) == 0 {
+		return gb.Volume{}, false, nil
+	}
+
+	return vols[0], true, nil
 }
 
 // upscale returns a slightly higher-quality Google Books image URL by removing

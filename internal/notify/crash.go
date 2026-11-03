@@ -125,25 +125,6 @@ func (s *Service) admitCrash(key string, e *crashEntry) (send bool, expired *cra
 	return true, expired, false
 }
 
-// newCrashEntry describes one crash. A recovered crashSource supplies the
-// place and stack, and the caller's place and detail become via.
-func newCrashEntry(now time.Time, place, detail string, recovered any, stack []byte) *crashEntry {
-	e := &crashEntry{first: now, place: place, detail: item(detail), text: item(fmt.Sprint(recovered))}
-	if src, ok := recovered.(crashSource); ok {
-		e.place = src.CrashPlace()
-		stack = src.CrashStack()
-		e.via = place
-		if detail != "" {
-			e.via += " (" + detail + ")"
-		}
-		e.via = item(e.via)
-		e.detail = ""
-	}
-	e.frame = firstAppFrame(stack)
-
-	return e
-}
-
 // tickCrashes closes every crash window that has expired at now, sending one
 // follow-up for each that counted repeats.
 func (s *Service) tickCrashes(now time.Time) {
@@ -170,6 +151,25 @@ func (s *Service) resetCrashes() {
 	s.crashMu.Lock()
 	defer s.crashMu.Unlock()
 	clear(s.crashes)
+}
+
+// newCrashEntry describes one crash. A recovered crashSource supplies the
+// place and stack, and the caller's place and detail become via.
+func newCrashEntry(now time.Time, place, detail string, recovered any, stack []byte) *crashEntry {
+	e := &crashEntry{first: now, place: place, detail: item(detail), text: item(fmt.Sprint(recovered))}
+	if src, ok := recovered.(crashSource); ok {
+		e.place = src.CrashPlace()
+		stack = src.CrashStack()
+		e.via = place
+		if detail != "" {
+			e.via += " (" + detail + ")"
+		}
+		e.via = item(e.via)
+		e.detail = ""
+	}
+	e.frame = firstAppFrame(stack)
+
+	return e
 }
 
 // crashText is the KindCrash message.

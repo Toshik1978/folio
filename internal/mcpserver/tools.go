@@ -267,6 +267,128 @@ func (s *service) searchBooks(
 	return nil, searchBooksOutput{Total: total, Offset: offset, Books: summaries}, nil
 }
 
+func (s *service) searchFailure(err error) error {
+	out := searchError(err)
+	if out.Error() == errSearchFailed {
+		s.log.Error("mcp search books", slog.Any("error", err))
+	}
+
+	return out
+}
+
+// internal logs an unexpected failure and returns a generic tool error.
+func (s *service) internal(op string, err error) error {
+	s.log.Error("mcp "+op, slog.Any("error", err))
+
+	return fmt.Errorf("failed to %s", op)
+}
+
+// summarize maps a page of books to summaries.
+func (s *service) summarize(ctx context.Context, q *dbq.Queries, books []dbq.Book) ([]BookSummary, error) {
+	fields, err := loadFields(ctx, q, books)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]BookSummary, 0, len(fields))
+	for i := range fields {
+		out = append(out, newSummary(s.publicURL, fields[i]))
+	}
+
+	return out, nil
+}
+
+func (s *service) getBook(
+	ctx context.Context, _ *mcp.CallToolRequest, in getBookInput,
+) (*mcp.CallToolResult, BookDetail, error) {
+	q := dbq.New(s.db)
+	book, err := q.GetBook(ctx, in.ID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, BookDetail{}, errors.New(errBookNotFound)
+	}
+	if err != nil {
+		return nil, BookDetail{}, s.internal("load book", err)
+	}
+
+	detail, err := s.detail(ctx, q, book)
+	if err != nil {
+		return nil, BookDetail{}, s.internal("load book", err)
+	}
+
+	return nil, detail, nil
+}
+
+// detail loads a single book's relations and maps it to BookDetail.
+func (s *service) detail(ctx context.Context, q *dbq.Queries, book dbq.Book) (BookDetail, error) {
+	fields, err := loadFields(ctx, q, []dbq.Book{book})
+	if err != nil {
+		return BookDetail{}, err
+	}
+	extra, err := loadDetailExtra(ctx, q, book)
+	if err != nil {
+		return BookDetail{}, err
+	}
+
+	return newDetail(s.publicURL, fields[0], extra), nil
+}
+
+func (s *service) similarBooks(
+	ctx context.Context, _ *mcp.CallToolRequest, in similarBooksInput,
+) (*mcp.CallToolResult, similarBooksOutput, error) {
+	q := dbq.New(s.db)
+	source, err := q.GetBook(ctx, in.ID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, similarBooksOutput{}, errors.New(errBookNotFound)
+	}
+	if err != nil {
+		return nil, similarBooksOutput{}, s.internal("load book", err)
+	}
+
+	cands, err := db.SimilarBooks(ctx, s.db, in.ID, in.Limit)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, similarBooksOutput{}, errors.New(errBookNotFound)
+	}
+	if err != nil {
+		return nil, similarBooksOutput{}, s.internal("find similar books", err)
+	}
+
+	// One batched relation load for the source and every candidate; GetBook per
+	// candidate is at most maxLimit cheap primary-key reads. A candidate removed
+	// by a concurrent sync since SimilarBooks ran is dropped, not fatal.
+	books := make([]dbq.Book, 0, len(cands)+1)
+	books = append(books, source)
+	kept := make([]db.SimilarCandidate, 0, len(cands))
+	for i := range cands {
+		b, gErr := q.GetBook(ctx, cands[i].BookID)
+		if errors.Is(gErr, sql.ErrNoRows) {
+			continue
+		}
+		if gErr != nil {
+			return nil, similarBooksOutput{}, s.internal("load similar book", gErr)
+		}
+		books = append(books, b)
+		kept = append(kept, cands[i])
+	}
+	cands = kept
+	fields, err := loadFields(ctx, q, books)
+	if err != nil {
+		return nil, similarBooksOutput{}, s.internal("load book relations", err)
+	}
+
+	out := similarBooksOutput{
+		Source:     newSummary(s.publicURL, fields[0]),
+		Candidates: make([]SimilarCandidate, 0, len(cands)),
+	}
+	for i := range cands {
+		out.Candidates = append(out.Candidates, SimilarCandidate{
+			BookSummary:  newSummary(s.publicURL, fields[i+1]),
+			Reason:       string(cands[i].Reason),
+			MatchedTerms: cands[i].MatchedTerms,
+		})
+	}
+
+	return nil, out, nil
+}
+
 // checkBounds rejects a request too large to run cheaply.
 func (in searchBooksInput) checkBounds() error {
 	if len(in.AnyTerms) > maxAnyTerms {
@@ -339,36 +461,6 @@ func searchError(err error) error {
 	}
 
 	return errors.New(errSearchFailed)
-}
-
-func (s *service) searchFailure(err error) error {
-	out := searchError(err)
-	if out.Error() == errSearchFailed {
-		s.log.Error("mcp search books", slog.Any("error", err))
-	}
-
-	return out
-}
-
-// internal logs an unexpected failure and returns a generic tool error.
-func (s *service) internal(op string, err error) error {
-	s.log.Error("mcp "+op, slog.Any("error", err))
-
-	return fmt.Errorf("failed to %s", op)
-}
-
-// summarize maps a page of books to summaries.
-func (s *service) summarize(ctx context.Context, q *dbq.Queries, books []dbq.Book) ([]BookSummary, error) {
-	fields, err := loadFields(ctx, q, books)
-	if err != nil {
-		return nil, err
-	}
-	out := make([]BookSummary, 0, len(fields))
-	for i := range fields {
-		out = append(out, newSummary(s.publicURL, fields[i]))
-	}
-
-	return out, nil
 }
 
 // loadFields resolves books' authors and genres in one batched statement each
@@ -457,40 +549,6 @@ func optInt(n sql.NullInt64) *int {
 	return &v
 }
 
-func (s *service) getBook(
-	ctx context.Context, _ *mcp.CallToolRequest, in getBookInput,
-) (*mcp.CallToolResult, BookDetail, error) {
-	q := dbq.New(s.db)
-	book, err := q.GetBook(ctx, in.ID)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, BookDetail{}, errors.New(errBookNotFound)
-	}
-	if err != nil {
-		return nil, BookDetail{}, s.internal("load book", err)
-	}
-
-	detail, err := s.detail(ctx, q, book)
-	if err != nil {
-		return nil, BookDetail{}, s.internal("load book", err)
-	}
-
-	return nil, detail, nil
-}
-
-// detail loads a single book's relations and maps it to BookDetail.
-func (s *service) detail(ctx context.Context, q *dbq.Queries, book dbq.Book) (BookDetail, error) {
-	fields, err := loadFields(ctx, q, []dbq.Book{book})
-	if err != nil {
-		return BookDetail{}, err
-	}
-	extra, err := loadDetailExtra(ctx, q, book)
-	if err != nil {
-		return BookDetail{}, err
-	}
-
-	return newDetail(s.publicURL, fields[0], extra), nil
-}
-
 // loadDetailExtra gathers the fields only BookDetail carries.
 func loadDetailExtra(ctx context.Context, q *dbq.Queries, book dbq.Book) (detailExtra, error) {
 	identRows, err := q.ListIdentifiersForBook(ctx, book.ID)
@@ -525,62 +583,4 @@ func loadDetailExtra(ctx context.Context, q *dbq.Queries, book dbq.Book) (detail
 		LibraryID:   lib.ID,
 		LibraryName: lib.Name,
 	}, nil
-}
-
-func (s *service) similarBooks(
-	ctx context.Context, _ *mcp.CallToolRequest, in similarBooksInput,
-) (*mcp.CallToolResult, similarBooksOutput, error) {
-	q := dbq.New(s.db)
-	source, err := q.GetBook(ctx, in.ID)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, similarBooksOutput{}, errors.New(errBookNotFound)
-	}
-	if err != nil {
-		return nil, similarBooksOutput{}, s.internal("load book", err)
-	}
-
-	cands, err := db.SimilarBooks(ctx, s.db, in.ID, in.Limit)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, similarBooksOutput{}, errors.New(errBookNotFound)
-	}
-	if err != nil {
-		return nil, similarBooksOutput{}, s.internal("find similar books", err)
-	}
-
-	// One batched relation load for the source and every candidate; GetBook per
-	// candidate is at most maxLimit cheap primary-key reads. A candidate removed
-	// by a concurrent sync since SimilarBooks ran is dropped, not fatal.
-	books := make([]dbq.Book, 0, len(cands)+1)
-	books = append(books, source)
-	kept := make([]db.SimilarCandidate, 0, len(cands))
-	for i := range cands {
-		b, gErr := q.GetBook(ctx, cands[i].BookID)
-		if errors.Is(gErr, sql.ErrNoRows) {
-			continue
-		}
-		if gErr != nil {
-			return nil, similarBooksOutput{}, s.internal("load similar book", gErr)
-		}
-		books = append(books, b)
-		kept = append(kept, cands[i])
-	}
-	cands = kept
-	fields, err := loadFields(ctx, q, books)
-	if err != nil {
-		return nil, similarBooksOutput{}, s.internal("load book relations", err)
-	}
-
-	out := similarBooksOutput{
-		Source:     newSummary(s.publicURL, fields[0]),
-		Candidates: make([]SimilarCandidate, 0, len(cands)),
-	}
-	for i := range cands {
-		out.Candidates = append(out.Candidates, SimilarCandidate{
-			BookSummary:  newSummary(s.publicURL, fields[i+1]),
-			Reason:       string(cands[i].Reason),
-			MatchedTerms: cands[i].MatchedTerms,
-		})
-	}
-
-	return nil, out, nil
 }

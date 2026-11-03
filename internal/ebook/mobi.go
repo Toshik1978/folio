@@ -206,59 +206,6 @@ func (mf *mobiFile) readEXTH(m *Metadata) {
 	mf.coverOffset = mf.parseEXTHRecords(exth, m)
 }
 
-// mobiReadMetadata reads the title and EXTH block of src without resolving the
-// cover image.
-func mobiReadMetadata(ctx context.Context, src Source) (Metadata, error) {
-	if err := ctx.Err(); err != nil {
-		return Metadata{}, fmt.Errorf("mobi metadata: %w", err)
-	}
-	mf, err := openMOBI(src.R, src.Size)
-	if err != nil {
-		return Metadata{}, fmt.Errorf("%w: mobi metadata: %w", ErrMalformed, err)
-	}
-
-	m := mf.readTitle()
-	mf.readEXTH(&m)
-	m.Title = html.UnescapeString(m.Title)
-
-	return m, nil
-}
-
-// mobiReadCover resolves the EXTH 201 cover of src, or (nil, nil) when it has none.
-func mobiReadCover(ctx context.Context, src Source) ([]byte, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, fmt.Errorf("mobi cover: %w", err)
-	}
-	mf, err := openMOBI(src.R, src.Size)
-	if err != nil {
-		return nil, fmt.Errorf("%w: mobi cover: %w", ErrMalformed, err)
-	}
-
-	var discard Metadata
-	mf.readEXTH(&discard)
-	if mf.coverOffset < 0 {
-		return nil, nil
-	}
-	// EXTH 201 present but pointing outside the records is "no cover", not a
-	// cue for the first-image scan (that fallback is only for an absent 201).
-	// A FirstImageIndex outside the records is a broken base, not a broken
-	// offset, so it still gets extractCover's first-image scan.
-	if mf.firstImageIndex >= 0 && mf.firstImageIndex < mf.numRecords {
-		if rec := mf.firstImageIndex + mf.coverOffset; rec < 0 || rec >= mf.numRecords {
-			return nil, nil
-		}
-	}
-	cover, err := mf.extractCover(ctx, mf.coverOffset)
-	if err != nil {
-		return nil, err
-	}
-	if err := ctx.Err(); err != nil {
-		return nil, fmt.Errorf("mobi cover: %w", err)
-	}
-
-	return cover, nil
-}
-
 func (mf *mobiFile) parseEXTHRecords(exth []byte, m *Metadata) int {
 	count := int(binary.BigEndian.Uint32(exth[8:12]))
 	pos := exthHeaderSize
@@ -284,42 +231,6 @@ func (mf *mobiFile) parseEXTHRecords(exth []byte, m *Metadata) int {
 	}
 
 	return coverOffset
-}
-
-func applyEXTHRecord(recType int, val string, m *Metadata) {
-	switch recType {
-	case exthAuthor:
-		if author := strings.TrimSpace(val); author != "" {
-			m.Authors = append(m.Authors, author)
-		}
-	case exthUpdatedTitle:
-		// EXTH 503 is the clean, full title; prefer it over the record-0 header
-		// title, which on retail Kindle files is entity-encoded and/or truncated.
-		if title := strings.TrimSpace(val); title != "" {
-			m.Title = title
-		}
-	case exthDescription:
-		m.Annotation = lo.CoalesceOrEmpty(m.Annotation, strings.TrimSpace(val))
-	case exthLanguage:
-		m.Language = lo.CoalesceOrEmpty(m.Language, strings.TrimSpace(val))
-	default:
-		applyEXTHPublishing(recType, val, m)
-	}
-}
-
-// applyEXTHPublishing handles the publishing-metadata EXTH records, split out to
-// keep applyEXTHRecord's branching low.
-func applyEXTHPublishing(recType int, val string, m *Metadata) {
-	switch recType {
-	case exthPublisher:
-		m.Publisher = lo.CoalesceOrEmpty(m.Publisher, strings.TrimSpace(val))
-	case exthPublishDate:
-		m.Year = lo.CoalesceOrEmpty(m.Year, ParseYear(val))
-	case exthISBN:
-		if isbn := strings.TrimSpace(val); isbn != "" {
-			m.Identifiers = append(m.Identifiers, Identifier{Type: IdentifierISBN, Value: isbn})
-		}
-	}
 }
 
 // extractCover returns the cover image record, or (nil, nil) when the records
@@ -395,18 +306,6 @@ func (mf *mobiFile) readRecordImage(recIndex int) ([]byte, error) {
 	return coverData, nil
 }
 
-// coverReadError classifies a failed cover-record read so the Dispatcher can
-// act on it: an error already matching ErrSourceIO, ErrTooLarge or ErrMalformed
-// is kept as is; any other (for example a short read of a record the file
-// declares) means the file is malformed.
-func coverReadError(err error) error {
-	if errors.Is(err, ErrSourceIO) || errors.Is(err, ErrTooLarge) || errors.Is(err, ErrMalformed) {
-		return fmt.Errorf("mobi cover: %w", err)
-	}
-
-	return fmt.Errorf("%w: mobi cover: %w", ErrMalformed, err)
-}
-
 // recordBounds resolves the [start, start+len) byte range of PDB record
 // recIndex, returning length 0 when the record is out of range or the offsets are
 // inconsistent. A span exceeding maxCoverBytes is an ErrTooLarge error, not a
@@ -436,6 +335,107 @@ func (mf *mobiFile) recordBounds(recIndex int) (start, length int64, err error) 
 	}
 
 	return recStart, recEnd - recStart, nil
+}
+
+// mobiReadMetadata reads the title and EXTH block of src without resolving the
+// cover image.
+func mobiReadMetadata(ctx context.Context, src Source) (Metadata, error) {
+	if err := ctx.Err(); err != nil {
+		return Metadata{}, fmt.Errorf("mobi metadata: %w", err)
+	}
+	mf, err := openMOBI(src.R, src.Size)
+	if err != nil {
+		return Metadata{}, fmt.Errorf("%w: mobi metadata: %w", ErrMalformed, err)
+	}
+
+	m := mf.readTitle()
+	mf.readEXTH(&m)
+	m.Title = html.UnescapeString(m.Title)
+
+	return m, nil
+}
+
+// mobiReadCover resolves the EXTH 201 cover of src, or (nil, nil) when it has none.
+func mobiReadCover(ctx context.Context, src Source) ([]byte, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("mobi cover: %w", err)
+	}
+	mf, err := openMOBI(src.R, src.Size)
+	if err != nil {
+		return nil, fmt.Errorf("%w: mobi cover: %w", ErrMalformed, err)
+	}
+
+	var discard Metadata
+	mf.readEXTH(&discard)
+	if mf.coverOffset < 0 {
+		return nil, nil
+	}
+	// EXTH 201 present but pointing outside the records is "no cover", not a
+	// cue for the first-image scan (that fallback is only for an absent 201).
+	// A FirstImageIndex outside the records is a broken base, not a broken
+	// offset, so it still gets extractCover's first-image scan.
+	if mf.firstImageIndex >= 0 && mf.firstImageIndex < mf.numRecords {
+		if rec := mf.firstImageIndex + mf.coverOffset; rec < 0 || rec >= mf.numRecords {
+			return nil, nil
+		}
+	}
+	cover, err := mf.extractCover(ctx, mf.coverOffset)
+	if err != nil {
+		return nil, err
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("mobi cover: %w", err)
+	}
+
+	return cover, nil
+}
+
+func applyEXTHRecord(recType int, val string, m *Metadata) {
+	switch recType {
+	case exthAuthor:
+		if author := strings.TrimSpace(val); author != "" {
+			m.Authors = append(m.Authors, author)
+		}
+	case exthUpdatedTitle:
+		// EXTH 503 is the clean, full title; prefer it over the record-0 header
+		// title, which on retail Kindle files is entity-encoded and/or truncated.
+		if title := strings.TrimSpace(val); title != "" {
+			m.Title = title
+		}
+	case exthDescription:
+		m.Annotation = lo.CoalesceOrEmpty(m.Annotation, strings.TrimSpace(val))
+	case exthLanguage:
+		m.Language = lo.CoalesceOrEmpty(m.Language, strings.TrimSpace(val))
+	default:
+		applyEXTHPublishing(recType, val, m)
+	}
+}
+
+// applyEXTHPublishing handles the publishing-metadata EXTH records, split out to
+// keep applyEXTHRecord's branching low.
+func applyEXTHPublishing(recType int, val string, m *Metadata) {
+	switch recType {
+	case exthPublisher:
+		m.Publisher = lo.CoalesceOrEmpty(m.Publisher, strings.TrimSpace(val))
+	case exthPublishDate:
+		m.Year = lo.CoalesceOrEmpty(m.Year, ParseYear(val))
+	case exthISBN:
+		if isbn := strings.TrimSpace(val); isbn != "" {
+			m.Identifiers = append(m.Identifiers, Identifier{Type: IdentifierISBN, Value: isbn})
+		}
+	}
+}
+
+// coverReadError classifies a failed cover-record read so the Dispatcher can
+// act on it: an error already matching ErrSourceIO, ErrTooLarge or ErrMalformed
+// is kept as is; any other (for example a short read of a record the file
+// declares) means the file is malformed.
+func coverReadError(err error) error {
+	if errors.Is(err, ErrSourceIO) || errors.Is(err, ErrTooLarge) || errors.Is(err, ErrMalformed) {
+		return fmt.Errorf("mobi cover: %w", err)
+	}
+
+	return fmt.Errorf("%w: mobi cover: %w", ErrMalformed, err)
 }
 
 var imageSignatures = [][]byte{ //nolint:gochecknoglobals // read-only lookup table

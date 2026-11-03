@@ -27,6 +27,32 @@ const manualCoverPrio int64 = 1000
 // huge body cannot exhaust memory on the low-spec target hosts.
 const maxCoverBytes int64 = 10 << 20 // 10 MiB
 
+// editRequest is the PUT /api/books/{id} body. Empty fields are left unchanged
+// (overwrite semantics fill only non-empty values); empty author/genre lists do
+// not clear existing links. Title is required.
+type editRequest struct {
+	Title        string   `json:"title"`
+	Authors      []string `json:"authors"`
+	Genres       []string `json:"genres"`
+	Series       string   `json:"series"`
+	SeriesNumber float64  `json:"series_number"`
+	Year         int      `json:"year"`
+	Publisher    string   `json:"publisher"`
+	Language     string   `json:"language"`
+	Annotation   string   `json:"annotation"`
+	// Identifiers is the full desired set, used as an authoritative replacement
+	// (add/change/delete in one save). A nil pointer means the field was omitted
+	// and identifiers are left untouched; a non-nil (even empty) slice replaces
+	// them — so an older client that never sends the field cannot wipe them.
+	Identifiers *[]identifierInput `json:"identifiers"`
+}
+
+// identifierInput is one (type, value) pair from the edit form.
+type identifierInput struct {
+	Type  string `json:"type"`
+	Value string `json:"value"`
+}
+
 // saveManualCover writes user-supplied cover bytes for bookID and pins
 // cover_prio to the manual sentinel. Unlike enrichment's saveEnrichedCover it
 // does NOT defer to an existing local cover: the user explicitly chose this
@@ -131,43 +157,6 @@ func (h *BooksHandler) loadBook(ctx context.Context, w http.ResponseWriter, id i
 	return book, true
 }
 
-// isBlockedIP reports whether ip is a private, loopback, link-local, or
-// unspecified address — any of which must not be reachable via a user-supplied URL.
-func isBlockedIP(ip net.IP) bool {
-	return ip.IsLoopback() ||
-		ip.IsPrivate() ||
-		ip.IsLinkLocalUnicast() ||
-		ip.IsLinkLocalMulticast() ||
-		ip.IsUnspecified()
-}
-
-// isBlockedHost reports whether host resolves to any private, loopback,
-// link-local, or unspecified address. It is the canonical SSRF guard used for
-// both the initial URL and every redirect hop. ctx is used for the DNS lookup.
-func isBlockedHost(ctx context.Context, host string) bool {
-	// Strip port if present so LookupHost gets a bare hostname or IP.
-	h, _, err := net.SplitHostPort(host)
-	if err != nil {
-		// No port — host is already bare.
-		h = host
-	}
-
-	addrs, err := net.DefaultResolver.LookupHost(ctx, h)
-	if err != nil || len(addrs) == 0 {
-		// Cannot resolve → treat as blocked to be safe.
-		return true
-	}
-
-	for _, a := range addrs {
-		ip := net.ParseIP(a)
-		if ip == nil || isBlockedIP(ip) {
-			return true
-		}
-	}
-
-	return false
-}
-
 // parseCoverURL decodes the JSON body of a cover-URL request and validates the
 // scheme and host; it returns the raw URL string and true, or writes a 400 and
 // returns false. Only http/https are accepted and the host must not resolve to a
@@ -226,32 +215,6 @@ func (h *BooksHandler) setCoverFromURL(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.applyManualCover(r.Context(), w, book, data)
-}
-
-// editRequest is the PUT /api/books/{id} body. Empty fields are left unchanged
-// (overwrite semantics fill only non-empty values); empty author/genre lists do
-// not clear existing links. Title is required.
-type editRequest struct {
-	Title        string   `json:"title"`
-	Authors      []string `json:"authors"`
-	Genres       []string `json:"genres"`
-	Series       string   `json:"series"`
-	SeriesNumber float64  `json:"series_number"`
-	Year         int      `json:"year"`
-	Publisher    string   `json:"publisher"`
-	Language     string   `json:"language"`
-	Annotation   string   `json:"annotation"`
-	// Identifiers is the full desired set, used as an authoritative replacement
-	// (add/change/delete in one save). A nil pointer means the field was omitted
-	// and identifiers are left untouched; a non-nil (even empty) slice replaces
-	// them — so an older client that never sends the field cannot wipe them.
-	Identifiers *[]identifierInput `json:"identifiers"`
-}
-
-// identifierInput is one (type, value) pair from the edit form.
-type identifierInput struct {
-	Type  string `json:"type"`
-	Value string `json:"value"`
 }
 
 // updateBook handles PUT /api/books/{id} — a manual metadata edit. It feeds the
@@ -367,6 +330,72 @@ func (h *BooksHandler) saveManualEdit(
 	return book, nil
 }
 
+// fetchCover downloads an image URL within the cover budget and size cap,
+// writing a 502/400 and returning ok=false on failure.
+func (h *BooksHandler) fetchCover(ctx context.Context, w http.ResponseWriter, rawURL string) ([]byte, bool) {
+	ctx, cancel := context.WithTimeout(ctx, coverFetchTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, http.NoBody)
+	if err != nil {
+		h.writeError(w, http.StatusBadRequest, "invalid url")
+		return nil, false
+	}
+	resp, err := h.coverFetchClient.Do(req)
+	if err != nil {
+		h.writeError(w, http.StatusBadGateway, "failed to fetch cover")
+		return nil, false
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		h.writeError(w, http.StatusBadGateway, "cover host returned an error")
+		return nil, false
+	}
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxCoverBytes+1))
+	if err != nil || int64(len(data)) > maxCoverBytes {
+		h.writeError(w, http.StatusBadGateway, "cover too large or unreadable")
+		return nil, false
+	}
+
+	return data, true
+}
+
+// isBlockedIP reports whether ip is a private, loopback, link-local, or
+// unspecified address — any of which must not be reachable via a user-supplied URL.
+func isBlockedIP(ip net.IP) bool {
+	return ip.IsLoopback() ||
+		ip.IsPrivate() ||
+		ip.IsLinkLocalUnicast() ||
+		ip.IsLinkLocalMulticast() ||
+		ip.IsUnspecified()
+}
+
+// isBlockedHost reports whether host resolves to any private, loopback,
+// link-local, or unspecified address. It is the canonical SSRF guard used for
+// both the initial URL and every redirect hop. ctx is used for the DNS lookup.
+func isBlockedHost(ctx context.Context, host string) bool {
+	// Strip port if present so LookupHost gets a bare hostname or IP.
+	h, _, err := net.SplitHostPort(host)
+	if err != nil {
+		// No port — host is already bare.
+		h = host
+	}
+
+	addrs, err := net.DefaultResolver.LookupHost(ctx, h)
+	if err != nil || len(addrs) == 0 {
+		// Cannot resolve → treat as blocked to be safe.
+		return true
+	}
+
+	for _, a := range addrs {
+		ip := net.ParseIP(a)
+		if ip == nil || isBlockedIP(ip) {
+			return true
+		}
+	}
+
+	return false
+}
+
 // reconcileIdentifiersTx replaces a book's entire identifier set with the user's
 // submitted one, within the caller's transaction q. It cleans the input through
 // the importer's rules (so a manually-typed ISBN lands canonical and useless
@@ -395,33 +424,4 @@ func reconcileIdentifiersTx(ctx context.Context, q *dbq.Queries, bookID int64, i
 	}
 
 	return nil
-}
-
-// fetchCover downloads an image URL within the cover budget and size cap,
-// writing a 502/400 and returning ok=false on failure.
-func (h *BooksHandler) fetchCover(ctx context.Context, w http.ResponseWriter, rawURL string) ([]byte, bool) {
-	ctx, cancel := context.WithTimeout(ctx, coverFetchTimeout)
-	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, http.NoBody)
-	if err != nil {
-		h.writeError(w, http.StatusBadRequest, "invalid url")
-		return nil, false
-	}
-	resp, err := h.coverFetchClient.Do(req)
-	if err != nil {
-		h.writeError(w, http.StatusBadGateway, "failed to fetch cover")
-		return nil, false
-	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusOK {
-		h.writeError(w, http.StatusBadGateway, "cover host returned an error")
-		return nil, false
-	}
-	data, err := io.ReadAll(io.LimitReader(resp.Body, maxCoverBytes+1))
-	if err != nil || int64(len(data)) > maxCoverBytes {
-		h.writeError(w, http.StatusBadGateway, "cover too large or unreadable")
-		return nil, false
-	}
-
-	return data, true
 }

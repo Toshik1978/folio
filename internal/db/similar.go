@@ -190,36 +190,6 @@ func ftsTerms(text string) []string {
 	return out
 }
 
-// candidateMerger accumulates candidates in source order, deduplicated (the
-// source book is pre-seeded in seen) and capped at limit. Each source fetches
-// limit rows, so a source with enough books always fills the remainder: at most
-// len(out) of its rows can be duplicates.
-type candidateMerger struct {
-	limit int
-	seen  map[int64]bool
-	out   []SimilarCandidate
-}
-
-func (m *candidateMerger) full() bool { return len(m.out) >= m.limit }
-
-// add appends the not-yet-seen ids under reason and reports the ones it kept.
-func (m *candidateMerger) add(ids []int64, reason SimilarReason) []int64 {
-	var kept []int64
-	for _, id := range ids {
-		if m.full() {
-			break
-		}
-		if m.seen[id] {
-			continue
-		}
-		m.seen[id] = true
-		m.out = append(m.out, SimilarCandidate{BookID: id, Reason: reason})
-		kept = append(kept, id)
-	}
-
-	return kept
-}
-
 // SimilarBooks returns up to limit books like bookID (limit <= 0 means
 // SimilarDefaultLimit; it is capped at SimilarMaxLimit). Candidates come from
 // four sources, merged in this order, each book reported once under the first
@@ -262,6 +232,36 @@ func SimilarBooks(ctx context.Context, x dbq.DBTX, bookID int64, limit int) ([]S
 	}
 
 	return m.out, nil
+}
+
+// candidateMerger accumulates candidates in source order, deduplicated (the
+// source book is pre-seeded in seen) and capped at limit. Each source fetches
+// limit rows, so a source with enough books always fills the remainder: at most
+// len(out) of its rows can be duplicates.
+type candidateMerger struct {
+	limit int
+	seen  map[int64]bool
+	out   []SimilarCandidate
+}
+
+func (m *candidateMerger) full() bool { return len(m.out) >= m.limit }
+
+// add appends the not-yet-seen ids under reason and reports the ones it kept.
+func (m *candidateMerger) add(ids []int64, reason SimilarReason) []int64 {
+	var kept []int64
+	for _, id := range ids {
+		if m.full() {
+			break
+		}
+		if m.seen[id] {
+			continue
+		}
+		m.seen[id] = true
+		m.out = append(m.out, SimilarCandidate{BookID: id, Reason: reason})
+		kept = append(kept, id)
+	}
+
+	return kept
 }
 
 // addLinkedBooks adds, in order, the series, author and genre mates of src,

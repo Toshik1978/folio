@@ -45,57 +45,6 @@ func (h *CatalogHandler) writeLetters(
 	h.writeJSON(w, http.StatusOK, h.availableLetters(chars))
 }
 
-// browseByLetter is the shared body of the by-letter browse endpoints. It picks
-// the query for the selected bucket — the name-range query for a normal letter,
-// or the '#' catch-all — maps the rows to their JSON view, and writes them. An
-// empty (or unknown) letter yields an empty array; the frontend always selects
-// a letter first. ByRow and NonRow are the two distinct sqlc row types the two
-// queries return, each with its own mapper.
-func browseByLetter[ByRow, NonRow, View any](
-	h *CatalogHandler, w http.ResponseWriter, r *http.Request, label string,
-	byLetter func(ctx context.Context, lib int64, lo, hi string, lim, off int64) ([]ByRow, error),
-	convBy func(ByRow) View,
-	nonLetter func(ctx context.Context, lib, lim, off int64) ([]NonRow, error),
-	convNon func(NonRow) View,
-) {
-	letter := r.URL.Query().Get("letter")
-	if letter == "" {
-		h.writeJSON(w, http.StatusOK, []View{})
-		return
-	}
-	_, limit, offset := pagination(r)
-	lib := intQueryParam(r, "library")
-	ctx := r.Context()
-
-	var views []View
-	var err error
-	if letter == hashBucket {
-		var rows []NonRow
-		rows, err = nonLetter(ctx, lib, limit, offset)
-		views = mapViews(rows, convNon)
-	} else if lo, hi, ok := letterBounds(letter); ok {
-		var rows []ByRow
-		rows, err = byLetter(ctx, lib, lo, hi, limit, offset)
-		views = mapViews(rows, convBy)
-	}
-	if err != nil {
-		h.log.Error("list "+label, slog.Any("error", err))
-		h.writeError(w, http.StatusInternalServerError, "failed to list "+label)
-		return
-	}
-	h.writeJSON(w, http.StatusOK, views)
-}
-
-// mapViews maps query rows to their JSON view, always returning a non-nil slice
-// so empty results serialize as [] rather than null.
-func mapViews[Row, View any](rows []Row, conv func(Row) View) []View {
-	views := make([]View, 0, len(rows))
-	for i := range rows {
-		views = append(views, conv(rows[i]))
-	}
-	return views
-}
-
 func (h *CatalogHandler) authorLetters(w http.ResponseWriter, r *http.Request) {
 	h.writeLetters(w, r, "authors", h.q.AuthorFirstChars)
 }
@@ -208,4 +157,55 @@ func (h *CatalogHandler) listPublishers(w http.ResponseWriter, r *http.Request) 
 // listGenres returns the canonical genre taxonomy for the edit autocomplete.
 func (h *CatalogHandler) listGenres(w http.ResponseWriter, _ *http.Request) {
 	h.writeJSON(w, http.StatusOK, h.genres)
+}
+
+// browseByLetter is the shared body of the by-letter browse endpoints. It picks
+// the query for the selected bucket — the name-range query for a normal letter,
+// or the '#' catch-all — maps the rows to their JSON view, and writes them. An
+// empty (or unknown) letter yields an empty array; the frontend always selects
+// a letter first. ByRow and NonRow are the two distinct sqlc row types the two
+// queries return, each with its own mapper.
+func browseByLetter[ByRow, NonRow, View any](
+	h *CatalogHandler, w http.ResponseWriter, r *http.Request, label string,
+	byLetter func(ctx context.Context, lib int64, lo, hi string, lim, off int64) ([]ByRow, error),
+	convBy func(ByRow) View,
+	nonLetter func(ctx context.Context, lib, lim, off int64) ([]NonRow, error),
+	convNon func(NonRow) View,
+) {
+	letter := r.URL.Query().Get("letter")
+	if letter == "" {
+		h.writeJSON(w, http.StatusOK, []View{})
+		return
+	}
+	_, limit, offset := pagination(r)
+	lib := intQueryParam(r, "library")
+	ctx := r.Context()
+
+	var views []View
+	var err error
+	if letter == hashBucket {
+		var rows []NonRow
+		rows, err = nonLetter(ctx, lib, limit, offset)
+		views = mapViews(rows, convNon)
+	} else if lo, hi, ok := letterBounds(letter); ok {
+		var rows []ByRow
+		rows, err = byLetter(ctx, lib, lo, hi, limit, offset)
+		views = mapViews(rows, convBy)
+	}
+	if err != nil {
+		h.log.Error("list "+label, slog.Any("error", err))
+		h.writeError(w, http.StatusInternalServerError, "failed to list "+label)
+		return
+	}
+	h.writeJSON(w, http.StatusOK, views)
+}
+
+// mapViews maps query rows to their JSON view, always returning a non-nil slice
+// so empty results serialize as [] rather than null.
+func mapViews[Row, View any](rows []Row, conv func(Row) View) []View {
+	views := make([]View, 0, len(rows))
+	for i := range rows {
+		views = append(views, conv(rows[i]))
+	}
+	return views
 }

@@ -59,23 +59,6 @@ func (h *BooksHandler) searchMatch(w http.ResponseWriter, r *http.Request) {
 	h.writeJSON(w, http.StatusOK, matchCandidates(vols))
 }
 
-// matchCandidates maps neutral metasearch volumes to the slim candidate view.
-func matchCandidates(vols []metasearch.Volume) []matchCandidate {
-	out := make([]matchCandidate, 0, len(vols))
-	for i := range vols {
-		out = append(out, matchCandidate{
-			Source:    vols[i].Source,
-			VolumeID:  vols[i].ID,
-			Title:     vols[i].Title,
-			Authors:   vols[i].Authors,
-			Year:      vols[i].Year,
-			Thumbnail: vols[i].ThumbnailURL,
-		})
-	}
-
-	return out
-}
-
 // applyMatch handles POST /api/books/{id}/match — overwrite a book's metadata
 // from a user-chosen candidate and return the updated book.
 func (h *BooksHandler) applyMatch(w http.ResponseWriter, r *http.Request) {
@@ -173,4 +156,21 @@ func (h *BooksHandler) decodeMatch(w http.ResponseWriter, r *http.Request) (sour
 	}
 
 	return body.Source, body.VolumeID, true
+}
+
+// matchCandidates maps neutral metasearch volumes to the slim candidate view.
+func matchCandidates(vols []metasearch.Volume) []matchCandidate {
+	out := make([]matchCandidate, 0, len(vols))
+	for i := range vols {
+		out = append(out, matchCandidate{
+			Source:    vols[i].Source,
+			VolumeID:  vols[i].ID,
+			Title:     vols[i].Title,
+			Authors:   vols[i].Authors,
+			Year:      vols[i].Year,
+			Thumbnail: vols[i].ThumbnailURL,
+		})
+	}
+
+	return out
 }

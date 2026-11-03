@@ -34,14 +34,6 @@ func New(timeout time.Duration) *Source {
 	return &Source{baseURL: defaultBaseURL, http: &http.Client{Timeout: timeout}}
 }
 
-// Name identifies the source.
-func (s *Source) Name() string { return metasearch.SourceOpenLibrary }
-
-// Capabilities reports that this source supplies covers.
-func (s *Source) Capabilities() []metasearch.Capability {
-	return []metasearch.Capability{metasearch.CapCover}
-}
-
 // searchDoc is a single document entry from the Open Library search API response.
 type searchDoc struct {
 	Title  string `json:"title"`
@@ -50,6 +42,39 @@ type searchDoc struct {
 
 type searchResponse struct {
 	Docs []searchDoc `json:"docs"`
+}
+
+// Name identifies the source.
+func (s *Source) Name() string { return metasearch.SourceOpenLibrary }
+
+// Capabilities reports that this source supplies covers.
+func (s *Source) Capabilities() []metasearch.Capability {
+	return []metasearch.Capability{metasearch.CapCover}
+}
+
+// SearchCovers runs a title/author search and maps docs that carry a cover id.
+func (s *Source) SearchCovers(ctx context.Context, q metasearch.Query) ([]metasearch.CoverCandidate, error) {
+	params := searchParams(q)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.baseURL+"/search.json?"+params.Encode(), http.NoBody)
+	if err != nil {
+		return nil, fmt.Errorf("build request: %w", err)
+	}
+	resp, err := s.http.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("openlibrary request: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("openlibrary status %d", resp.StatusCode)
+	}
+
+	var out searchResponse
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxJSONBytes)).Decode(&out); err != nil {
+		return nil, fmt.Errorf("decode response: %w", err)
+	}
+
+	return toCandidates(out.Docs, q.ISBN != ""), nil
 }
 
 // searchParams builds the Open Library query parameters for q. ISBN is an
@@ -94,29 +119,4 @@ func toCandidates(docs []searchDoc, byISBN bool) []metasearch.CoverCandidate {
 	}
 
 	return out
-}
-
-// SearchCovers runs a title/author search and maps docs that carry a cover id.
-func (s *Source) SearchCovers(ctx context.Context, q metasearch.Query) ([]metasearch.CoverCandidate, error) {
-	params := searchParams(q)
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.baseURL+"/search.json?"+params.Encode(), http.NoBody)
-	if err != nil {
-		return nil, fmt.Errorf("build request: %w", err)
-	}
-	resp, err := s.http.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("openlibrary request: %w", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("openlibrary status %d", resp.StatusCode)
-	}
-
-	var out searchResponse
-	if err := json.NewDecoder(io.LimitReader(resp.Body, maxJSONBytes)).Decode(&out); err != nil {
-		return nil, fmt.Errorf("decode response: %w", err)
-	}
-
-	return toCandidates(out.Docs, q.ISBN != ""), nil
 }

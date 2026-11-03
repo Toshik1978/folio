@@ -17,6 +17,21 @@ import (
 
 const defaultLimit = 50
 
+// indexItem is one row of an author/series navigation feed.
+type indexItem struct {
+	id    int64
+	name  string
+	count int64
+}
+
+// entryRelations carries a feed page's files/authors/genres keyed by book id,
+// one query per relation instead of three per book (P1).
+type entryRelations struct {
+	files   map[int64][]dbq.BookFile
+	authors map[int64][]string
+	genres  map[int64][]string
+}
+
 // root handles GET /opds/ — the navigation feed linking to the catalog sections.
 func (h *Handler) root(w http.ResponseWriter, _ *http.Request) {
 	f := newFeed("urn:folio:opds:root", "Folio Library", opdsPrefix+"/", typeNavigation)
@@ -92,22 +107,6 @@ func (h *Handler) genres(w http.ResponseWriter, r *http.Request) { //nolint:dupl
 	h.writeIndexFeed(w, r, "urn:folio:opds:genres", "Tags by Name", opdsPrefix+"/genres", "tag", items, page)
 }
 
-// indexItem is one row of an author/series navigation feed.
-type indexItem struct {
-	id    int64
-	name  string
-	count int64
-}
-
-// mapIndexItems projects query rows into navigation index items.
-func mapIndexItems[T any](rows []T, f func(T) indexItem) []indexItem {
-	items := make([]indexItem, len(rows))
-	for i := range rows {
-		items[i] = f(rows[i])
-	}
-	return items
-}
-
 // writeIndexFeed renders a paginated navigation feed whose entries each link to
 // a filtered acquisition feed (/opds/search?{param}={name}), with rel="next"/
 // "previous" links when more pages exist.
@@ -168,14 +167,6 @@ func (h *Handler) search(w http.ResponseWriter, r *http.Request) {
 	}
 	addPageLinks(&f, path, qp, page, int64(len(books)) == defaultLimit, typeAcquisition)
 	h.write(w, typeAcquisition, f)
-}
-
-// entryRelations carries a feed page's files/authors/genres keyed by book id,
-// one query per relation instead of three per book (P1).
-type entryRelations struct {
-	files   map[int64][]dbq.BookFile
-	authors map[int64][]string
-	genres  map[int64][]string
 }
 
 // fetchEntryRelations is best-effort, like the per-book queries it replaces: a
@@ -255,6 +246,15 @@ func (h *Handler) bookEntry(b dbq.Book, rel entryRelations) entry {
 	}
 
 	return e
+}
+
+// mapIndexItems projects query rows into navigation index items.
+func mapIndexItems[T any](rows []T, f func(T) indexItem) []indexItem {
+	items := make([]indexItem, len(rows))
+	for i := range rows {
+		items[i] = f(rows[i])
+	}
+	return items
 }
 
 // navEntry builds a navigation entry pointing at a sub-feed.

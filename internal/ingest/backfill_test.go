@@ -29,6 +29,19 @@ func (f *fakeFileExtractor) Description(context.Context, int64) (ebook.Metadata,
 	return f.meta, f.res
 }
 
+// racingExtractor stores an annotation (as a concurrent enrich or manual edit
+// would) while the file read is in flight, then returns the file's metadata.
+type racingExtractor struct {
+	fakeFileExtractor
+
+	race func()
+}
+
+func (r *racingExtractor) Description(ctx context.Context, id int64) (ebook.Metadata, ReadResult) {
+	r.race()
+	return r.fakeFileExtractor.Description(ctx, id)
+}
+
 func (s *backfillSuite) seedBook(libraryID int64, title, format string) int64 {
 	q := dbq.New(s.db)
 	id, err := q.InsertBook(context.Background(), dbq.InsertBookParams{
@@ -67,19 +80,6 @@ func (s *backfillSuite) TestFillPersistsAnnotationAndIdentifiers() {
 	s.Require().NoError(err)
 	s.Require().Len(ids, 1)
 	s.Equal("9780441013593", ids[0].Value)
-}
-
-// racingExtractor stores an annotation (as a concurrent enrich or manual edit
-// would) while the file read is in flight, then returns the file's metadata.
-type racingExtractor struct {
-	fakeFileExtractor
-
-	race func()
-}
-
-func (r *racingExtractor) Description(ctx context.Context, id int64) (ebook.Metadata, ReadResult) {
-	r.race()
-	return r.fakeFileExtractor.Description(ctx, id)
 }
 
 func (s *backfillSuite) TestFillKeepsAnnotationStoredDuringTheRead() {

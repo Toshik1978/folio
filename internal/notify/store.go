@@ -78,14 +78,6 @@ func (s *Store) Load(ctx context.Context) (Config, error) {
 	return cfg, nil
 }
 
-func flag(b bool) string {
-	if b {
-		return "1"
-	}
-
-	return "0"
-}
-
 // Save writes all five keys in one transaction. If the write guard cannot be
 // taken within the acquire budget the error matches context.DeadlineExceeded.
 func (s *Store) Save(ctx context.Context, cfg Config) error {
@@ -119,4 +111,12 @@ func (s *Store) Save(ctx context.Context, cfg Config) error {
 	}
 
 	return nil
+}
+
+func flag(b bool) string {
+	if b {
+		return "1"
+	}
+
+	return "0"
 }

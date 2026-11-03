@@ -38,19 +38,6 @@ func (h *Handler) backfillPage(ctx context.Context, books []dbq.Book) {
 	h.rereadBooks(ctx, books, todo)
 }
 
-// uncheckedBookIDs collects the ids of books whose offline metadata has not yet
-// been checked (metadata_checked == 0).
-func uncheckedBookIDs(books []dbq.Book) []int64 {
-	todo := make([]int64, 0, len(books))
-	for i := range books {
-		if books[i].MetadataChecked == 0 {
-			todo = append(todo, books[i].ID)
-		}
-	}
-
-	return todo
-}
-
 // fillBooks fans the offline filler out over todo with a bounded worker pool,
 // stopping early once the budget context is cancelled. Remaining jobs drain via
 // the closed channel so no worker goroutine leaks.
@@ -93,4 +80,17 @@ func (h *Handler) rereadBooks(ctx context.Context, books []dbq.Book, todo []int6
 			books[i] = fresh
 		}
 	}
+}
+
+// uncheckedBookIDs collects the ids of books whose offline metadata has not yet
+// been checked (metadata_checked == 0).
+func uncheckedBookIDs(books []dbq.Book) []int64 {
+	todo := make([]int64, 0, len(books))
+	for i := range books {
+		if books[i].MetadataChecked == 0 {
+			todo = append(todo, books[i].ID)
+		}
+	}
+
+	return todo
 }

@@ -72,6 +72,13 @@ func mustDummyHash() []byte {
 	return h
 }
 
+// credentials is the cached OPDS auth pair. The whole struct is swapped
+// atomically, so readers never see a half-updated value.
+type credentials struct {
+	user, hash string
+	configured bool // both user and hash are set
+}
+
 // WarnIfUnprotected logs a severe warning when the catalog has no credentials
 // and is therefore can't be served unauthenticated. Call once at startup.
 func (a *Authenticator) WarnIfUnprotected(ctx context.Context) {
@@ -135,19 +142,6 @@ func (a *Authenticator) verifyCredentials(user, hash, reqUser, reqPass string) b
 	return true
 }
 
-// authKey derives the auth-cache key for a verified pair; including the stored
-// hash ties the entry to the current credentials.
-func authKey(user, pass, hash string) [sha256.Size]byte {
-	return sha256.Sum256([]byte(user + "\x00" + pass + "\x00" + hash))
-}
-
-// credentials is the cached OPDS auth pair. The whole struct is swapped
-// atomically, so readers never see a half-updated value.
-type credentials struct {
-	user, hash string
-	configured bool // both user and hash are set
-}
-
 // credentials returns the configured OPDS username and password hash, reading
 // them from the settings table once and caching the result. invalidate drops the
 // cache after a credential change.
@@ -171,4 +165,10 @@ func (a *Authenticator) credentials(ctx context.Context) (user, hash string, con
 func (a *Authenticator) invalidate() {
 	a.creds.Store(nil)
 	a.authOK.Store(nil)
+}
+
+// authKey derives the auth-cache key for a verified pair; including the stored
+// hash ties the entry to the current credentials.
+func authKey(user, pass, hash string) [sha256.Size]byte {
+	return sha256.Sum256([]byte(user + "\x00" + pass + "\x00" + hash))
 }

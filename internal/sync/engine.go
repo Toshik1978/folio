@@ -94,9 +94,6 @@ type DeepIndexer interface {
 	) (ingest.DeepIndexResult, error)
 }
 
-// The production indexer satisfies the consumer interface.
-var _ DeepIndexer = (*ingest.DeepIndexer)(nil)
-
 // Publisher is the minimal surface the sync engine depends on. *Broker satisfies
 // it. A nil Publisher is treated as a no-op by callers.
 type Publisher interface {
@@ -117,9 +114,6 @@ type Notifier interface {
 	RunFinished(o notify.RunOutcome)
 	LibraryRemoved(id int64)
 }
-
-// The production notifier satisfies the consumer interface.
-var _ Notifier = (*notify.Service)(nil)
 
 // Engine owns the worker goroutine, the gocron scheduler, and the optional
 // file-system watcher. Construct it with New and call Start once.
@@ -226,6 +220,23 @@ func WithStatsObserver(obs StatsObserver) Option {
 // and removed libraries to.
 func WithNotifier(n Notifier) Option {
 	return func(e *Engine) { e.notifier = n }
+}
+
+// libraryEvent is the payload of a TypeLibrary event: a single library row
+// settled (sync success or error) or was reclaimed (purged). The client refetches
+// the list on receipt.
+type libraryEvent struct {
+	ID     int64  `json:"id"`
+	Status string `json:"status"` // "active" | "error" | "purged"
+}
+
+// completedSync is a sync run whose parser succeeded: the library it ran
+// against, the parser's result, and the run's outcome with its book counts,
+// not yet reported.
+type completedSync struct {
+	library dbq.Library
+	result  ingest.Result
+	outcome notify.RunOutcome
 }
 
 // Start launches the worker, scheduler, and folder watchers, then kicks off an
@@ -353,14 +364,6 @@ func (e *Engine) statusLocked() Status {
 	}
 
 	return st
-}
-
-// libraryEvent is the payload of a TypeLibrary event: a single library row
-// settled (sync success or error) or was reclaimed (purged). The client refetches
-// the list on receipt.
-type libraryEvent struct {
-	ID     int64  `json:"id"`
-	Status string `json:"status"` // "active" | "error" | "purged"
 }
 
 // emitStatus publishes the current state snapshot. It holds e.mu across Publish
@@ -551,25 +554,6 @@ func (e *Engine) notifyLibraryRemoved(id int64) {
 	}
 }
 
-// runOutcome is the outcome of one run of kind against src, with no counts.
-func runOutcome(src dbq.Library, kind notify.RunKind, status notify.RunStatus, reason string) notify.RunOutcome {
-	return notify.RunOutcome{LibraryID: src.ID, Library: src.Name, Kind: kind, Status: status, Reason: reason}
-}
-
-// addDeepIndexCounts records a deep index run's per-book retries and newly
-// unreadable books (total and sample) on o.
-func addDeepIndexCounts(o *notify.RunOutcome, res ingest.DeepIndexResult) {
-	o.PerBookErrors = res.Errors
-	o.NewlyUnreadable = res.Broken
-	if len(res.NewlyBroken) == 0 {
-		return
-	}
-	o.UnreadableSample = make([]notify.UnreadableBook, len(res.NewlyBroken))
-	for i, b := range res.NewlyBroken {
-		o.UnreadableSample[i] = notify.UnreadableBook{BookID: b.BookID, Reason: string(b.Reason)}
-	}
-}
-
 // runContext returns the context one queued run executes under: it is
 // cancelled when the engine stops or when the returned cancel is called.
 func (e *Engine) runContext() (context.Context, context.CancelFunc) {
@@ -649,15 +633,6 @@ func (e *Engine) reportPanic(detail string, r any, stack []byte) {
 	e.log.ErrorContext(logging.MarkReported(context.Background()), "engine task panicked",
 		slog.String("task", detail), slog.Any("panic", r), slog.String("stack", string(stack)))
 	e.notifyCrash("sync engine", detail, r, stack)
-}
-
-// completedSync is a sync run whose parser succeeded: the library it ran
-// against, the parser's result, and the run's outcome with its book counts,
-// not yet reported.
-type completedSync struct {
-	library dbq.Library
-	result  ingest.Result
-	outcome notify.RunOutcome
 }
 
 // guardedSync runs one sync request under the whole-run write guard. ok is true
@@ -983,4 +958,23 @@ func (e *Engine) markError(ctx context.Context, id int64, cause error) {
 		e.log.Error("record sync error", slog.Int64("library", id), slog.Any("error", err))
 	}
 	e.emitLibrary(id, "error")
+}
+
+// runOutcome is the outcome of one run of kind against src, with no counts.
+func runOutcome(src dbq.Library, kind notify.RunKind, status notify.RunStatus, reason string) notify.RunOutcome {
+	return notify.RunOutcome{LibraryID: src.ID, Library: src.Name, Kind: kind, Status: status, Reason: reason}
+}
+
+// addDeepIndexCounts records a deep index run's per-book retries and newly
+// unreadable books (total and sample) on o.
+func addDeepIndexCounts(o *notify.RunOutcome, res ingest.DeepIndexResult) {
+	o.PerBookErrors = res.Errors
+	o.NewlyUnreadable = res.Broken
+	if len(res.NewlyBroken) == 0 {
+		return
+	}
+	o.UnreadableSample = make([]notify.UnreadableBook, len(res.NewlyBroken))
+	for i, b := range res.NewlyBroken {
+		o.UnreadableSample[i] = notify.UnreadableBook{BookID: b.BookID, Reason: string(b.Reason)}
+	}
 }

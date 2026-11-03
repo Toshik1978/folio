@@ -12,6 +12,10 @@ import (
 // timeout.
 const sendTimeout = 10 * time.Second
 
+// maxFloodPause caps how long one 429 can pause the sender. A longer flood
+// ban is not lost: the next send gets a fresh 429 with the time remaining.
+const maxFloodPause = 10 * time.Minute
+
 // message is one queued notification.
 type message struct {
 	kind Kind
@@ -64,10 +68,6 @@ func (s *Service) sender(ctx context.Context) {
 		}
 	}
 }
-
-// maxFloodPause caps how long one 429 can pause the sender. A longer flood
-// ban is not lost: the next send gets a fresh 429 with the time remaining.
-const maxFloodPause = 10 * time.Minute
 
 // gapAfter is the wait before the next send. After a message dropped on a 429
 // it is Telegram's retry_after, so the queued messages wait out the flood ban

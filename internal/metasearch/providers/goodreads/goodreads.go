@@ -67,25 +67,6 @@ func (s *Source) SearchCovers(ctx context.Context, q metasearch.Query) ([]metase
 	return out, nil
 }
 
-// autocompleteItem is one element of the Goodreads auto_complete JSON array.
-// Title drives relevance filtering: the endpoint freely returns box sets and
-// omnibuses (e.g. "… The Three-Body Trilogy (…, Death's End)") whose cover shows
-// the whole series rather than the requested book.
-type autocompleteItem struct {
-	ImageURL      string `json:"imageUrl"`
-	Title         string `json:"title"`
-	BookTitleBare string `json:"bookTitleBare"`
-}
-
-// title returns the best available title for relevance filtering.
-func (it autocompleteItem) title() string {
-	if it.Title != "" {
-		return it.Title
-	}
-
-	return it.BookTitleBare
-}
-
 // fetchOnce performs a single request to the autocomplete API.
 func (s *Source) fetchOnce(ctx context.Context, q metasearch.Query) ([]metasearch.CoverCandidate, error) {
 	params := url.Values{}
@@ -117,6 +98,25 @@ func (s *Source) fetchOnce(ctx context.Context, q metasearch.Query) ([]metasearc
 	}
 
 	return parseCovers(io.LimitReader(resp.Body, maxJSONBytes))
+}
+
+// autocompleteItem is one element of the Goodreads auto_complete JSON array.
+// Title drives relevance filtering: the endpoint freely returns box sets and
+// omnibuses (e.g. "… The Three-Body Trilogy (…, Death's End)") whose cover shows
+// the whole series rather than the requested book.
+type autocompleteItem struct {
+	ImageURL      string `json:"imageUrl"`
+	Title         string `json:"title"`
+	BookTitleBare string `json:"bookTitleBare"`
+}
+
+// title returns the best available title for relevance filtering.
+func (it autocompleteItem) title() string {
+	if it.Title != "" {
+		return it.Title
+	}
+
+	return it.BookTitleBare
 }
 
 // parseCovers decodes the autocomplete JSON array into cover candidates,

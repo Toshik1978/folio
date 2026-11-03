@@ -26,6 +26,9 @@ const enrichTimeout = 5 * time.Second
 // view.
 const persistTimeout = 3 * time.Second
 
+// readFlowMetadata is the book_read_failures flow of the description/metadata read.
+const readFlowMetadata = "metadata"
+
 // listBooks handles GET /api/books — a paginated, filtered list. When q is set
 // results are ranked by FTS5 BM25 relevance; otherwise newest first.
 func (h *BooksHandler) listBooks(w http.ResponseWriter, r *http.Request) {
@@ -81,17 +84,6 @@ func (h *BooksHandler) listBooks(w http.ResponseWriter, r *http.Request) {
 	h.writeJSON(w, http.StatusOK, page[bookView]{Items: items, Total: total, Page: pageNo, Limit: limit})
 }
 
-// parseFieldFilter turns a facet query value into a db.FieldFilter. A leading
-// '=' selects exact matching (e.g. "=Terry Pratchett"); otherwise the value is
-// token-matched via FTS. Surrounding whitespace is trimmed.
-func parseFieldFilter(raw string) db.FieldFilter {
-	v := strings.TrimSpace(raw)
-	if after, ok := strings.CutPrefix(v, "="); ok {
-		return db.FieldFilter{Value: strings.TrimSpace(after), Exact: true}
-	}
-	return db.FieldFilter{Value: v}
-}
-
 // getBook handles GET /api/books/{id} — full detail for one book. For books
 // missing an annotation it attempts a lazy backfill from the source file (e.g.
 // INPX FB2) via the metadata extractor, persisting the result.
@@ -125,9 +117,6 @@ func (h *BooksHandler) getBook(w http.ResponseWriter, r *http.Request) {
 	}
 	h.writeJSON(w, http.StatusOK, view)
 }
-
-// readFlowMetadata is the book_read_failures flow of the description/metadata read.
-const readFlowMetadata = "metadata"
 
 // unreadable returns the unreadable marker when a metadata failure recorded at
 // the current reader version exists for the book; a stale record (an older
@@ -282,4 +271,15 @@ func (h *BooksHandler) serveThumbnail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.covers.ServeThumbnail(w, r, id)
+}
+
+// parseFieldFilter turns a facet query value into a db.FieldFilter. A leading
+// '=' selects exact matching (e.g. "=Terry Pratchett"); otherwise the value is
+// token-matched via FTS. Surrounding whitespace is trimmed.
+func parseFieldFilter(raw string) db.FieldFilter {
+	v := strings.TrimSpace(raw)
+	if after, ok := strings.CutPrefix(v, "="); ok {
+		return db.FieldFilter{Value: strings.TrimSpace(after), Exact: true}
+	}
+	return db.FieldFilter{Value: v}
 }

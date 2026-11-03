@@ -164,17 +164,7 @@ type APIError struct{ Code int; Description string; RetryAfter time.Duration }
 
 The types `RunOutcome`, `RunKind`, `RunStatus`, `UnreadableBook`, `Config`, `Update`, `Settings` and `DeliveryStatus` are defined in [data-model.md](../data-model.md).
 
-Compile-time guards live in `cmd/folio-idx/main.go`, or in the consumer's test file, so `notify` imports none of the consumers:
-
-```go
-var (
-    _ ebook.CrashReporter      = (*notify.Service)(nil)
-    _ server.CrashReporter     = (*notify.Service)(nil)
-    _ sync.Notifier            = (*notify.Service)(nil)
-    _ settings.TelegramService = (*notify.Service)(nil)
-    _ logging.ErrorSink        = (*notify.Service)(nil)
-)
-```
+No `var _ I = (*notify.Service)(nil)` guards: `cmd/folio-idx/main.go` passes the notifier to every consumer's constructor or option, so those call sites are the compile-time check, and `notify` imports none of the consumers.
 
 ## Telegram client contract (`notify.Client.Send`)
 

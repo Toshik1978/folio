@@ -96,6 +96,26 @@ func (r *DeepIndexResult) add(part DeepIndexResult) {
 	r.Errors += part.Errors
 }
 
+// WorkerPanic is the value process re-panics with on the calling goroutine
+// after a worker goroutine panicked outside the parser (whose panics the
+// Dispatcher already recovers). An unrecovered panic on a worker would kill the
+// process; re-raising it where the caller's recover (the sync engine's) can see
+// it keeps the process alive. It carries the worker's stack so a crash reporter
+// names the panicking frames, recognised through CrashPlace and CrashStack.
+type WorkerPanic struct { //nolint:errname // mirrors db.TxPanic
+	Value any
+	Stack []byte
+}
+
+// Error implements error.
+func (p *WorkerPanic) Error() string { return fmt.Sprintf("panic in deep index worker: %v", p.Value) }
+
+// CrashPlace names where the panic happened, for crash reports.
+func (p *WorkerPanic) CrashPlace() string { return "book-file reading" }
+
+// CrashStack returns the stack captured when the worker's panic was recovered.
+func (p *WorkerPanic) CrashStack() []byte { return p.Stack }
+
 // DeepIndexer fills missing book descriptions (and gap-fills identifiers) from
 // the books' own local files and makes them full-text searchable. Every book is
 // read through the Extractor's shared readBook, so the code names no format and
@@ -182,40 +202,6 @@ func (d *DeepIndexer) Run(
 	return res, err
 }
 
-// groupByBook collects the work rows into books, in order of each book's first
-// row (the list is ordered by source_path). Every row of a book carries the
-// same record, so it is taken from the first.
-func groupByBook(work []dbq.ListDeepIndexWorkRow) []deepIndexBook {
-	var books []deepIndexBook
-	byID := map[int64]int{}
-	for _, row := range work {
-		i, ok := byID[row.BookID]
-		if !ok {
-			i = len(books)
-			byID[row.BookID] = i
-			books = append(books, deepIndexBook{id: row.BookID, record: workRecord(row)})
-		}
-		books[i].files = append(books[i].files, dbq.BookFile{
-			ID: row.FileID, BookID: row.BookID, FileFormat: row.FileFormat, SourcePath: row.SourcePath,
-		})
-	}
-
-	return books
-}
-
-// workRecord returns the broken-read record joined onto a work row, or nil
-// when the book has none. Only the columns the read gate compares are joined.
-func workRecord(row dbq.ListDeepIndexWorkRow) *readRecord {
-	if !row.FailureFingerprint.Valid || !row.FailureReaderVersion.Valid {
-		return nil
-	}
-
-	return &readRecord{
-		fingerprint:   row.FailureFingerprint.String,
-		readerVersion: row.FailureReaderVersion.Int64,
-	}
-}
-
 // runPages counts the work, then loads and processes it one page at a time,
 // summing the pages' results. It stops at the first page that fails.
 func (d *DeepIndexer) runPages(
@@ -283,26 +269,6 @@ func (d *DeepIndexer) jobs(library dbq.Library, books []deepIndexBook) []deepInd
 
 	return jobs
 }
-
-// WorkerPanic is the value process re-panics with on the calling goroutine
-// after a worker goroutine panicked outside the parser (whose panics the
-// Dispatcher already recovers). An unrecovered panic on a worker would kill the
-// process; re-raising it where the caller's recover (the sync engine's) can see
-// it keeps the process alive. It carries the worker's stack so a crash reporter
-// names the panicking frames, recognised through CrashPlace and CrashStack.
-type WorkerPanic struct { //nolint:errname // mirrors db.TxPanic
-	Value any
-	Stack []byte
-}
-
-// Error implements error.
-func (p *WorkerPanic) Error() string { return fmt.Sprintf("panic in deep index worker: %v", p.Value) }
-
-// CrashPlace names where the panic happened, for crash reports.
-func (p *WorkerPanic) CrashPlace() string { return "book-file reading" }
-
-// CrashStack returns the stack captured when the worker's panic was recovered.
-func (p *WorkerPanic) CrashStack() []byte { return p.Stack }
 
 // process runs the bounded worker pool and the single writer (the calling
 // goroutine). It returns only after every worker has exited; a worker panic is
@@ -439,13 +405,6 @@ func (d *DeepIndexer) write(
 			return res, ctx.Err() //nolint:wrapcheck // expose the context cause to the caller
 		}
 	}
-}
-
-// appendBrokenSample appends from to sample, keeping at most brokenSampleSize.
-func appendBrokenSample(sample, from []BrokenBook) []BrokenBook {
-	room := max(0, brokenSampleSize-len(sample))
-
-	return append(sample, from[:min(room, len(from))]...)
 }
 
 // commit writes one batch in a single transaction under the write guard and
@@ -620,4 +579,45 @@ func (d *DeepIndexer) fillAnnotation(
 	}
 
 	return true, false, nil
+}
+
+// groupByBook collects the work rows into books, in order of each book's first
+// row (the list is ordered by source_path). Every row of a book carries the
+// same record, so it is taken from the first.
+func groupByBook(work []dbq.ListDeepIndexWorkRow) []deepIndexBook {
+	var books []deepIndexBook
+	byID := map[int64]int{}
+	for _, row := range work {
+		i, ok := byID[row.BookID]
+		if !ok {
+			i = len(books)
+			byID[row.BookID] = i
+			books = append(books, deepIndexBook{id: row.BookID, record: workRecord(row)})
+		}
+		books[i].files = append(books[i].files, dbq.BookFile{
+			ID: row.FileID, BookID: row.BookID, FileFormat: row.FileFormat, SourcePath: row.SourcePath,
+		})
+	}
+
+	return books
+}
+
+// workRecord returns the broken-read record joined onto a work row, or nil
+// when the book has none. Only the columns the read gate compares are joined.
+func workRecord(row dbq.ListDeepIndexWorkRow) *readRecord {
+	if !row.FailureFingerprint.Valid || !row.FailureReaderVersion.Valid {
+		return nil
+	}
+
+	return &readRecord{
+		fingerprint:   row.FailureFingerprint.String,
+		readerVersion: row.FailureReaderVersion.Int64,
+	}
+}
+
+// appendBrokenSample appends from to sample, keeping at most brokenSampleSize.
+func appendBrokenSample(sample, from []BrokenBook) []BrokenBook {
+	room := max(0, brokenSampleSize-len(sample))
+
+	return append(sample, from[:min(room, len(from))]...)
 }

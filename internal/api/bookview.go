@@ -204,15 +204,6 @@ func (h *BooksHandler) toBookView(
 	return view
 }
 
-// nullIntToPtr converts a nullable integer column to *int (nil when absent).
-func nullIntToPtr(n sql.NullInt64) *int {
-	if !n.Valid {
-		return nil
-	}
-	v := int(n.Int64)
-	return &v
-}
-
 // toSingleBookView renders one book, fetching its relations itself (the
 // page-batched path is listBooks). Every single-book response — the detail
 // read and the edit, cover and match writes the SPA swaps in for it — carries
@@ -239,6 +230,15 @@ func (h *BooksHandler) resolveSeries(ctx context.Context, b dbq.Book, sc seriesC
 	if b.SeriesNumber.Valid {
 		view.SeriesIndex = &b.SeriesNumber.Float64
 	}
+}
+
+// nullIntToPtr converts a nullable integer column to *int (nil when absent).
+func nullIntToPtr(n sql.NullInt64) *int {
+	if !n.Valid {
+		return nil
+	}
+	v := int(n.Int64)
+	return &v
 }
 
 // bookFormats turns a book's files into format views (one downloadable entry

@@ -30,46 +30,6 @@ func (s *Service) LogError(_ context.Context, r slog.Record) {
 	s.addError(logLine(r))
 }
 
-// logLine renders r as "HH:MM:SS <message>[: <error>]", collapsed to one line
-// of at most maxItemChars runes. The error text is used as is, file paths
-// included. The time is formatted exactly as the log output formats it: slog
-// stamps records with time.Now, which is in the server's local zone.
-func logLine(r slog.Record) string {
-	line := r.Time.Format(time.TimeOnly) + " " + r.Message
-	if errText, ok := errorAttr(r); ok {
-		line += ": " + errText
-	}
-
-	return item(line)
-}
-
-// errorAttr returns the text of r's last attr named "error". The attrs baked
-// in through WithAttrs arrive on r ahead of the call-site attrs, so a
-// call-site "error" wins.
-func errorAttr(r slog.Record) (string, bool) {
-	var (
-		text  string
-		found bool
-	)
-	r.Attrs(func(a slog.Attr) bool {
-		if a.Key != "error" {
-			return true
-		}
-		v := a.Value.Resolve()
-		text = v.String()
-		if v.Kind() == slog.KindAny {
-			if err, ok := v.Any().(error); ok {
-				text = err.Error()
-			}
-		}
-		found = true
-
-		return true
-	})
-
-	return text, found
-}
-
 // addRunErrors enters the error lines of a completed run: books left for
 // retry, and a post-sync fill that failed (FR-010).
 func (s *Service) addRunErrors(o RunOutcome) {
@@ -132,6 +92,46 @@ func (s *Service) resetErrors() {
 	s.windowMu.Lock()
 	defer s.windowMu.Unlock()
 	s.window = errorWindow{}
+}
+
+// logLine renders r as "HH:MM:SS <message>[: <error>]", collapsed to one line
+// of at most maxItemChars runes. The error text is used as is, file paths
+// included. The time is formatted exactly as the log output formats it: slog
+// stamps records with time.Now, which is in the server's local zone.
+func logLine(r slog.Record) string {
+	line := r.Time.Format(time.TimeOnly) + " " + r.Message
+	if errText, ok := errorAttr(r); ok {
+		line += ": " + errText
+	}
+
+	return item(line)
+}
+
+// errorAttr returns the text of r's last attr named "error". The attrs baked
+// in through WithAttrs arrive on r ahead of the call-site attrs, so a
+// call-site "error" wins.
+func errorAttr(r slog.Record) (string, bool) {
+	var (
+		text  string
+		found bool
+	)
+	r.Attrs(func(a slog.Attr) bool {
+		if a.Key != "error" {
+			return true
+		}
+		v := a.Value.Resolve()
+		text = v.String()
+		if v.Kind() == slog.KindAny {
+			if err, ok := v.Any().(error); ok {
+				text = err.Error()
+			}
+		}
+		found = true
+
+		return true
+	})
+
+	return text, found
 }
 
 // errorSummaryText is the KindErrorSummary message.

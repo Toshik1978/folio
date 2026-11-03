@@ -196,14 +196,22 @@ func (d *Dispatcher) run(
 	}
 }
 
-// formatLabel maps a registered extension key to its stored format label:
-// the extension without its dot, except that the ".fb2.zip" wrapper is "fb2".
-func formatLabel(ext string) string {
-	if ext == extFB2Zip {
-		return formatFB2
+func (d *Dispatcher) fileExt(path string) string {
+	base := strings.ToLower(filepath.Base(path))
+	i := 0
+	for {
+		dot := strings.Index(base[i:], ".")
+		if dot < 0 {
+			break
+		}
+		i += dot
+		if _, ok := d.parsers[base[i:]]; ok {
+			return base[i:]
+		}
+		i++
 	}
 
-	return strings.TrimPrefix(ext, ".")
+	return strings.ToLower(filepath.Ext(path))
 }
 
 // ContentType maps a stored format label to its MIME type, falling back to
@@ -223,20 +231,12 @@ func ContentType(format string) string {
 	}
 }
 
-func (d *Dispatcher) fileExt(path string) string {
-	base := strings.ToLower(filepath.Base(path))
-	i := 0
-	for {
-		dot := strings.Index(base[i:], ".")
-		if dot < 0 {
-			break
-		}
-		i += dot
-		if _, ok := d.parsers[base[i:]]; ok {
-			return base[i:]
-		}
-		i++
+// formatLabel maps a registered extension key to its stored format label:
+// the extension without its dot, except that the ".fb2.zip" wrapper is "fb2".
+func formatLabel(ext string) string {
+	if ext == extFB2Zip {
+		return formatFB2
 	}
 
-	return strings.ToLower(filepath.Ext(path))
+	return strings.TrimPrefix(ext, ".")
 }

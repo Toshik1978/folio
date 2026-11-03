@@ -61,6 +61,24 @@ func NewExtractor(
 	return &Extractor{db: database, log: log, reader: reader, guard: guard, res: newResolver()}
 }
 
+// errKnownBroken is the error of a read that the gate answered from an
+// applicable broken-read record, without opening any file.
+var errKnownBroken = errors.New("ingest: book recorded as unreadable")
+
+// readRecord is the stored broken-read record of a book and flow, as the gate
+// in readBook compares it.
+type readRecord struct {
+	reason        ebook.Reason
+	detail        string
+	fingerprint   string
+	readerVersion int64
+}
+
+// recordSource returns the stored broken-read record of (bookID, flow), or nil
+// when there is none. readBook queries the database through storedRecord; a
+// caller that already holds the record (a Deep Index work row) supplies it.
+type recordSource func(ctx context.Context, bookID int64, flow readFlow) (*readRecord, error)
+
 // Cover returns the book's cover image bytes; ok is false when none exists.
 // The read is gated and recorded under the cover flow: a done read deletes the
 // book's stale cover record (touching the write guard only when one was
@@ -148,15 +166,6 @@ func (e *Extractor) load(ctx context.Context, bookID int64) (dbq.Library, []dbq.
 	return library, files, nil
 }
 
-// readSession is a sequence of reads sharing one archive cache, so every
-// archive is opened at most once for the session's lifetime. A Deep Index
-// worker uses one session per job. It is not safe for concurrent use; close
-// releases every archive it opened.
-type readSession struct {
-	e  *Extractor
-	ac *archiveCache
-}
-
 // newSession returns a session owning a fresh archive cache.
 func (e *Extractor) newSession() *readSession {
 	ac := newArchiveCache()
@@ -164,42 +173,6 @@ func (e *Extractor) newSession() *readSession {
 
 	return &readSession{e: e, ac: ac}
 }
-
-// description reads the metadata of a book from the best of its files through
-// readBookWith, gated by the record records returns, with identifiers cleaned
-// like sync persists them. The metadata is empty unless the read is done.
-func (s *readSession) description(
-	ctx context.Context, library dbq.Library, files []dbq.BookFile, records recordSource,
-) (ebook.Metadata, ReadResult) {
-	got, res := s.e.readBookWith(ctx, flowMetadata, library, files, s.ac, records)
-	if res.Status != ReadDone {
-		return ebook.Metadata{}, res
-	}
-	got.meta.Identifiers = cleanedEbookIdentifiers(got.meta.Identifiers)
-
-	return got.meta, res
-}
-
-// close releases every archive the session opened.
-func (s *readSession) close() { s.ac.close() }
-
-// errKnownBroken is the error of a read that the gate answered from an
-// applicable broken-read record, without opening any file.
-var errKnownBroken = errors.New("ingest: book recorded as unreadable")
-
-// readRecord is the stored broken-read record of a book and flow, as the gate
-// in readBook compares it.
-type readRecord struct {
-	reason        ebook.Reason
-	detail        string
-	fingerprint   string
-	readerVersion int64
-}
-
-// recordSource returns the stored broken-read record of (bookID, flow), or nil
-// when there is none. readBook queries the database through storedRecord; a
-// caller that already holds the record (a Deep Index work row) supplies it.
-type recordSource func(ctx context.Context, bookID int64, flow readFlow) (*readRecord, error)
 
 // storedRecord loads the (bookID, flow) record from book_read_failures.
 func (e *Extractor) storedRecord(ctx context.Context, bookID int64, flow readFlow) (*readRecord, error) {
@@ -306,6 +279,56 @@ func (e *Extractor) candidates(flow readFlow, files []dbq.BookFile) []dbq.BookFi
 	return rankCandidates(e.reader, flow, files)
 }
 
+// readFile opens one book file through the resolver and reads flow from it.
+func (e *Extractor) readFile(
+	ctx context.Context, flow readFlow, library dbq.Library, file dbq.BookFile, ac *archiveCache,
+) (bookContent, error) {
+	src, closer, err := e.res.open(library, file, ac)
+	if err != nil {
+		return bookContent{}, err // already names the path; Detail is length-capped
+	}
+	defer func() { _ = closer.Close() }()
+
+	var got bookContent
+	if flow == flowCover {
+		got.cover, err = e.reader.Cover(ctx, e.log, src)
+	} else {
+		got.meta, err = e.reader.Metadata(ctx, e.log, src)
+	}
+	if err != nil {
+		return bookContent{}, fmt.Errorf("read %s %s: %w", flow, file.SourcePath, err)
+	}
+
+	return got, nil
+}
+
+// readSession is a sequence of reads sharing one archive cache, so every
+// archive is opened at most once for the session's lifetime. A Deep Index
+// worker uses one session per job. It is not safe for concurrent use; close
+// releases every archive it opened.
+type readSession struct {
+	e  *Extractor
+	ac *archiveCache
+}
+
+// description reads the metadata of a book from the best of its files through
+// readBookWith, gated by the record records returns, with identifiers cleaned
+// like sync persists them. The metadata is empty unless the read is done.
+func (s *readSession) description(
+	ctx context.Context, library dbq.Library, files []dbq.BookFile, records recordSource,
+) (ebook.Metadata, ReadResult) {
+	got, res := s.e.readBookWith(ctx, flowMetadata, library, files, s.ac, records)
+	if res.Status != ReadDone {
+		return ebook.Metadata{}, res
+	}
+	got.meta.Identifiers = cleanedEbookIdentifiers(got.meta.Identifiers)
+
+	return got.meta, res
+}
+
+// close releases every archive the session opened.
+func (s *readSession) close() { s.ac.close() }
+
 // rankCandidates returns the files of a book that reader may read for flow,
 // ordered by reader's rank, highest first (ties by file id). Files reader does
 // not support are dropped, and so, for flowMetadata, are formats that are not
@@ -330,27 +353,4 @@ func rankCandidates(reader bookReader, flow readFlow, files []dbq.BookFile) []db
 	})
 
 	return out
-}
-
-// readFile opens one book file through the resolver and reads flow from it.
-func (e *Extractor) readFile(
-	ctx context.Context, flow readFlow, library dbq.Library, file dbq.BookFile, ac *archiveCache,
-) (bookContent, error) {
-	src, closer, err := e.res.open(library, file, ac)
-	if err != nil {
-		return bookContent{}, err // already names the path; Detail is length-capped
-	}
-	defer func() { _ = closer.Close() }()
-
-	var got bookContent
-	if flow == flowCover {
-		got.cover, err = e.reader.Cover(ctx, e.log, src)
-	} else {
-		got.meta, err = e.reader.Metadata(ctx, e.log, src)
-	}
-	if err != nil {
-		return bookContent{}, fmt.Errorf("read %s %s: %w", flow, file.SourcePath, err)
-	}
-
-	return got, nil
 }

@@ -80,6 +80,17 @@ func newImporter(
 	}
 }
 
+// upsertedBook is the logical book add persisted a record onto, with the cover
+// state and prio it had before this record (zero for a book just inserted).
+// joined reports that the record's file was new to an existing book.
+type upsertedBook struct {
+	id         int64
+	coverState int64
+	coverPrio  int64
+	inserted   bool
+	joined     bool
+}
+
 func (im *importer) begin(ctx context.Context) error {
 	if im.tx != nil {
 		return nil
@@ -225,17 +236,6 @@ func (im *importer) dropReadFailures(ctx context.Context, bookID int64) error {
 	}
 
 	return nil
-}
-
-// upsertedBook is the logical book add persisted a record onto, with the cover
-// state and prio it had before this record (zero for a book just inserted).
-// joined reports that the record's file was new to an existing book.
-type upsertedBook struct {
-	id         int64
-	coverState int64
-	coverPrio  int64
-	inserted   bool
-	joined     bool
 }
 
 // upsertBook groups rec onto the existing logical book for its match key,

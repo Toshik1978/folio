@@ -32,12 +32,6 @@ func New(log *slog.Logger, auth Service) *Handler {
 	return &Handler{log: log, auth: auth}
 }
 
-// Register mounts the settings routes on r.
-func (h *Handler) Register(r chi.Router) {
-	r.Get("/settings", h.get)
-	r.Put("/settings", h.update)
-}
-
 type view struct {
 	OPDSUser    string `json:"opds_user"`
 	OPDSPassSet bool   `json:"opds_pass_set"`
@@ -46,6 +40,12 @@ type view struct {
 type updateRequest struct {
 	OPDSUser *string `json:"opds_user"`
 	OPDSPass *string `json:"opds_pass"` // write-only plaintext; stored hashed
+}
+
+// Register mounts the settings routes on r.
+func (h *Handler) Register(r chi.Router) {
+	r.Get("/settings", h.get)
+	r.Put("/settings", h.update)
 }
 
 // get handles GET /settings. The password is write-only: only whether one is set

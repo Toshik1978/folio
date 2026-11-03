@@ -44,17 +44,6 @@ const (
 	telegramHTTPTimeout = 10 * time.Second
 )
 
-// *notify.Service drives the Telegram settings endpoints.
-var _ settings.TelegramService = (*notify.Service)(nil)
-
-// *notify.Service also receives the crash and run reports of every producer.
-var (
-	_ ebook.CrashReporter  = (*notify.Service)(nil)
-	_ server.CrashReporter = (*notify.Service)(nil)
-	_ sync.Notifier        = (*notify.Service)(nil)
-	_ logging.ErrorSink    = (*notify.Service)(nil)
-)
-
 func main() {
 	os.Exit(run())
 }

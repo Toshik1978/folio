@@ -70,36 +70,6 @@ type fb2Binary struct {
 	Data        string `xml:",chardata"`
 }
 
-// capReader passes reads through until more than limit bytes have been read,
-// then fails with ErrTooLarge. Unlike io.LimitReader's silent EOF — which the
-// XML decoder would report as a truncated, i.e. corrupt, file — hitting the
-// cap classifies the same way as every other format's size cap.
-type capReader struct {
-	r     io.Reader
-	limit int64
-	read  int64
-}
-
-func newCapReader(r io.Reader, limit int64) *capReader {
-	return &capReader{r: r, limit: limit}
-}
-
-func (c *capReader) Read(p []byte) (int, error) {
-	if c.read > c.limit {
-		return 0, fmt.Errorf("%w: fb2 exceeds %d bytes", ErrTooLarge, c.limit)
-	}
-	if room := c.limit + 1 - c.read; int64(len(p)) > room {
-		p = p[:room]
-	}
-	n, err := c.r.Read(p)
-	c.read += int64(n)
-	if c.read > c.limit {
-		return n, fmt.Errorf("%w: fb2 exceeds %d bytes", ErrTooLarge, c.limit)
-	}
-
-	return n, err //nolint:wrapcheck // a pass-through reader: io.EOF must reach the decoder unwrapped
-}
-
 // parseFB2Header decodes only the <description> element and stops at its closing
 // tag. The input is capped at maxArchiveTextBytes. Metadata.Cover stays nil.
 // A well-formed document without a <description> — the header ends at the first
@@ -499,4 +469,34 @@ func attrValue(attrs []xml.Attr, name string) string {
 	}
 
 	return ""
+}
+
+// capReader passes reads through until more than limit bytes have been read,
+// then fails with ErrTooLarge. Unlike io.LimitReader's silent EOF — which the
+// XML decoder would report as a truncated, i.e. corrupt, file — hitting the
+// cap classifies the same way as every other format's size cap.
+type capReader struct {
+	r     io.Reader
+	limit int64
+	read  int64
+}
+
+func newCapReader(r io.Reader, limit int64) *capReader {
+	return &capReader{r: r, limit: limit}
+}
+
+func (c *capReader) Read(p []byte) (int, error) {
+	if c.read > c.limit {
+		return 0, fmt.Errorf("%w: fb2 exceeds %d bytes", ErrTooLarge, c.limit)
+	}
+	if room := c.limit + 1 - c.read; int64(len(p)) > room {
+		p = p[:room]
+	}
+	n, err := c.r.Read(p)
+	c.read += int64(n)
+	if c.read > c.limit {
+		return n, fmt.Errorf("%w: fb2 exceeds %d bytes", ErrTooLarge, c.limit)
+	}
+
+	return n, err //nolint:wrapcheck // a pass-through reader: io.EOF must reach the decoder unwrapped
 }

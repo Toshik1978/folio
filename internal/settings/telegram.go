@@ -33,14 +33,6 @@ func NewTelegram(log *slog.Logger, svc TelegramService) *TelegramHandler {
 	return &TelegramHandler{log: log, svc: svc}
 }
 
-// Register mounts the Telegram settings routes on r.
-func (h *TelegramHandler) Register(r chi.Router) {
-	r.Get("/settings/telegram", h.get)
-	r.Put("/settings/telegram", h.update)
-	r.Post("/settings/telegram/test", h.test)
-	r.Get("/settings/telegram/status", h.status)
-}
-
 type statusView struct {
 	LastSuccessAt    *string `json:"last_success_at"`
 	LastFailureAt    *string `json:"last_failure_at"`
@@ -65,43 +57,12 @@ type telegramUpdateRequest struct {
 	Silent   bool    `json:"silent"`
 }
 
-func formatTime(t *time.Time) *string {
-	if t == nil {
-		return nil
-	}
-	s := t.UTC().Format(time.RFC3339)
-	return &s
-}
-
-func toStatusView(st notify.DeliveryStatus) statusView {
-	return statusView{
-		LastSuccessAt:    formatTime(st.LastSuccessAt),
-		LastFailureAt:    formatTime(st.LastFailureAt),
-		LastFailureError: st.LastFailureError,
-	}
-}
-
-func toTelegramView(s notify.Settings) telegramView {
-	return telegramView{
-		Enabled:    s.Enabled,
-		TokenSet:   s.TokenSet,
-		TokenLast4: s.TokenLast4,
-		ChatID:     s.ChatID,
-		TopicID:    s.TopicID,
-		Silent:     s.Silent,
-		Status:     toStatusView(s.Status),
-	}
-}
-
-// validationMessage is the 400 text for a rejected update. The FR-003
-// "enabled without a token or chat" case is documented as bare text; every
-// field-specific reason keeps its "<field>: " prefix.
-func validationMessage(ve *notify.ValidationError) string {
-	if ve.Field == "enabled" {
-		return ve.Msg
-	}
-
-	return ve.Error()
+// Register mounts the Telegram settings routes on r.
+func (h *TelegramHandler) Register(r chi.Router) {
+	r.Get("/settings/telegram", h.get)
+	r.Put("/settings/telegram", h.update)
+	r.Post("/settings/telegram/test", h.test)
+	r.Get("/settings/telegram/status", h.status)
 }
 
 // get handles GET /settings/telegram.
@@ -187,4 +148,43 @@ func (h *TelegramHandler) writeJSON(w http.ResponseWriter, status int, v any) {
 
 func (h *TelegramHandler) writeError(w http.ResponseWriter, status int, msg string) {
 	h.writeJSON(w, status, map[string]string{"error": msg})
+}
+
+func formatTime(t *time.Time) *string {
+	if t == nil {
+		return nil
+	}
+	s := t.UTC().Format(time.RFC3339)
+	return &s
+}
+
+func toStatusView(st notify.DeliveryStatus) statusView {
+	return statusView{
+		LastSuccessAt:    formatTime(st.LastSuccessAt),
+		LastFailureAt:    formatTime(st.LastFailureAt),
+		LastFailureError: st.LastFailureError,
+	}
+}
+
+func toTelegramView(s notify.Settings) telegramView {
+	return telegramView{
+		Enabled:    s.Enabled,
+		TokenSet:   s.TokenSet,
+		TokenLast4: s.TokenLast4,
+		ChatID:     s.ChatID,
+		TopicID:    s.TopicID,
+		Silent:     s.Silent,
+		Status:     toStatusView(s.Status),
+	}
+}
+
+// validationMessage is the 400 text for a rejected update. The FR-003
+// "enabled without a token or chat" case is documented as bare text; every
+// field-specific reason keeps its "<field>: " prefix.
+func validationMessage(ve *notify.ValidationError) string {
+	if ve.Field == "enabled" {
+		return ve.Msg
+	}
+
+	return ve.Error()
 }

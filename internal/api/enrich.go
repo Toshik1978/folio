@@ -239,28 +239,6 @@ func (h *BooksHandler) mergeEnrichedFields(book *dbq.Book, meta ebook.Metadata, 
 	return changed
 }
 
-// setNullString writes val into dst when present and the field is fillable (empty,
-// or overwrite mode). Returns whether it changed dst.
-func setNullString(dst *sql.NullString, val string, present, overwrite bool) bool {
-	if (overwrite || !dst.Valid) && present {
-		*dst = sql.NullString{String: val, Valid: true}
-		return true
-	}
-
-	return false
-}
-
-// setNullInt writes val into dst when present and the field is fillable (empty, or
-// overwrite mode). Returns whether it changed dst.
-func setNullInt(dst *sql.NullInt64, val int64, present, overwrite bool) bool {
-	if (overwrite || !dst.Valid) && present {
-		*dst = sql.NullInt64{Int64: val, Valid: true}
-		return true
-	}
-
-	return false
-}
-
 // applyOverwriteLinks relinks a book's authors and series from a user-chosen
 // volume (the manual Fix Match overwrite path). Authors are replaced only when the
 // volume carries some (never blanked); series likewise. Returns whether anything
@@ -374,6 +352,48 @@ func (h *BooksHandler) persistMatchScalars(ctx context.Context, q *dbq.Queries, 
 	return nil
 }
 
+// saveEnrichedCover caches an online cover, but only for a book that has no real
+// local cover of its own. A locally-sourced cover (e.g. a PDF's page-1 render) is
+// the true cover of the user's file and always beats an online thumbnail, so even
+// a manual Fix Match never downgrades it — the online cover only fills a gap.
+// Returns whether a cover was saved.
+func (h *BooksHandler) saveEnrichedCover(ctx context.Context, bookID int64, cover []byte) bool {
+	if len(cover) == 0 || h.coverSaver == nil {
+		return false
+	}
+	if h.coverSaver.HasLocalCover(ctx, bookID) {
+		return false
+	}
+	if err := h.coverSaver.Save(bookID, cover); err != nil {
+		h.log.Warn("save enriched cover", slog.Int64("book", bookID), slog.Any("error", err))
+		return false
+	}
+
+	return true
+}
+
+// setNullString writes val into dst when present and the field is fillable (empty,
+// or overwrite mode). Returns whether it changed dst.
+func setNullString(dst *sql.NullString, val string, present, overwrite bool) bool {
+	if (overwrite || !dst.Valid) && present {
+		*dst = sql.NullString{String: val, Valid: true}
+		return true
+	}
+
+	return false
+}
+
+// setNullInt writes val into dst when present and the field is fillable (empty, or
+// overwrite mode). Returns whether it changed dst.
+func setNullInt(dst *sql.NullInt64, val int64, present, overwrite bool) bool {
+	if (overwrite || !dst.Valid) && present {
+		*dst = sql.NullInt64{Int64: val, Valid: true}
+		return true
+	}
+
+	return false
+}
+
 // relinkAuthors replaces a book's author links from names (the overwrite path),
 // upserting each author by its case-fold key — the same single-sourced linking
 // the importer uses.
@@ -450,26 +470,6 @@ func persistIdentifiers(
 	}
 
 	return nil
-}
-
-// saveEnrichedCover caches an online cover, but only for a book that has no real
-// local cover of its own. A locally-sourced cover (e.g. a PDF's page-1 render) is
-// the true cover of the user's file and always beats an online thumbnail, so even
-// a manual Fix Match never downgrades it — the online cover only fills a gap.
-// Returns whether a cover was saved.
-func (h *BooksHandler) saveEnrichedCover(ctx context.Context, bookID int64, cover []byte) bool {
-	if len(cover) == 0 || h.coverSaver == nil {
-		return false
-	}
-	if h.coverSaver.HasLocalCover(ctx, bookID) {
-		return false
-	}
-	if err := h.coverSaver.Save(bookID, cover); err != nil {
-		h.log.Warn("save enriched cover", slog.Int64("book", bookID), slog.Any("error", err))
-		return false
-	}
-
-	return true
 }
 
 // newEnrichmentHash derives a fresh content_hash from the prior one so the cover
