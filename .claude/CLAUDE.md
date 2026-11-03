@@ -65,7 +65,10 @@ All automation is managed via `go-task` (`Taskfile.yml`).
 
 These rules apply to every task. Non-negotiable.
 
-1. **Golang Best Practices**: Follow idiomatic Go — standard library first, proper interface declarations, correct package layout, canonical error handling. Comply with community conventions and official Effective Go guidelines.
+1. **Golang Best Practices**: Follow idiomatic Go — standard library first, proper interface declarations, correct package layout, canonical error handling. Comply with community conventions and official Effective Go guidelines. Two project conventions on top of that:
+   * **Methods grouped by receiver.** Within a file, a type's methods form one unbroken run: no other type, constant, variable or free function between its first and last method. Constructors and options follow the type and precede its methods (`funcorder` enforces this, plus exported methods before unexported). Free unexported helpers go after the methods, normally at the end of the file. A large type may spread its methods over several files split by concern (e.g. `sync.Engine` across `engine.go`, `purge.go`, `watcher.go`); the rule applies in each file. When you add a type, a constant or a helper, place it outside other types' method runs.
+   * **No compile-time interface guards** (`var _ I = (*T)(nil)`). Interfaces are declared by their consumer, so the compiler already checks the concrete type where it is injected; a guard only repeats that check.
+   * Both are checked by `task lint:layout` (`internal/tools/layoutcheck`, part of `task lint`); the grouping rule skips test files, as `funcorder` does.
 2. **Third-Party Dependencies Require Approval**: Before introducing any external dependency, ask for explicit approval. State the package name, what it solves, and why the standard library is insufficient. Do not add the dependency until approved.
 
    **Approved direct dependencies (recorded):**

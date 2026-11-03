@@ -70,7 +70,8 @@ The output binary is `./bin/folio-idx`.
 | `test:backend` | `go test -v -coverpkg=./internal/... ./internal/...` | Run all Go tests with coverage |
 | `test:frontend` | `npm run test` (in `web/`) | Run Vitest unit/component tests (`test:frontend:ci` adds coverage + JSON) |
 | `test` | `test:backend` + `test:frontend` | Run all tests |
-| `lint:backend` | `golangci-lint run` | Run Go linters |
+| `lint:backend` | `golangci-lint run` + `lint:layout` | Run Go linters |
+| `lint:layout` | `go run ./internal/tools/layoutcheck ./cmd ./internal` | Source-layout conventions no golangci-lint linter covers (see `.claude/CLAUDE.md`) |
 | `lint:frontend` | `npm run typecheck`, `npm run lint`, `npm run format:check` (in `web/`) | Type-check, ESLint, Prettier check |
 | `lint` | `lint:frontend` + `lint:sql` + `lint:backend` | Lint everything |
 | `format:backend` | `golangci-lint fmt` | Run gofumpt via golangci-lint |

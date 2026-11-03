@@ -57,6 +57,9 @@ jobs:
       - name: Check SQL is ASCII-only
         run: task lint:sql
 
+      - name: Check Go source layout
+        run: task lint:layout
+
       - name: Test beads git hook scripts
         run: task test:beads
 

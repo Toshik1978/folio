@@ -49,7 +49,13 @@ tasks:
 
   lint:backend:
     desc: Run Go linters
-    cmd: golangci-lint run
+    cmds:
+      - golangci-lint run
+      - task: lint:layout
+
+  lint:layout:
+    desc: Check the Go source-layout conventions golangci-lint has no linter for
+    cmd: go run ./internal/tools/layoutcheck ./cmd ./internal
 
   lint:frontend:
     desc: Run Node.js linters

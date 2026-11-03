@@ -85,6 +85,9 @@ Rationale: a uniform layout keeps `go test` output grouped and fixtures isolated
 - Interfaces are declared by the consumer, next to the code that uses them; concrete
   implementations are injected via constructors, not globals or setters. No shared `model/`
   package — types live where they are produced.
+- Source-layout conventions (declaration order, a type's methods kept in one unbroken run per
+  file, no compile-time interface guards) are recorded in `.claude/CLAUDE.md`; `task lint`
+  enforces them where a check exists.
 - Any new third-party dependency (Go or npm runtime) MUST receive explicit maintainer approval
   first, stating the package, the problem it solves, and why the standard library is
   insufficient. Approved direct Go dependencies are recorded in `.claude/CLAUDE.md`.
@@ -154,4 +157,4 @@ delegates the rest to proven infrastructure.
   maintainer; unjustified violations block the change.
 - Runtime development guidance for agents and contributors lives in `.claude/CLAUDE.md`.
 
-**Version**: 1.1.0 | **Ratified**: 2026-11-01 | **Last Amended**: 2026-11-03
+**Version**: 1.1.1 | **Ratified**: 2026-11-01 | **Last Amended**: 2026-11-03

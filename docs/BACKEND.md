@@ -214,6 +214,7 @@ This groups `go test` output by suite, isolates fixtures per concern, and gives 
 | `internal/notify` | `TestNotify` | Telegram notifier: `configSuite`, `storeSuite` (settings store), `clientSuite` (Telegram client against an `httptest` fake), `statusSuite`, `formatSuite`, `queueSuite` (delivery queue), `serviceSuite`, `crashSuite` (crash de-duplication), `runsSuite`, `errWindowSuite`, `leakSuite` |
 | `internal/logging` | `TestLogging` | `loggingSuite` (logger construction), `reportedSuite` (`MarkReported`), `sinkSuite` (the `WithErrorSink` tap) |
 | `internal/sync` | `TestSync` | Sync engine: `engineSuite`, `schedulerSuite`, `watcherSuite` (fsnotify debounce) |
+| `internal/tools/layoutcheck` | `TestLayoutcheck` | `layoutSuite`: the source-layout rules, generated/test-file handling, exit codes |
 
 ### Fixtures & hermeticity
 
@@ -321,7 +322,9 @@ internal/
 │                          #   The cover Store also generates and serves aspect-preserving
 │                          #   thumbnails (ServeThumbnail, generated eagerly in writeFile
 │                          #   alongside the cover); the cover-serving method is ServeCover.
-└── events/                # Sync-event broker (SSE fan-out + coalescing)   [leaf]
+├── events/                # Sync-event broker (SSE fan-out + coalescing)   [leaf]
+└── tools/layoutcheck/     # Dev tool run by `task lint`: methods grouped by receiver,
+                           #   no compile-time interface guards (stdlib go/ast only)
 ```
 
 Per-format parser internals (metadata, covers, the annotation pipeline) are
