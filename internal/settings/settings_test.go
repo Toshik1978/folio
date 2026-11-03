@@ -44,6 +44,7 @@ type settingsSuite struct {
 
 func TestSettings(t *testing.T) {
 	suite.Run(t, new(settingsSuite))
+	suite.Run(t, new(telegramSuite))
 }
 
 func (s *settingsSuite) SetupTest() {

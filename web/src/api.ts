@@ -16,6 +16,9 @@ import type {
   Stats,
   SyncStatus,
   Tag,
+  TelegramDeliveryStatus,
+  TelegramSettings,
+  TelegramSettingsUpdate,
 } from './types';
 
 // All requests are relative to /api; the Vite dev server proxies this to the
@@ -53,7 +56,8 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     } catch {
       // non-JSON error body; keep the status line
     }
-    throw new Error(message);
+    // status lets callers tell a validation failure (400) from other errors.
+    throw Object.assign(new Error(message), { status: res.status });
   }
   if (res.status === 204) return undefined as T;
   return (await res.json()) as T;
@@ -274,4 +278,30 @@ export function fetchSettings(): Promise<Settings> {
 
 export function updateSettings(update: SettingsUpdate): Promise<Settings> {
   return request<Settings>('/settings', { method: 'PUT', body: JSON.stringify(update) });
+}
+
+export function fetchTelegramSettings(): Promise<TelegramSettings> {
+  return request<TelegramSettings>('/settings/telegram');
+}
+
+// updateTelegramSettings saves the Telegram settings. An absent or empty bot_token is
+// left out of the body so the stored token is kept.
+export function updateTelegramSettings(u: TelegramSettingsUpdate): Promise<TelegramSettings> {
+  const { bot_token: token, ...rest } = u;
+  const body = token ? { ...rest, bot_token: token } : rest;
+  return request<TelegramSettings>('/settings/telegram', {
+    method: 'PUT',
+    body: JSON.stringify(body),
+  });
+}
+
+// sendTelegramTest sends a test message; a failure rejects with Telegram's description.
+export function sendTelegramTest(): Promise<{ ok: true; status: TelegramDeliveryStatus }> {
+  return request<{ ok: true; status: TelegramDeliveryStatus }>('/settings/telegram/test', {
+    method: 'POST',
+  });
+}
+
+export function fetchTelegramStatus(): Promise<TelegramDeliveryStatus> {
+  return request<TelegramDeliveryStatus>('/settings/telegram/status');
 }

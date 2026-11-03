@@ -41,7 +41,19 @@ import { asString } from '@/utils/query';
 
 const route = useRoute();
 const router = useRouter();
-const { libraryId } = useLibrary();
+const { libraryId, setLibrary } = useLibrary();
+
+// A link opened outside the SPA router (e.g. Settings' unreadable count in a new
+// tab) names its library as ?library=; adopt it as the ambient selection, which
+// localStorage alone would not carry, then drop it from the URL so the selector
+// stays the single source of truth.
+const linkedLibrary = Number(asString(route.query.library));
+if (Number.isInteger(linkedLibrary) && linkedLibrary > 0) {
+  setLibrary(linkedLibrary);
+  const query = { ...route.query };
+  delete query.library;
+  void router.replace({ path: route.path, query });
+}
 const { current: syncingLibrary } = useSyncStatus();
 const toast = useToast();
 

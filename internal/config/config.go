@@ -9,6 +9,8 @@ import (
 	"github.com/caarlos0/env/v11"
 )
 
+const defaultTelegramAPIBase = "https://api.telegram.org"
+
 type Config struct {
 	Env string `env:"APP_ENV" envDefault:"development"`
 	// NoColor opts out of ANSI-colored logs. Per the NO_COLOR convention
@@ -31,6 +33,9 @@ type Config struct {
 	// back out. Empty (the default) leaves library paths unconstrained, matching
 	// historical behavior. In container deployments set it to the mounted volume.
 	LibraryRoot string `env:"LIBRARY_ROOT"`
+	// TelegramAPIBase is the Telegram Bot API base URL. It exists for tests and
+	// the local fake endpoint; production deployments keep the default.
+	TelegramAPIBase string `env:"TELEGRAM_API_BASE" envDefault:"https://api.telegram.org"`
 }
 
 func MustParse() Config {
@@ -47,8 +52,9 @@ func MustParse() Config {
 
 // Validate checks config values that would otherwise fail late or silently
 // degrade at runtime, so misconfiguration is rejected at startup with a clear
-// message instead. MustParse calls it and panics on failure.
-func (c Config) Validate() error {
+// message instead, and normalizes TelegramAPIBase. MustParse calls it and
+// panics on failure.
+func (c *Config) Validate() error {
 	if port, err := strconv.Atoi(c.Port); err != nil || port < 1 || port > 65535 {
 		return fmt.Errorf("invalid PORT %q: must be a number in 1..65535", c.Port)
 	}
@@ -66,11 +72,31 @@ func (c Config) Validate() error {
 		}
 	}
 
-	return nil
+	return c.normalizeTelegramAPIBase()
 }
 
 // NoColorEnabled reports whether colored log output should be suppressed. Any
 // non-empty NO_COLOR value counts as opt-out (per https://no-color.org).
-func (c Config) NoColorEnabled() bool {
+func (c *Config) NoColorEnabled() bool {
 	return c.NoColor != ""
+}
+
+// normalizeTelegramAPIBase requires TelegramAPIBase to be an absolute http(s)
+// URL with a host and trims a trailing slash so callers can append
+// "/bot<token>/<method>" directly. An empty value falls back to the default.
+func (c *Config) normalizeTelegramAPIBase() error {
+	base := strings.TrimRight(strings.TrimSpace(c.TelegramAPIBase), "/")
+	if base == "" {
+		base = defaultTelegramAPIBase
+	}
+	u, err := url.Parse(base)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return fmt.Errorf(
+			"invalid TELEGRAM_API_BASE %q: must be an absolute http or https URL like %s",
+			c.TelegramAPIBase, defaultTelegramAPIBase,
+		)
+	}
+	c.TelegramAPIBase = base
+
+	return nil
 }

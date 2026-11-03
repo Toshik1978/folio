@@ -46,3 +46,34 @@ func (s *validateSuite) TestInvalidPublicURLRejected() {
 		s.Errorf(cfg.Validate(), "PublicURL %q must be rejected", raw)
 	}
 }
+
+// TestTelegramAPIBaseDefaultAccepted accepts the production default endpoint.
+func (s *validateSuite) TestTelegramAPIBaseDefaultAccepted() {
+	cfg := Config{Port: "8080", TelegramAPIBase: "https://api.telegram.org"}
+	s.Require().NoError(cfg.Validate())
+	s.Equal("https://api.telegram.org", cfg.TelegramAPIBase)
+}
+
+// TestTelegramAPIBaseEmptyFallsBackToDefault keeps a zero-value Config usable.
+func (s *validateSuite) TestTelegramAPIBaseEmptyFallsBackToDefault() {
+	cfg := Config{Port: "8080"}
+	s.Require().NoError(cfg.Validate())
+	s.Equal("https://api.telegram.org", cfg.TelegramAPIBase)
+}
+
+// TestTelegramAPIBaseRejected rejects values that are not an absolute http(s)
+// URL with a host.
+func (s *validateSuite) TestTelegramAPIBaseRejected() {
+	for _, raw := range []string{"ftp://x", "api.telegram.org", "http://"} {
+		cfg := Config{Port: "8080", TelegramAPIBase: raw}
+		s.Errorf(cfg.Validate(), "TELEGRAM_API_BASE %q must be rejected", raw)
+	}
+}
+
+// TestTelegramAPIBaseTrimsTrailingSlash accepts a local fake endpoint and strips
+// the trailing slash so callers can append "/bot<token>/..." directly.
+func (s *validateSuite) TestTelegramAPIBaseTrimsTrailingSlash() {
+	cfg := Config{Port: "8080", TelegramAPIBase: "http://127.0.0.1:9000/"}
+	s.Require().NoError(cfg.Validate())
+	s.Equal("http://127.0.0.1:9000", cfg.TelegramAPIBase)
+}

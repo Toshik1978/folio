@@ -214,9 +214,14 @@ The canonical external base URL is configured instead, via the optional
 ## Outbound Connections
 
 Historically Folio made **no outbound network calls** — every catalog source is a
-local, read-only file or SQLite DB. The Google Books integration adds the one
-egress path: HTTPS requests to `www.googleapis.com/books/v1` for on-view metadata
-enrichment and the Fix Match feature (`internal/googlebooks`, stdlib `net/http`).
+local, read-only file or SQLite DB. It now has two outbound dependencies, both
+optional and best-effort: Google Books (metadata enrichment) and Telegram (owner
+notifications, off by default).
+
+### Google Books
+
+HTTPS requests to `www.googleapis.com/books/v1` for on-view metadata enrichment
+and the Fix Match feature (`internal/googlebooks`, stdlib `net/http`).
 
 - **What's sent:** a book's ISBN, or its title + first author, and the chosen
   volume id on Fix Match. No catalog contents or credentials.
@@ -245,6 +250,29 @@ enrichment and the Fix Match feature (`internal/googlebooks`, stdlib `net/http`)
 
 A deployment that must stay fully offline can block egress to `googleapis.com` at
 the network layer.
+
+### Telegram (owner notifications)
+
+HTTPS requests to `api.telegram.org` (`internal/notify`, stdlib `net/http`) that
+deliver messages to the Telegram channel the owner configured. **Opt-in and off
+by default:** nothing is sent until the owner saves a bot token and a channel ID
+and enables notifications (`/api/settings/telegram`).
+
+- **What's sent:** a message prefixed with the instance identity (so several
+  instances can share one channel) and its text. In this phase that is the test
+  message sent from the settings screen; later phases add further kinds of
+  failure notification.
+- **Content rule** (constitution v1.1.0, Principle III exception): a message may
+  carry library names, error texts (including file paths inside a library), and
+  book IDs or links to the instance. It never carries book titles taken from
+  catalog metadata, book contents, credentials, tokens, or request headers.
+- **Failure mode:** best-effort. Each request has a 10s HTTP timeout; a
+  delivery makes up to 3 attempts within a 30s budget. Messages go through a
+  bounded in-memory queue, so producers never block or do I/O, and when the
+  queue is full the excess is dropped. A delivery failure is logged as a
+  warning and never breaks a user-facing request.
+- **Blocking it:** leave notifications disabled (the default), or block egress to
+  `api.telegram.org` at the network layer.
 
 ---
 
@@ -339,9 +367,14 @@ redirected to or rejected by Access, not answered by Folio.
    glibc dependencies. Reduces attack surface in the Distroless runtime image.
 5. **Read-only source access** — The application never writes to mounted library
    volumes.
-6. **Minimal egress** — The only outbound dependency is the Google Books API (see
-   [Outbound Connections](#outbound-connections)); it carries no catalog contents
-   or credentials and is best-effort.
+6. **Minimal egress** — The outbound dependencies are the Google Books API and,
+   when the owner opts in, the Telegram Bot API (see
+   [Outbound Connections](#outbound-connections)); both are best-effort. Google
+   Books carries no catalog contents or credentials. Telegram is the owner
+   notification exception: messages to the channel the owner configured may carry
+   library names, error texts (including file paths inside a library), and book
+   IDs or links to the instance, but never book titles taken from catalog
+   metadata, book contents, credentials, or tokens. It is off by default.
 7. **CSRF guard on `/api`** — State-changing API calls are protected by an
    origin-based, token-less CSRF guard (`sameSiteGuard` + `formBodyGuard`) that
    does not depend on any proxy's cookie `SameSite` policy. It is *not* a
@@ -350,3 +383,9 @@ redirected to or rejected by Access, not answered by Folio.
    MCP endpoint and does not apply the `/api` CSRF guard to it. Front it with an
    OAuth-capable authenticator (see [MCP endpoint](#mcp-endpoint-mcp-and-claudeai))
    and set `PUBLIC_URL`. Every MCP tool is read-only and makes no outbound calls.
+9. **Telegram bot token** — The token is stored as plain text in the `settings`
+   table under the data directory (like any other setting, it is protected by
+   the volume's access control, not encrypted). It is write-only: the API never
+   returns it, it is never logged, and it is redacted from every error, including
+   Telegram's own error text. It is validated on save so it cannot alter the
+   request path of the Bot API URL it is embedded in.

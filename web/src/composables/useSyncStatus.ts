@@ -47,11 +47,12 @@ function parseEvent<T>(e: MessageEvent): T | null {
 
 function applyStatus(status: SyncStatus): void {
   const prevCurrent = current.value;
+  const prevKind = currentKind.value;
   running.value = status.running;
   current.value = status.current ?? 0;
   queued.value = status.queued ?? [];
   currentKind.value = status.running ? (status.kind ?? null) : null;
-  if (!running.value || current.value !== prevCurrent) {
+  if (!running.value || current.value !== prevCurrent || currentKind.value !== prevKind) {
     currentProgress.value = null;
   }
 }

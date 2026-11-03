@@ -30,13 +30,22 @@ import (
 	msgoodreads "github.com/Toshik1978/folio/internal/metasearch/providers/goodreads"
 	msgoogle "github.com/Toshik1978/folio/internal/metasearch/providers/googlebooks"
 	msopenlibrary "github.com/Toshik1978/folio/internal/metasearch/providers/openlibrary"
+	"github.com/Toshik1978/folio/internal/notify"
 	"github.com/Toshik1978/folio/internal/opds"
 	"github.com/Toshik1978/folio/internal/server"
 	"github.com/Toshik1978/folio/internal/settings"
 	"github.com/Toshik1978/folio/internal/sync"
 )
 
-const shutdownTimeout = 15 * time.Second
+const (
+	shutdownTimeout = 15 * time.Second
+
+	// telegramHTTPTimeout bounds a single Telegram API request.
+	telegramHTTPTimeout = 10 * time.Second
+)
+
+// *notify.Service drives the Telegram settings endpoints.
+var _ settings.TelegramService = (*notify.Service)(nil)
 
 func main() {
 	os.Exit(run())
@@ -64,6 +73,19 @@ func run() int { //revive:disable:function-length
 
 	// One ebook dispatcher owns the per-format parser set; injected into every consumer.
 	parser := ebook.NewStandardDispatcher()
+
+	// The notifier delivers opt-in Telegram messages to the owner's channel; its
+	// settings live in the database and it never blocks its producers.
+	notifier, err := notify.New(
+		log,
+		notify.NewStore(database, writeGuard),
+		notify.NewClient(cfg.TelegramAPIBase, &http.Client{Timeout: telegramHTTPTimeout}),
+		notify.WithPublicURL(cfg.PublicURL),
+	)
+	if err != nil {
+		log.Error("notifier init failed", slog.Any("error", err))
+		return 5
+	}
 
 	// One extractor recovers covers and metadata from source files; it backs
 	// lazy cover serving and metadata backfill.
@@ -129,6 +151,7 @@ func run() int { //revive:disable:function-length
 		return 3
 	}
 	syncEngine.Start()
+	notifier.Start()
 
 	srv := &http.Server{
 		Addr: ":" + cfg.Port,
@@ -139,6 +162,7 @@ func run() int { //revive:disable:function-length
 				api.NewLibraries(log, database, writeGuard, syncEngine, cfg.LibraryRoot),
 				api.NewSync(log, syncEngine, broker),
 				settings.New(log, authn),
+				settings.NewTelegram(log, notifier),
 			},
 			OPDS: opds.New(log, database, coverStore, backfiller, authn, cfg.PublicURL),
 			MCP:  mcpserver.New(log, database, cfg.PublicURL, buildVersion()),
@@ -148,7 +172,7 @@ func run() int { //revive:disable:function-length
 		IdleTimeout:  120 * time.Second,
 	}
 
-	return serve(ctx, log, srv, syncEngine, broker)
+	return serve(ctx, log, srv, syncEngine, notifier, broker)
 }
 
 // serve runs the HTTP server until ctx is cancelled (a termination signal) or
@@ -158,6 +182,7 @@ func serve(
 	log *slog.Logger,
 	srv *http.Server,
 	syncEngine *sync.Engine,
+	notifier *notify.Service,
 	broker *events.Broker,
 ) int {
 	serverErr := make(chan error, 1)
@@ -179,7 +204,7 @@ func serve(
 
 	// Both paths run the same teardown so a server failure cleans up exactly like
 	// a signal does; only the exit code differs.
-	shutdown(log, srv, syncEngine, broker)
+	shutdown(log, srv, syncEngine, notifier, broker)
 
 	return code
 }
@@ -187,8 +212,14 @@ func serve(
 // shutdown performs the graceful teardown shared by the signal and
 // server-failure paths: disconnect SSE subscribers, stop accepting requests
 // (draining in-flight ones), then stop the engine (which waits for any in-flight
-// sync and the scheduler to wind down).
-func shutdown(log *slog.Logger, srv *http.Server, syncEngine *sync.Engine, broker *events.Broker) {
+// sync and the scheduler to wind down) and finally the notifier.
+func shutdown(
+	log *slog.Logger,
+	srv *http.Server,
+	syncEngine *sync.Engine,
+	notifier *notify.Service,
+	broker *events.Broker,
+) {
 	// Close the event broker to disconnect all long-running SSE subscribers.
 	broker.Close()
 
@@ -198,6 +229,7 @@ func shutdown(log *slog.Logger, srv *http.Server, syncEngine *sync.Engine, broke
 		log.Error("graceful shutdown failed", slog.Any("error", err))
 	}
 	syncEngine.Stop()
+	notifier.Stop()
 }
 
 // buildVersion reports the module version stamped into the binary, or "dev"

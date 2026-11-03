@@ -143,6 +143,33 @@ queue; it is never persisted to the database.
 
 Password is write-only — `GET` returns `opds_pass_set` (boolean), `PUT` accepts `opds_pass` (plaintext, stored hashed).
 
+#### Telegram notifications (`/api/settings/telegram`)
+
+| Method | Path | Description | Success | Errors |
+| :--- | :--- | :--- | :--- | :--- |
+| `GET` | `/api/settings/telegram` | Redacted settings plus delivery status | 200 settings object | 500 `failed to read telegram settings` |
+| `PUT` | `/api/settings/telegram` | Replace the non-secret fields; token is write-only | 200 settings object | 400 `<field>: <reason>` / `notifications need a bot token and a channel ID` / `invalid JSON body`; 503 `busy, try again`; 500 `failed to save telegram settings` |
+| `POST` | `/api/settings/telegram/test` | Send one test message with the saved settings (single attempt, no retry) | 200 `{"ok":true,"status":{...}}` | 409 `save a bot token and a channel ID first`; 503 `busy, try again`; 502 `{"error":"<Telegram description or redacted network error>","status":{...}}` |
+| `GET` | `/api/settings/telegram/status` | Delivery status only | 200 status object | none |
+
+```json
+{
+  "enabled": true,
+  "token_set": true,
+  "token_last4": "abcd",
+  "chat_id": "@channelname",
+  "topic_id": 42,
+  "silent": false,
+  "status": {
+    "last_success_at": "2026-11-03T10:15:02Z",
+    "last_failure_at": null,
+    "last_failure_error": ""
+  }
+}
+```
+
+`PUT` body: `enabled`, `chat_id`, `silent`, optional `topic_id` (absent or `null` = no topic) and write-only `bot_token`. An absent, `null` or `""` `bot_token` keeps the stored token. `token_last4` is `""` when no token is set or it is shorter than 8 characters. `status.*_at` are RFC 3339 UTC or `null`. The token is never returned or logged. A failed test send is logged at Warn, never Error.
+
 #### Stats Object (JSON)
 
 ```json

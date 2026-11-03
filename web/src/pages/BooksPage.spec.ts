@@ -10,12 +10,13 @@ import BooksPage from '@/pages/BooksPage.vue';
 import { makeBook } from '@/test/factories';
 import type { Book } from '@/types';
 
-const { push, route, toastError } = vi.hoisted(() => ({
+const { push, replace, route, toastError } = vi.hoisted(() => ({
   push: vi.fn(),
+  replace: vi.fn(),
   route: { query: {} as Record<string, string>, params: {} as Record<string, string> },
   toastError: vi.fn(),
 }));
-vi.mock('vue-router', () => ({ useRoute: () => route, useRouter: () => ({ push }) }));
+vi.mock('vue-router', () => ({ useRoute: () => route, useRouter: () => ({ push, replace }) }));
 vi.mock('@/api', () => ({ fetchBooks: vi.fn(), fetchBook: vi.fn() }));
 vi.mock('@/composables/useToast', () => ({
   useToast: () => ({
@@ -103,6 +104,20 @@ describe('BooksPage', () => {
     mount(BooksPage, opts);
     await flushPromises();
     expect(fetchBooks).toHaveBeenCalledWith(expect.objectContaining({ unreadable: false }));
+  });
+
+  it('adopts ?library= from a link as the selected library and drops it from the URL', async () => {
+    const { libraryId, setLibrary } = useLibrary();
+    setLibrary(3);
+    route.query = { unreadable: '1', library: '9' };
+    mount(BooksPage, opts);
+    await flushPromises();
+    expect(libraryId.value).toBe(9);
+    expect(replace).toHaveBeenCalledWith({ path: undefined, query: { unreadable: '1' } });
+    expect(fetchBooks).toHaveBeenCalledWith(
+      expect.objectContaining({ library: 9, unreadable: true }),
+    );
+    setLibrary(null);
   });
 
   it('forwards format and language filters to the API', async () => {

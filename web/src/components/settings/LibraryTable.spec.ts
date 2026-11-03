@@ -126,6 +126,8 @@ describe('LibraryTable', () => {
     const link = wrapper.find('[data-testid="library-unreadable"]');
     expect(link.exists()).toBe(true);
     expect(link.text()).toBe('⚠ 3 unreadable');
+    // the href names the library, so opening it in a new tab scopes correctly
+    expect(link.attributes('href')).toBe('/?unreadable=1&library=5');
     expect(link.classes()).toEqual(expect.arrayContaining(['text-warning', 'text-xs']));
   });
 

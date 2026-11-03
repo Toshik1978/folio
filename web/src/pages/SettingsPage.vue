@@ -10,7 +10,7 @@
         :class="{ 'tab-active': tab === 'opds' }"
         @click="tab = 'opds'"
       >
-        OPDS
+        General
       </button>
       <button
         type="button"
@@ -23,8 +23,12 @@
       </button>
     </div>
 
-    <div v-if="tab === 'opds'">
+    <!-- v-show, not v-if: switching tabs must not discard unsaved form input -->
+    <div v-show="tab === 'opds'">
+      <h2 class="mb-3 text-lg font-semibold">OPDS</h2>
       <OpdsSettingsForm />
+      <h2 class="mt-8 mb-3 text-lg font-semibold">Telegram notifications</h2>
+      <TelegramSettingsForm />
     </div>
 
     <div v-if="tab === 'libraries'">
@@ -79,6 +83,7 @@ import LibraryStats from '@/components/LibraryStats.vue';
 import LibraryForm from '@/components/settings/LibraryForm.vue';
 import LibraryTable from '@/components/settings/LibraryTable.vue';
 import OpdsSettingsForm from '@/components/settings/OpdsSettingsForm.vue';
+import TelegramSettingsForm from '@/components/settings/TelegramSettingsForm.vue';
 import { useLibrary } from '@/composables/useLibrary';
 import { useLibraryActions } from '@/composables/useLibraryActions';
 import { useSyncStatus } from '@/composables/useSyncStatus';

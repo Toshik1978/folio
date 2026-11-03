@@ -243,4 +243,20 @@ describe('useSyncStatus', () => {
 
     s.disconnect();
   });
+
+  it('clears progress when the same library moves from a sync to a deep index', () => {
+    const s = useSyncStatus();
+    s.connect();
+    const es = MockEventSource.instances[MockEventSource.instances.length - 1];
+
+    es.emit('status', { running: true, current: 5, kind: 'sync', queued: [] });
+    es.emit('progress', { library: 5, processed: 812, total: 812 });
+    expect(s.currentProgress.value).toEqual({ processed: 812, total: 812 });
+
+    // The idle frame between the two runs was coalesced away.
+    es.emit('status', { running: true, current: 5, kind: 'deep_index', queued: [] });
+    expect(s.currentProgress.value).toBeNull();
+
+    s.disconnect();
+  });
 });

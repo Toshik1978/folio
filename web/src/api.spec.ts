@@ -17,11 +17,15 @@ import {
   fetchStats,
   fetchSyncStatus,
   fetchTagLetters,
+  fetchTelegramSettings,
+  fetchTelegramStatus,
   forcePurgeLibrary,
   reindexLibrary,
+  sendTelegramTest,
   syncLibrary,
   updateLibrary,
   updateSettings,
+  updateTelegramSettings,
 } from '@/api';
 import type { BookFilters } from '@/types';
 
@@ -191,6 +195,93 @@ describe('api', () => {
       const init = calledInit();
       expect(init.method).toBe('PUT');
       expect(init.body).toBe(JSON.stringify({ opds_user: 'reader', opds_pass: 'secret' }));
+    });
+
+    describe('telegram settings', () => {
+      const status = { last_success_at: null, last_failure_at: null, last_failure_error: '' };
+      const settings = {
+        enabled: true,
+        token_set: true,
+        token_last4: 'ENEL',
+        chat_id: '@test_channel',
+        topic_id: null,
+        silent: false,
+        status,
+      };
+
+      it('fetchTelegramSettings GETs /api/settings/telegram', async () => {
+        fetchMock.mockResolvedValue(res(settings));
+        const got = await fetchTelegramSettings();
+        expect(calledUrl()).toBe('/api/settings/telegram');
+        expect(calledInit().method).toBeUndefined();
+        expect(got).toEqual(settings);
+      });
+
+      it('updateTelegramSettings PUTs the body without bot_token when absent', async () => {
+        fetchMock.mockResolvedValue(res(settings));
+        const update = { enabled: true, chat_id: '@test_channel', topic_id: null, silent: false };
+        await updateTelegramSettings(update);
+        expect(calledUrl()).toBe('/api/settings/telegram');
+        const init = calledInit();
+        expect(init.method).toBe('PUT');
+        expect(init.body).toBe(JSON.stringify(update));
+        expect(JSON.parse(init.body as string)).not.toHaveProperty('bot_token');
+      });
+
+      it('updateTelegramSettings omits an empty bot_token', async () => {
+        fetchMock.mockResolvedValue(res(settings));
+        await updateTelegramSettings({
+          enabled: true,
+          bot_token: '',
+          chat_id: '@test_channel',
+          topic_id: 7,
+          silent: true,
+        });
+        expect(JSON.parse(calledInit().body as string)).not.toHaveProperty('bot_token');
+      });
+
+      it('updateTelegramSettings includes bot_token when given', async () => {
+        fetchMock.mockResolvedValue(res(settings));
+        await updateTelegramSettings({
+          enabled: true,
+          bot_token: '123456:TEST-token_SENTINEL',
+          chat_id: '@test_channel',
+          topic_id: null,
+          silent: false,
+        });
+        expect(JSON.parse(calledInit().body as string)).toEqual({
+          enabled: true,
+          bot_token: '123456:TEST-token_SENTINEL',
+          chat_id: '@test_channel',
+          topic_id: null,
+          silent: false,
+        });
+      });
+
+      it('sendTelegramTest POSTs to the test path', async () => {
+        fetchMock.mockResolvedValue(res({ ok: true, status }));
+        const got = await sendTelegramTest();
+        expect(calledUrl()).toBe('/api/settings/telegram/test');
+        expect(calledInit().method).toBe('POST');
+        expect(got).toEqual({ ok: true, status });
+      });
+
+      it('sendTelegramTest rejects with the error text of a 502', async () => {
+        fetchMock.mockResolvedValue(
+          res(
+            { error: 'Bad Request: chat not found' },
+            { ok: false, status: 502, statusText: 'Bad Gateway' },
+          ),
+        );
+        await expect(sendTelegramTest()).rejects.toThrow('Bad Request: chat not found');
+      });
+
+      it('fetchTelegramStatus GETs the status path', async () => {
+        fetchMock.mockResolvedValue(res(status));
+        const got = await fetchTelegramStatus();
+        expect(calledUrl()).toBe('/api/settings/telegram/status');
+        expect(got).toEqual(status);
+      });
     });
 
     it('syncLibrary POSTs to the per-library sync path', async () => {

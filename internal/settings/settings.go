@@ -11,6 +11,9 @@ import (
 	"github.com/go-chi/chi/v5"
 )
 
+// errorKey is the JSON field carrying an error message.
+const errorKey = "error"
+
 // Service is the credential store the settings endpoints drive.
 // *auth.Authenticator satisfies it.
 type Service interface {
@@ -88,5 +91,5 @@ func (h *Handler) writeJSON(w http.ResponseWriter, status int, v any) {
 }
 
 func (h *Handler) writeError(w http.ResponseWriter, status int, msg string) {
-	h.writeJSON(w, status, map[string]string{"error": msg})
+	h.writeJSON(w, status, map[string]string{errorKey: msg})
 }

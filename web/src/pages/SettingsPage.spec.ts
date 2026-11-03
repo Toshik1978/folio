@@ -9,6 +9,7 @@ import {
   fetchLibraries,
   fetchSettings,
   fetchSyncStatus,
+  fetchTelegramSettings,
   forcePurgeLibrary,
   reactivateLibrary,
   reindexLibrary,
@@ -17,6 +18,7 @@ import {
   updateLibrary,
   updateSettings,
 } from '@/api';
+import LibraryForm from '@/components/settings/LibraryForm.vue';
 import { useConfirm } from '@/composables/useConfirm';
 import { useLibrary } from '@/composables/useLibrary';
 import { useSyncStatus } from '@/composables/useSyncStatus';
@@ -43,6 +45,10 @@ vi.mock('@/api', () => ({
   syncLibrary: vi.fn(),
   reindexLibrary: vi.fn(),
   fetchSyncStatus: vi.fn(),
+  fetchTelegramSettings: vi.fn(),
+  updateTelegramSettings: vi.fn(),
+  sendTelegramTest: vi.fn(),
+  fetchTelegramStatus: vi.fn(),
   reactivateLibrary: vi.fn(),
   forcePurgeLibrary: vi.fn(),
   triggerReindexAll: vi.fn(),
@@ -68,6 +74,15 @@ describe('SettingsPage', () => {
     route.query = {};
     vi.mocked(fetchSettings).mockResolvedValue({ opds_user: 'reader', opds_pass_set: true });
     vi.mocked(fetchLibraries).mockResolvedValue([makeLibrary({ id: 5, type: 'inpx' })]);
+    vi.mocked(fetchTelegramSettings).mockResolvedValue({
+      enabled: false,
+      token_set: false,
+      token_last4: '',
+      chat_id: '',
+      topic_id: null,
+      silent: false,
+      status: { last_success_at: null, last_failure_at: null, last_failure_error: '' },
+    });
     vi.mocked(updateSettings).mockResolvedValue({ opds_user: 'newuser', opds_pass_set: true });
     vi.mocked(createLibrary).mockResolvedValue(makeLibrary());
     vi.mocked(updateLibrary).mockResolvedValue(makeLibrary());
@@ -107,6 +122,51 @@ describe('SettingsPage', () => {
     await flushPromises();
 
     expect(wrapper.find('[data-testid="library-card"] .badge').text()).toBe('Error');
+    wrapper.unmount();
+  });
+
+  it('labels the first tab General and renders both forms in it', async () => {
+    const wrapper = mountPage();
+    await flushPromises();
+    const tabs = wrapper.findAll('[role="tab"]');
+    expect(tabs[0].text()).toBe('General');
+    expect(tabs[1].text()).toBe('Libraries');
+    expect(wrapper.text()).toContain('Telegram notifications');
+    expect(wrapper.find('[data-testid="opds-save"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="tg-save"]').exists()).toBe(true);
+    expect(fetchTelegramSettings).toHaveBeenCalledOnce();
+    wrapper.unmount();
+  });
+
+  it('keeps ?tab=opds selecting the General tab', async () => {
+    route.query = { tab: 'opds' };
+    const wrapper = mountPage();
+    await flushPromises();
+    expect(wrapper.findAll('[role="tab"]')[0].classes()).toContain('tab-active');
+    expect(wrapper.find('[data-testid="tg-save"]').exists()).toBe(true);
+    wrapper.unmount();
+  });
+
+  it('hides the Telegram form on the Libraries tab', async () => {
+    // attached, so isVisible sees the v-show on the tab panel
+    const wrapper = mount(SettingsPage, { attachTo: document.body });
+    await flushPromises();
+    await wrapper.findAll('[role="tab"]')[1].trigger('click');
+    expect(wrapper.find('[data-testid="tg-save"]').isVisible()).toBe(false);
+    wrapper.unmount();
+  });
+
+  it('keeps unsaved General-tab input across a tab switch', async () => {
+    // attached, so isVisible sees the v-show on the tab panel
+    const wrapper = mount(SettingsPage, { attachTo: document.body });
+    await flushPromises();
+    await wrapper.find('[data-testid="tg-chat"]').setValue('@typed_not_saved');
+    await wrapper.findAll('[role="tab"]')[1].trigger('click');
+    await wrapper.findAll('[role="tab"]')[0].trigger('click');
+    const chat = wrapper.find('[data-testid="tg-chat"]');
+    expect(chat.isVisible()).toBe(true);
+    expect((chat.element as HTMLInputElement).value).toBe('@typed_not_saved');
+    expect(fetchTelegramSettings).toHaveBeenCalledOnce();
     wrapper.unmount();
   });
 
@@ -165,7 +225,7 @@ describe('SettingsPage', () => {
     const { libraries } = useLibrary();
     expect(libraries.value.map((l) => l.id)).toEqual([5]);
 
-    const textInputs = wrapper.findAll('input[type="text"]');
+    const textInputs = wrapper.findComponent(LibraryForm).findAll('input[type="text"]');
     await textInputs[0].setValue('Added'); // Name
     await textInputs[1].setValue('/new/path'); // Path
     await wrapper.find('[data-testid="library-save"]').trigger('click');

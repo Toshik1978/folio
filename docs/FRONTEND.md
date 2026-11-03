@@ -253,9 +253,16 @@ the theme picker, and a settings gear.
   and `/api/<entity>?letter=` fetches that bucket — which keeps them fast on
   large (e.g. Cyrillic) libraries. Each entry shows a name + book count and links
   back to the grid with an exact filter applied (e.g. `/?author==…`).
-- **Settings (`/settings`)** — a single page with OPDS settings (username +
-  write-only password with "set"/"not set" status) and library management (list
-  with status/last-sync/book-count, add-library form, and the per-library actions
+- **Settings (`/settings`)** — a single page with two tabs. **General** (tab id
+  `opds`, so `?tab=opds` links keep working) holds the OPDS settings (username +
+  write-only password with "set"/"not set" status) and the **Telegram
+  notifications** form (`TelegramSettingsForm`): on/off toggle, write-only bot
+  token (never shown; the placeholder reads `Stored (ends with <last4>)` once
+  set, and it is sent only when typed), channel ID, optional topic ID, silent
+  option, a **Send test message** button (enabled only when the saved settings
+  have a token and channel) and a status line with the last delivered / last
+  failed time. **Libraries** holds library management (list with
+  status/last-sync/book-count, add-library form, and the per-library actions
   described under [Notable component behaviors](#notable-component-behaviors)).
 
 ### Routing
@@ -299,7 +306,7 @@ BooksPage → BookCard.vue (grid; star rating) + sort control
             (the /books/:id detail overlay; "Fix match" opens the modal)
 SettingsPage (thin composition surface) → LibraryStats.vue (catalog overview +
             Re-index All slot) · settings/OpdsSettingsForm.vue ·
-            settings/LibraryTable.vue · settings/LibraryForm.vue
+            settings/TelegramSettingsForm.vue · settings/LibraryTable.vue · settings/LibraryForm.vue
 Shared: AlphabetSelector.vue, AlphabetList.vue
 Composables: useInfiniteScroll.ts, useTheme.ts, useLibrary.ts, useLibraryActions.ts,
              useFacetValues.ts, useSyncStatus.ts, useAlphabetBrowse.ts,
@@ -330,7 +337,7 @@ purge) with the toast + refresh handling, and `useFacetValues` loads the search
 bar's Format/Language pickers from `/api/facets`.
 
 Pages are **composition surfaces, not monoliths.** `SettingsPage` is a thin shell
-that delegates to `OpdsSettingsForm`, `LibraryStats`, `LibraryTable`, and
+that delegates to `OpdsSettingsForm`, `TelegramSettingsForm`, `LibraryStats`, `LibraryTable`, and
 `LibraryForm` (props down, events up) over `useLibraryActions` / `useSyncStatus`,
 with the row status/type formatting in the `libraryStatus` util. The book detail
 is split the same way — `BookDetailModal` / `BookDetail` so the grid can host it
@@ -426,8 +433,14 @@ filter. Covered by `SearchInput.spec.ts` (real memory-router tests).
   `unreadable_count > 0` shows a `text-warning text-xs` link "⚠ N unreadable"
   (`data-testid="library-unreadable"`; nothing for 0). Clicking it calls
   `setLibrary(library.id)` then routes to `/?unreadable=1`, the books page filtered
-  to that library's unreadable books. It stays enabled while the library syncs.
-  Covered by `LibraryTable.spec.ts`.
+  to that library's unreadable books. Its `href` is
+  `/?unreadable=1&library=<id>`, so opening it in a new tab scopes correctly too:
+  `BooksPage` adopts a `?library=` query as the selected library and drops it
+  from the URL. It stays enabled while the library syncs. Covered by
+  `LibraryTable.spec.ts` and `BooksPage.spec.ts`.
+- **The General tab stays mounted.** `SettingsPage` shows it with `v-show`, not
+  `v-if`, so switching to Libraries and back keeps unsaved OPDS and Telegram
+  input.
 - **`LibraryStats` is deliberately global.** The catalog-overview card at the top
   of the tab (`LibraryStats.vue` → `fetchStats()` with no `library` arg) always
   reports whole-catalog totals and **ignores the header library selector**

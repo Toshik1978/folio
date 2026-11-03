@@ -131,6 +131,31 @@ export interface SettingsUpdate {
   opds_pass?: string;
 }
 
+export interface TelegramDeliveryStatus {
+  last_success_at: string | null;
+  last_failure_at: string | null;
+  last_failure_error: string;
+}
+
+export interface TelegramSettings {
+  enabled: boolean;
+  token_set: boolean;
+  token_last4: string;
+  chat_id: string;
+  topic_id: number | null;
+  silent: boolean;
+  status: TelegramDeliveryStatus;
+}
+
+// bot_token is write-only: omit it to keep the stored token.
+export interface TelegramSettingsUpdate {
+  enabled: boolean;
+  bot_token?: string;
+  chat_id: string;
+  topic_id: number | null;
+  silent: boolean;
+}
+
 export interface NewLibrary {
   name: string;
   type: Library['type'];

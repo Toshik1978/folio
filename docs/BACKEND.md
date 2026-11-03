@@ -37,13 +37,16 @@ quota), and `LIBRARY_ROOT` (optional defense-in-depth: when set, the libraries
 API refuses to create or edit a library whose path resolves outside this base
 directory, so an admin — or a stolen admin session — cannot point a library at
 an arbitrary host path like `/etc` and serve files back out; empty leaves
-library paths unconstrained, matching historical behavior). OPDS Basic Auth credentials are **not** environment variables — they are
+library paths unconstrained, matching historical behavior). `TELEGRAM_API_BASE`
+(default `https://api.telegram.org`; testing only — an absolute `http`/`https`
+URL pointing the Telegram client at a local fake endpoint, trailing `/` trimmed;
+not for production use). OPDS Basic Auth credentials are **not** environment variables — they are
 configured at runtime via `PUT /api/settings` and stored hashed in the `settings`
 table (the `auth` package owns them). Structured logging uses the standard library `log/slog`. `run`
-returns a non-zero exit code on a failed dependency (DB open, cover store, sync
-engine init, or server error) so the container restarts cleanly; shutdown is
-graceful (drain in-flight requests within a 15s timeout, then stop the sync
-engine).
+returns a non-zero exit code on a failed dependency so the container restarts
+cleanly: `1` database open, `2` cover store, `3` sync engine init, `4` server
+error, `5` notifier init. Shutdown is graceful (drain in-flight requests within
+a 15s timeout, then stop the sync engine, then the notifier).
 
 ---
 
@@ -205,6 +208,7 @@ This groups `go test` output by suite, isolates fixtures per concern, and gives 
 | `internal/api` | `TestAPI` | REST handlers over a temp DB: `booksSuite`, `librariesSuite`, `listsSuite`, `metaSuite` |
 | `internal/opds` | `TestOPDS` | Catalog handlers: `authSuite` (Basic Auth), `downloadSuite`, `feedsSuite` (golden-file feed XML), `enrichSuite` (offline metadata backfill on the acquisition feed) |
 | `internal/db` | `TestDB` | `booksFilterSuite` — the Bob dynamic book filter + `scanBook`/`GetBook` column-drift guard |
+| `internal/notify` | `TestNotify` | Telegram notifier: settings store, Telegram client (against an `httptest` fake), delivery queue/status and the test send |
 | `internal/sync` | `TestSync` | Sync engine: `engineSuite`, `schedulerSuite`, `watcherSuite` (fsnotify debounce) |
 
 ### Fixtures & hermeticity
@@ -248,7 +252,11 @@ internal/
 │   ├── match.go           #   Fix Match endpoints (search/apply a Google volume)
 │   └── bookview.go        #   DB rows → API view (+ annotation sanitize)
 ├── settings/              # /api/settings handler (thin adapter over the auth
-│   └── settings.go        #   service; Service interface satisfied by *auth.Authenticator)
+│   ├── settings.go        #   service; Service interface satisfied by *auth.Authenticator)
+│   └── telegram.go        #   /api/settings/telegram handler; TelegramService iface
+│                          #   satisfied by *notify.Service
+├── notify/                # Opt-in Telegram owner notifications: settings store,
+│                          #   Bot API client, bounded send queue, delivery status
 ├── auth/                  # OPDS Basic Auth: credential storage, hashing,
 │   ├── auth.go            #   Authenticator: Middleware, View/SetCredentials, caches
 │   └── store.go           #   settings-table credential persistence
@@ -350,7 +358,12 @@ Nothing is written to disk. An `ingest.Enricher` wraps a
 `googlebooks.Client` built from `cfg.GoogleKey` (an empty key uses the anonymous
 quota) and backs on-view online enrichment; the cover store doubles as the
 `CoverSaver` for covers it fetches. One `auth.Authenticator` owns OPDS
-credentials and is shared by the settings and opds handlers. An `events.Broker`
+credentials and is shared by the settings and opds handlers. One
+`notify.Service` (built over the store, the Telegram client for
+`cfg.TelegramAPIBase` and `cfg.PublicURL`) delivers the opt-in Telegram messages;
+it is created right after the write guard, started after the sync engine, and
+stopped after it on shutdown. It backs the `/api/settings/telegram` handler
+through the `settings.TelegramService` interface. An `events.Broker`
 (created here) is shared by the sync engine (publisher) and the API SSE handler
 (subscriber). `main` assembles the per-library-type parser
 map the sync engine dispatches on, and `WithStatsObserver(catalogHandler)`
@@ -362,6 +375,9 @@ parser := ebook.NewStandardDispatcher()
 extractor := ingest.NewExtractor(database, log, parser, writeGuard)
 coverStore, _ := covers.NewStore(cfg.DataDir, extractor, ingest.NewCoverState(database))
 enricher := ingest.NewEnricher(database, googlebooks.NewClient(log, cfg.GoogleKey))
+notifier, _ := notify.New(log, notify.NewStore(database, writeGuard),
+    notify.NewClient(cfg.TelegramAPIBase, &http.Client{Timeout: 10 * time.Second}),
+    notify.WithPublicURL(cfg.PublicURL))
 authn := auth.New(log, database)
 authn.WarnIfUnprotected(ctx)
 broker := events.NewBroker()
@@ -370,6 +386,7 @@ syncEngine, _ := sync.New(
     log, database, parserMap, coverStore, extractor, // parsers get parser.Rank
     sync.WithEvents(broker), sync.WithStatsObserver(catalogHandler))
 syncEngine.Start()
+notifier.Start()
 
 srv := &http.Server{Addr: ":" + cfg.Port, Handler: server.New(log, server.Handlers{
     API: []server.Registrar{
@@ -378,6 +395,7 @@ srv := &http.Server{Addr: ":" + cfg.Port, Handler: server.New(log, server.Handle
         api.NewLibraries(log, database, syncEngine),
         api.NewSync(log, syncEngine, broker),
         settings.New(log, authn),
+        settings.NewTelegram(log, notifier),
     },
     OPDS: opds.New(log, database, coverStore, authn, cfg.PublicURL),
     MCP:  mcpserver.New(log, database, cfg.PublicURL, buildVersion()),
@@ -405,7 +423,9 @@ Verified import graph (`go list`):
 
 | Package | Imports (internal) |
 | :--- | :--- |
-| `config`, `logging`, `htmltext`, `covers`, `db`, `googlebooks`, `events`, `settings` | _(none — leaves)_ |
+| `config`, `logging`, `htmltext`, `covers`, `db`, `googlebooks`, `events` | _(none — leaves)_ |
+| `notify` | `db`, `db/dbq` |
+| `settings` | `notify` |
 | `bookfile` | `db/dbq`, `ebook` (format constants for Content-Type mapping) |
 | `ebook` | `htmltext` |
 | `auth` | `db/dbq` |
@@ -416,8 +436,9 @@ Verified import graph (`go list`):
 | `mcpserver` | `db`, `db/dbq`, `htmltext` |
 | `server` | `api` |
 
-`settings` imports no internal package at all (it drives the auth service purely
-through its own `Service` interface). `auth` is a near-leaf over `db/dbq`. Neither
+`settings` imports only `notify`, for the Telegram settings and status types in
+its `TelegramService` interface; it drives the auth service purely through its
+own `Service` interface. `auth` is a near-leaf over `db/dbq`. Neither
 `opds` nor `api` imports `covers` or `auth` — covers serving, cover saving, and
 OPDS Basic Auth all arrive as injected interfaces.
 
@@ -438,7 +459,7 @@ types the `/api/sync/events` SSE stream frames.
   needs next to the handler that uses them — `api`'s `SyncEngine`/`EventBroker`
   (`sync_handler.go`) and `CoverServer`/`MetadataExtractor`/`MetadataEnricher`/
   `CoverSaver` (`books_handler.go`), `opds`'s `CoverServer`/`Authenticator`
-  (`opds.go`), and `settings`'s `Service` (`settings.go`). There is no `deps.go`;
+  (`opds.go`), and `settings`'s `Service` (`settings.go`) and `TelegramService` (`telegram.go`). There is no `deps.go`;
   the shared per-handler response helpers live in `api/base.go`. Concrete
   implementations in `ingest`/`covers`/`auth`/`sync` satisfy them structurally, so
   `api` never imports `ingest`, `opds`/`settings` never import `auth`/`covers`, and

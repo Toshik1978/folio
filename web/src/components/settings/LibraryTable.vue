@@ -53,7 +53,7 @@
               {{ library.book_count }}
               <div v-if="library.unreadable_count > 0">
                 <a
-                  href="/?unreadable=1"
+                  :href="`/?unreadable=1&library=${library.id}`"
                   data-testid="library-unreadable"
                   class="text-warning text-xs"
                   @click.prevent="showUnreadable(library.id)"
