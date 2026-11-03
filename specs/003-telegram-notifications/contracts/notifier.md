@@ -46,6 +46,8 @@ func (p *TxPanic) CrashStack() []byte   // stack captured inside WithTx
 - the stack becomes `CrashStack()`;
 - the caller's place and detail become `via` ("web request handling (GET /api/books/{id})").
 
+`ingest.WorkerPanic{Value, Stack}` has the same shape (`Error`, `CrashPlace() == "book-file reading"`, `CrashStack`, no `Unwrap`). A Deep Index worker goroutine that panics outside the parser (whose panics the Dispatcher already recovers) is recovered in the pool, which cancels the other workers and re-raises `*WorkerPanic` on the calling goroutine once they have stopped. The engine's recover (`safeSync`, or `safeFill` for a post-sync fill) then reports it as `book-file reading` via `sync engine (<detail>)`, with the worker's stack.
+
 ### `internal/server`: HTTP recoverer
 
 ```go
@@ -82,17 +84,20 @@ Call sites in `engine.go` and `purge.go`:
 
 | Situation | Call |
 |---|---|
-| `safeSync` recovers a panic | `ReportCrash("sync engine", "library \"<name>\" <sync\|deep index>", r, debug.Stack())`, then `RunFinished{Status: RunFailed, CrashReported: true, Reason: "<panic text>"}` |
+| `safeSync` recovers a panic | `ReportCrash("sync engine", "library \"<name>\" <sync\|deep index>", r, debug.Stack())`, then `RunFinished{Status: RunFailed, CrashReported: <ReportCrash's result>, Reason: "<panic text>"}`. A crash folded into an open de-dup window (or dropped on a full lane) sent no message, so `CrashReported` is then false and the "failed" message speaks for itself |
 | `runSync` parser error (not `context.Canceled`) | `RunFinished{Kind: RunSync, Status: RunFailed, Reason: err.Error()}` |
 | no parser for the library type | `RunFinished{Kind: RunSync, Status: RunFailed, Reason: …}` |
 | `runSync` success (after the post-sync fill, if any) | `RunFinished{Kind: RunSync, Status: RunCompleted, BooksBefore, BooksRemoved, PerBookErrors, NewlyUnreadable, UnreadableSample, FillFailed}` from the fill's `DeepIndexResult` |
-| checkpoint skip | `RunFinished{Kind: RunSync, Status: RunCompleted}` (zero counts) |
+| the post-sync fill panics (`safeFill`) | `ReportCrash("sync engine", "library \"<name>\" post-sync fill", r, stack)`; the sync's outcome stays `RunCompleted` with `FillFailed: "post-sync fill panicked: <value>"` |
+| checkpoint skip | `RunFinished{Kind: RunSync, Status: RunCompleted}` (zero counts). A library in `error` state (its last sync or Deep Index failed) is never skipped: it is read in full, so a skip cannot report it recovered without reading anything |
+| `deepIndexLibrary` finds the read root unreachable (`ingest.CheckReadRoot`: the library path, or the `.inpx` file's directory for INPX, is missing, not a directory, or unreachable) | `RunFinished{Kind: RunDeepIndex, Status: RunFailed, Reason: "deep index: library root unreachable: …"}`, before any book is read |
 | `deepIndexLibrary` error (not cancel) | `RunFinished{Kind: RunDeepIndex, Status: RunFailed, Reason: err.Error()}` |
 | `deepIndexLibrary` success | `RunFinished{Kind: RunDeepIndex, Status: RunCompleted, PerBookErrors: res.Errors, NewlyUnreadable: res.Broken, UnreadableSample: …}` |
 | shutdown cancellation, library missing, `pending_purge` skip | nothing |
 | a purge completes (`checkPurge`, `RequestPurge`, `PurgeLibrary`) | `LibraryRemoved(id)` |
+| a panic in engine work outside `safeSync`: the purge sweep (`"purge sweep"`, which gocron would otherwise swallow), a background purge (`"library #<id> purge"`), a folder-watcher event (`"folder watcher"`) | `recoverCrash` / `reportPanic`: `ReportCrash("sync engine", "<detail>", r, stack)`; the work item is dropped and the process keeps running |
 
-The run-failure logs (`"sync failed"`, `"deep index failed"`, `"sync panicked"`) use `ErrorContext(logging.MarkReported(ctx), …)`, so they do not also enter the error window.
+The run-failure and crash logs (`"sync failed"`, `"deep index failed"`, `"sync panicked"`, `"engine task panicked"`) use `ErrorContext(logging.MarkReported(ctx), …)`, so they do not also enter the error window. So does the folder watcher's `"watch library"` Error when the root is missing or permission-denied (`fs.ErrNotExist`/`fs.ErrPermission`): the library's run reports it through its "failed" message. Other watch errors stay unmarked.
 
 ### `internal/logging`: error tap
 
@@ -194,3 +199,4 @@ var (
 
   At most 3 attempts per message (1 + `len(Backoff)`), all inside `MessageBudget`; each attempt's deadline is the earlier of the 10 s client timeout and the end of the budget. A wait that would overrun the budget drops the message and records the failure.
 - Ordering: the sender always drains the urgent lane (crash messages) before the batch lane, then waits `Spacing` after each message. After a message dropped on a 429 it waits `max(Spacing, min(RetryAfter, 10 min))` instead, so queued messages wait out the flood ban in their bounded lanes rather than each being sent into it and dropped.
+- Shutdown: once `Stop` has closed intake and both lanes are empty, the sender returns straight after the last message, without the spacing wait, so it does not eat into the `StopDrain` budget.

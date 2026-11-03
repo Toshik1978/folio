@@ -88,7 +88,7 @@ type Kind uint8 // KindTest, KindCrash, KindCrashRepeat, KindRunFailed, KindRunR
 type message struct { kind Kind; text string }
 ```
 
-Queues: `urgent chan message` (capacity 8, `KindCrash` only, always drained first) and `batch chan message` (capacity 32, every other kind). A full lane drops the new message and records the failure status. Each message gets 3 attempts in total within a 30 s budget; a 429 `retry_after` above 10 s, or one that would overrun the budget, drops it and records the failure.
+Queues: `urgent chan message` (capacity 8, `KindCrash` only, always drained first) and `batch chan message` (capacity 32, every other kind). A full lane drops the new message and records the failure status. Each message gets 3 attempts in total within a 30 s budget; a 429 `retry_after` above 10 s, or one that would overrun the budget, drops it and records the failure. The sender waits 3 s after each message, or `min(retry_after, 10 min)` after one dropped on a 429, so the queued messages wait out the flood ban. On shutdown it returns as soon as intake is closed and both lanes are empty, without a final wait.
 
 ## Outcome types (producers → notifier)
 
@@ -109,7 +109,7 @@ type RunOutcome struct {
     Kind            RunKind
     Status          RunStatus
     Reason          string // RunFailed: the error text
-    CrashReported   bool   // RunFailed came from a recovered panic already sent as a crash
+    CrashReported   bool   // RunFailed came from a recovered panic whose crash message was queued (false when it was de-duplicated or dropped)
     PerBookErrors   int    // RunCompleted: books left for retry (DeepIndexResult.Errors, incl. post-sync fill)
     FillFailed      string // RunSync completed but its post-sync fill could not complete: the error text
     NewlyUnreadable int    // total newly recorded unreadable books (DeepIndexResult.Broken)
@@ -123,8 +123,9 @@ The fields come from these existing types:
 
 | Field | Source |
 |---|---|
-| `Status`/`Reason` | `runSync` parser error, the "no parser" branch, `deepIndexLibrary` error, `safeSync` recover |
+| `Status`/`Reason` | `runSync` parser error, the "no parser" branch, a checkpoint skip (`RunCompleted`), `deepIndexLibrary` error or unreachable read root (`ingest.CheckReadRoot`), `safeSync` recover |
 | `PerBookErrors` | `ingest.DeepIndexResult.Errors` (Deep Index, or the sync's post-sync fill) |
+| `FillFailed` | the post-sync fill's error, or `post-sync fill panicked: <value>` when `safeFill` recovered a panic |
 | `NewlyUnreadable` | `ingest.DeepIndexResult.Broken` |
 | `UnreadableSample` | new `ingest.DeepIndexResult.NewlyBroken []BrokenBook` (≤5) |
 | `BooksBefore` | `CountBooksByLibrary` (existing sqlc query) read under the guard before `parser.Sync` |
@@ -151,6 +152,8 @@ The fields come from these existing types:
 ```
 
 - The state is per library, not per run kind (R6). The "failed" and "recovered" messages name the kind of the run that caused the transition.
+- `CrashReported=true` only when `ReportCrash` queued the crash message. A crash that was only counted in an open de-dup window, or dropped on a full lane, gives `CrashReported=false`, so the first failure still sends "failed".
+- A checkpoint-skipped sync is a `RunCompleted`, but a library whose last run failed is in `error` state in the database and is never skipped: it is read in full, so only a run that actually read the library can take it back to HEALTHY.
 - Messages that do not depend on the state are evaluated on every `RunCompleted`, independently of the transition:
   - unreadable summary: `NewlyUnreadable > 0`;
   - mass removal: sync only, `BooksRemoved >= 20 && BooksRemoved*10 >= BooksBefore && BooksBefore > 0`;
@@ -164,7 +167,7 @@ The fields come from these existing types:
 ```go
 type crashEntry struct {
     first      time.Time
-    place, via string // via = "<outer place> (<detail>)" when TxPanic; "" otherwise
+    place, via string // via = "<outer place> (<detail>)" when the value carries its own place (db.TxPanic, ingest.WorkerPanic); "" otherwise
     detail     string
     frame      string // firstAppFrame of the first occurrence
     text       string // the first occurrence's error text (not normalized), capped at 300 chars
@@ -179,8 +182,9 @@ Key: `place + "|" + firstAppFrame + "|" + normalize(errorText)`. `normalize` map
   OPEN   ── crash K, now < first+1h ─────────▶ OPEN{suppressed+1}              send nothing
   OPEN   ── tick, now ≥ first+1h, suppressed>0 ▶ (deleted)                     send "repeated N more times"
   OPEN   ── tick, now ≥ first+1h, suppressed=0 ▶ (deleted)                     send nothing
+  OPEN   ── crash K, now ≥ first+1h (before the tick) ▶ OPEN{first=now, suppressed=0}   send "repeated N more times" if suppressed>0, then the crash message now
   any    ── notifications switched off ────────▶ (cleared)
-  map full (256) ── new key ───────────────────▶ not stored                    send crash message now (no de-dup)
+  map full (256) ── new key ───────────────────▶ not stored                    send crash message now (no de-dup); record the overflow as the last failure
 ```
 
 SC-002 holds: the same crash repeated any number of times within an hour gives at most 2 messages.

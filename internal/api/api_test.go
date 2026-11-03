@@ -82,7 +82,9 @@ type fakeEnricher struct {
 	ok         bool
 	called     int
 	candidates []metasearch.Volume
+	searchErr  error
 	applyMeta  ebook.Metadata
+	applyErr   error
 	lastQuery  string
 	lastSource string
 	lastVolume string
@@ -95,13 +97,13 @@ func (f *fakeEnricher) Enrich(context.Context, int64) (ebook.Metadata, bool, err
 
 func (f *fakeEnricher) Search(_ context.Context, query string) ([]metasearch.Volume, error) {
 	f.lastQuery = query
-	return f.candidates, nil
+	return f.candidates, f.searchErr
 }
 
 func (f *fakeEnricher) ApplyMatch(_ context.Context, source, id string) (ebook.Metadata, error) {
 	f.lastSource = source
 	f.lastVolume = id
-	return f.applyMeta, nil
+	return f.applyMeta, f.applyErr
 }
 
 // baseSuite wires a fresh folio DB, cover store, fake engine, and router.

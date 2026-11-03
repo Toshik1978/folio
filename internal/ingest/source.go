@@ -34,6 +34,37 @@ type resolver struct {
 	entryLimit int64
 }
 
+// errRootNotDir reports a library root that exists but is not a directory.
+var errRootNotDir = errors.New("ingest: library root is not a directory")
+
+// readRoot returns the directory a library's book files are read from: the
+// directory holding the .inpx bundle (and its sibling archives) for INPX, and
+// library.Path for every other library type.
+func readRoot(library dbq.Library) string {
+	if library.Type == libtype.INPX {
+		return filepath.Dir(library.Path)
+	}
+
+	return library.Path
+}
+
+// CheckReadRoot reports whether the directory library's book files are read
+// from can be reached: it stats it (never opening it for writing) and returns
+// an error naming the root when it is missing, not a directory, or not reachable through its parents.
+// A run over an unreachable root would otherwise fail every book one by one.
+func CheckReadRoot(library dbq.Library) error {
+	root := readRoot(library)
+	fi, err := os.Stat(root)
+	if err != nil {
+		return fmt.Errorf("library root unreachable: %w", err)
+	}
+	if !fi.IsDir() {
+		return fmt.Errorf("library root unreachable: %w: %s", errRootNotDir, root)
+	}
+
+	return nil
+}
+
 // newResolver returns the production resolver.
 func newResolver() resolver { return resolver{entryLimit: ebook.MaxEntryBytes} }
 
@@ -149,7 +180,7 @@ func (resolver) archiveEntry(library dbq.Library, file dbq.BookFile) (archivePat
 	if !found || archiveName == "" || inner == "" {
 		return "", "", fmt.Errorf("malformed archive source path %q", file.SourcePath)
 	}
-	root := filepath.Dir(library.Path)
+	root := readRoot(library)
 	archivePath = filepath.Join(root, filepath.FromSlash(archiveName))
 	if !withinRoot(root, archivePath) {
 		return "", "", fmt.Errorf("%w: %q", errPathEscape, file.SourcePath)

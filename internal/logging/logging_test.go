@@ -11,6 +11,7 @@ import (
 func TestLogging(t *testing.T) {
 	suite.Run(t, new(loggingSuite))
 	suite.Run(t, new(reportedSuite))
+	suite.Run(t, new(sinkSuite))
 }
 
 type loggingSuite struct {

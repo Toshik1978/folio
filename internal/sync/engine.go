@@ -808,7 +808,9 @@ func (e *Engine) setCurrentKind(kind reqKind) {
 // unchecked book, with progress streamed like a sync. It is never
 // checkpoint-gated and does not hold the whole-run write guard, because the
 // indexer takes the guard per batch. On success it emits library{id,"active"}
-// so clients refetch; on failure it marks the library errored.
+// so clients refetch; on failure, including a library root that cannot be
+// reached (see ingest.CheckReadRoot), it marks the library errored and reports
+// a failed run.
 func (e *Engine) deepIndexLibrary(ctx context.Context, id int64) {
 	src, err := dbq.New(e.db).GetLibrary(ctx, id)
 	if err != nil {
@@ -821,16 +823,19 @@ func (e *Engine) deepIndexLibrary(ctx context.Context, id int64) {
 		return // do not index libraries awaiting deletion
 	}
 
+	// An unreachable root fails the run as a whole, rather than as one
+	// retryable read error per book.
+	if err = ingest.CheckReadRoot(src); err != nil {
+		e.failDeepIndex(ctx, src, fmt.Errorf("deep index: %w", err))
+		return
+	}
+
 	reporter, finish := e.beginProgress(id)
 	res, err := e.runDeepIndex(ctx, src, ingest.DeepIndexAll(), reporter)
 	finish() // emit the final frame even if the run errored
 	if err != nil {
 		if !errors.Is(err, context.Canceled) {
-			// Marked: the run-failed notification below stands in for the tapped log record.
-			e.log.ErrorContext(logging.MarkReported(ctx), "deep index failed",
-				slog.Int64("library", id), slog.Any("error", err))
-			e.markError(context.Background(), id, err)
-			e.notifyRun(runOutcome(src, notify.RunDeepIndex, notify.RunFailed, err.Error()))
+			e.failDeepIndex(ctx, src, err)
 		}
 
 		return
@@ -839,6 +844,16 @@ func (e *Engine) deepIndexLibrary(ctx context.Context, id int64) {
 	out := runOutcome(src, notify.RunDeepIndex, notify.RunCompleted, "")
 	addDeepIndexCounts(&out, res)
 	e.notifyRun(out)
+}
+
+// failDeepIndex logs a failed Deep Index run, marks the library errored, and
+// reports the failed run.
+func (e *Engine) failDeepIndex(ctx context.Context, src dbq.Library, err error) {
+	// Marked: the run-failed notification below stands in for the tapped log record.
+	e.log.ErrorContext(logging.MarkReported(ctx), "deep index failed",
+		slog.Int64("library", src.ID), slog.Any("error", err))
+	e.markError(context.Background(), src.ID, err)
+	e.notifyRun(runOutcome(src, notify.RunDeepIndex, notify.RunFailed, err.Error()))
 }
 
 // runDeepIndex runs the deep indexer over one library with the given scope and

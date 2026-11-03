@@ -12,13 +12,16 @@
 
 ```
 main() → run():
-  godotenv.Load() → config.MustParse() → logging.New()
-  → db.Open() → ebook.NewDispatcher(epub,fb2,mobi,pdf) → ingest.NewExtractor(…,parser,guard)
+  godotenv.Load() → config.MustParse() → logging.New() (base logger)
+  → db.Open() → db.NewWriteGuard() → notify.New(base, store, client, …)
+  → logging.WithErrorSink(base, notifier) (tapped logger `log`, used from here on)
+  → ebook.NewStandardDispatcher(ebook.WithCrashReporter(notifier)) → ingest.NewExtractor(…,parser,guard)
   → covers.NewStore() → ingest.NewEnricher()
   → auth.New().WarnIfUnprotected() → events.NewBroker() → api.NewCatalog()
-  → sync.New(…, parserMap, …, WithStatsObserver(catalog)).Start()
+  → sync.New(…, parserMap, …, WithStatsObserver(catalog), WithNotifier(notifier)).Start()
+  → notifier.Start()
   → http.Server{Handler: server.New(log, server.Handlers{API:[…], OPDS:…}, env, noColor)}
-  → serve(): ListenAndServe until SIGINT/SIGTERM → graceful Shutdown + Engine.Stop
+  → serve(): ListenAndServe until SIGINT/SIGTERM → graceful Shutdown + Engine.Stop + notifier.Stop
 ```
 
 `main()` is a thin `os.Exit(run())`; `run` is the composition root (see
@@ -208,7 +211,8 @@ This groups `go test` output by suite, isolates fixtures per concern, and gives 
 | `internal/api` | `TestAPI` | REST handlers over a temp DB: `booksSuite`, `librariesSuite`, `listsSuite`, `metaSuite` |
 | `internal/opds` | `TestOPDS` | Catalog handlers: `authSuite` (Basic Auth), `downloadSuite`, `feedsSuite` (golden-file feed XML), `enrichSuite` (offline metadata backfill on the acquisition feed) |
 | `internal/db` | `TestDB` | `booksFilterSuite` — the Bob dynamic book filter + `scanBook`/`GetBook` column-drift guard |
-| `internal/notify` | `TestNotify` | Telegram notifier: settings store, Telegram client (against an `httptest` fake), delivery queue/status, the test send and crash de-duplication |
+| `internal/notify` | `TestNotify` | Telegram notifier: `configSuite`, `storeSuite` (settings store), `clientSuite` (Telegram client against an `httptest` fake), `statusSuite`, `formatSuite`, `queueSuite` (delivery queue), `serviceSuite`, `crashSuite` (crash de-duplication), `runsSuite`, `errWindowSuite`, `leakSuite` |
+| `internal/logging` | `TestLogging` | `loggingSuite` (logger construction), `reportedSuite` (`MarkReported`), `sinkSuite` (the `WithErrorSink` tap) |
 | `internal/sync` | `TestSync` | Sync engine: `engineSuite`, `schedulerSuite`, `watcherSuite` (fsnotify debounce) |
 
 ### Fixtures & hermeticity
@@ -363,10 +367,16 @@ quota) and backs on-view online enrichment; the cover store doubles as the
 credentials and is shared by the settings and opds handlers. One
 `notify.Service` (built over the store, the Telegram client for
 `cfg.TelegramAPIBase` and `cfg.PublicURL`) delivers the opt-in Telegram messages;
-construction order is base logger, database and write guard, notifier, then the
-dispatcher, sync engine and server: the notifier is created before the dispatcher
-because it is injected into all three producers (`ebook.WithCrashReporter`,
-`sync.WithNotifier`, `server.Handlers.Crashes`). It is started after the sync
+construction order is base logger, database and write guard, notifier, tapped
+logger (`logging.WithErrorSink(base, notifier)`), then the dispatcher, sync
+engine and server. Only `db.Open` and `notify.New` keep the untapped base logger
+(the notifier's own records must never loop back into it); every other
+component logs through the tapped one, so an Error not already reported by a
+producer (`logging.MarkReported`) reaches the error window.
+
+The notifier is created before the dispatcher because it is injected into all
+three producers (`ebook.WithCrashReporter`, `sync.WithNotifier`,
+`server.Handlers.Crashes`). It is started after the sync
 engine and stopped after it on shutdown. It backs the `/api/settings/telegram` handler
 through the `settings.TelegramService` interface. An `events.Broker`
 (created here) is shared by the sync engine (publisher) and the API SSE handler
@@ -376,9 +386,10 @@ lets the engine notify the handler when stats change so it invalidates its cache
 
 ```go
 writeGuard := db.NewWriteGuard()
-notifier, _ := notify.New(log, notify.NewStore(database, writeGuard),
+notifier, _ := notify.New(base, notify.NewStore(database, writeGuard),
     notify.NewClient(cfg.TelegramAPIBase, &http.Client{Timeout: 10 * time.Second}),
     notify.WithPublicURL(cfg.PublicURL))
+log := logging.WithErrorSink(base, notifier)
 parser := ebook.NewStandardDispatcher(ebook.WithCrashReporter(notifier))
 extractor := ingest.NewExtractor(database, log, parser, writeGuard)
 coverStore, _ := covers.NewStore(cfg.DataDir, extractor, ingest.NewCoverState(database))
@@ -418,8 +429,8 @@ effect on the next OPDS request without a restart — there is no `OnSettingsCha
 
 ### Dependency rules
 
-`server` imports only the `api` package — for the built-in `Health` handler and
-nothing else. The composition root builds every concrete handler and hands them in
+`server` imports only the `api` package — for the built-in `Health` handler — and
+`logging`, for the `MarkReported` error-tap marker. The composition root builds every concrete handler and hands them in
 via `server.Handlers{API: []Registrar, OPDS: Registrar}`, so `server` needs no
 handle on `opds`, `settings`, `sync`, or the leaves. Each handler package declares
 the narrow interfaces it consumes (`opds.CoverServer` / `opds.Authenticator`,
@@ -436,11 +447,11 @@ Verified import graph (`go list`):
 | `ebook` | `htmltext` |
 | `auth` | `db/dbq` |
 | `ingest` | `db`, `db/dbq`, `ebook`, `htmltext`, `googlebooks` |
-| `sync` | `db/dbq`, `ingest`, `events`, `notify`, `logging` |
+| `sync` | `db`, `db/dbq`, `events`, `ingest`, `libtype`, `logging`, `notify` |
 | `api` | `db`, `db/dbq`, `sync`, `bookfile`, `htmltext`, `ebook`, `googlebooks`, `events` |
 | `opds` | `db`, `db/dbq`, `bookfile` |
 | `mcpserver` | `db`, `db/dbq`, `htmltext` |
-| `server` | `api` |
+| `server` | `api`, `logging` |
 
 `settings` imports only `notify`, for the Telegram settings and status types in
 its `TelegramService` interface; it drives the auth service purely through its
@@ -470,6 +481,20 @@ types the `/api/sync/events` SSE stream frames.
   implementations in `ingest`/`covers`/`auth`/`sync` satisfy them structurally, so
   `api` never imports `ingest`, `opds`/`settings` never import `auth`/`covers`, and
   `server` stays free of leaf imports.
+
+### Logging tap
+
+`logging.WithErrorSink(base, sink)` wraps a logger's handler in a `sinkHandler`
+that shares the original handler (and so its output mutex): log output is
+byte-identical with or without the tap. After writing the line, every record at
+`slog.LevelError` or above is handed to the `ErrorSink` as a clone, with the
+attrs added through `With`/`WithGroup` already baked in, unless the context was
+marked with `logging.MarkReported`. Sinks must not block or log through the
+tapped logger.
+
+Contributor rule: a new Error log on a path that already notifies (a run failure,
+a crash) must log with a context marked by `logging.MarkReported(ctx)`, otherwise
+the owner receives the failure twice.
 
 ### `internal/mcpserver`
 

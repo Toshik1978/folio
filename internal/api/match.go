@@ -52,7 +52,7 @@ func (h *BooksHandler) searchMatch(w http.ResponseWriter, r *http.Request) {
 	}
 	vols, err := h.enricher.Search(r.Context(), q)
 	if err != nil {
-		h.log.Error("match search", slog.Any("error", err))
+		h.log.Warn("match search", slog.Any("error", err))
 		h.writeError(w, http.StatusBadGateway, "search failed")
 		return
 	}
@@ -115,7 +115,10 @@ func (h *BooksHandler) applyMatch(w http.ResponseWriter, r *http.Request) {
 
 	meta, err := h.enricher.ApplyMatch(r.Context(), source, volumeID)
 	if err != nil {
-		h.log.Error("apply match", slog.Int64("book", id), slog.Any("error", err))
+		// ApplyMatch only talks to the metadata provider (no DB access), so a
+		// failure here is an upstream miss, not a Folio fault: Warn keeps it out
+		// of the error-summary notifications. DB faults above stay at Error.
+		h.log.Warn("apply match", slog.Int64("book", id), slog.Any("error", err))
 		h.writeError(w, http.StatusBadGateway, "apply failed")
 		return
 	}

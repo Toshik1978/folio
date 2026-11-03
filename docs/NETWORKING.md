@@ -240,7 +240,9 @@ and the Fix Match feature (`internal/googlebooks`, stdlib `net/http`).
   Google answer that arrives near the deadline — or a client disconnect — can't
   roll back a commit whose data would just be re-fetched on the next view. A
   failed or slow lookup leaves the book with the metadata it already had and
-  never blocks catalog browsing.
+  never blocks catalog browsing. Transport failures and failed Fix-Match
+  searches are logged at **Warn**, not Error: an online miss is expected and
+  must not count toward the Telegram error summary.
 - **Rate limiting (429):** a `429 Too Many Requests` from Google trips a
   process-level **cooldown** (`rateLimitCooldown`, 5 min) during which further
   enrichment/Fix-Match requests short-circuit to `ErrRateLimited` *without* an
@@ -261,11 +263,20 @@ and enables notifications (`/api/settings/telegram`).
 - **What's sent:** a message prefixed with the instance identity (so several
   instances can share one channel) and its text. The kinds are: the test message
   sent from the settings screen; recovered crashes; a library run that failed
-  and the later run that recovered; newly unreadable book files; and a sync that
-  removed many books. A message carries library names, run kinds, counts,
+  and the later run that recovered; newly unreadable book files; a sync that
+  removed many books; and an error summary. A message carries library names, run kinds, counts,
   error or panic texts (each capped at 300 characters; they may include file
   paths inside a library), one code frame for a crash, book IDs or links to
   the instance, and short reason labels.
+- **Error summary:** Error-level log records not already reported as a crash
+  or a failed run are grouped into one `<N> error(s) in the last 5 minutes`
+  message per window, listing at most 5 entries. An entry is the record's time,
+  its log message and its `error` text (as is, capped at 300 characters, so it
+  may include file paths inside a library); no other log attribute is used. A
+  completed run that left books for retry, or whose description fill after a
+  sync failed, adds one line naming the library. The summary never carries book
+  titles, book contents, credentials, or the bot token. An empty window sends
+  nothing; an open window is flushed on shutdown.
 - **Never sent:** book titles, authors or descriptions taken from catalog
   metadata, book contents, per-book read detail, raw request paths or queries,
   credentials, or the bot token.

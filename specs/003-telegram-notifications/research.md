@@ -80,6 +80,7 @@ Each topic has a Decision, a Rationale and the Alternatives considered. Telegram
   - The notifier caches the active `Config` in an `atomic.Pointer`, loaded at start and swapped on save. Pending messages read it at send time ("settings in force when sent").
   - The HTTP adapter is a new `settings.TelegramHandler` over a consumer-declared `settings.TelegramService` interface, mirroring how `settings.Handler` drives `auth` through `settings.Service`. It is registered as one more `server.Registrar` in `main.go`.
 - **Rationale**: no schema change (Principle IV) and no new sqlc query. The write guard keeps the process-wide single-writer rule, which `auth.writeCredentials` predates. The separate handler keeps `GET/PUT /api/settings` and its tests and SPA types unchanged.
+- **Note (later fix)**: `auth.writeCredentials` no longer predates the rule: a separate fix moved the OPDS credentials save under the same write guard with a 2 s budget, so `PUT /api/settings` now also answers 503 `busy, try again` during a sync. The Telegram handler is unaffected.
 - **Alternatives**:
   - Extending `GET/PUT /api/settings` with Telegram fields: rejected. It couples two unrelated services in one handler, and the `settings.Service` interface would grow Telegram methods that `auth` would have to satisfy.
   - A new `notification_settings` table: rejected, because a migration for five scalars buys nothing.
@@ -99,12 +100,18 @@ Each topic has a Decision, a Rationale and the Alternatives considered. Telegram
   - The `ebook` hook is the only point that sees every parser crash: Deep Index, the on-view fill, the lazy cover flow and the folder import all go through `Dispatcher.run`. An injected interface whose name carries no format word keeps the public surface format-agnostic.
   - `WithTx` re-panics, so the panic is really recovered (or not) further up. Reporting there would send two messages for one crash, under different places so de-dup would not merge them. It would also report a crash that then kills the process. The wrapper keeps "database write path" as the place while reporting exactly once, from the recover that actually keeps the process alive.
   - `ErrAbortHandler` stays intact: the recoverer checks it with `errors.Is` (through `TxPanic.Unwrap`) and re-panics the original value, so `net/http`'s equality check still matches.
+
+    **Superseded:** re-panicking the original value only matches when it *is* the sentinel; a wrapped one (e.g. inside a `*db.TxPanic`) failed `net/http`'s equality check, so `net/http` treated it as a real panic and logged its stack instead of aborting quietly. The recoverer now re-panics the bare `http.ErrAbortHandler` whenever `errors.Is` matches.
   - The route pattern is used instead of the raw path, so search queries and IDs never reach the message.
 - **Alternatives**:
   - Report from `ingest`'s classification of `*PanicError`: rejected, because it has no stack and misses the folder import path.
   - A global crash hook variable: rejected by Principle VI (no globals).
   - Inject a reporter into `WriteGuard` and mark the value as reported: needs the same wrapper anyway, and reports before knowing whether the panic is recovered.
   - Keep chi's Recoverer and add a second middleware: two recovers on the same path, and chi's still prints to stderr outside slog.
+- **Superseded (in part):** four points were not enough to keep every panic from killing the process or going unreported. Shipped in addition:
+  - `sync.Engine.recoverCrash` / `reportPanic` guard engine work that runs outside `safeSync`, reported as place `sync engine` with a task detail: the post-sync fill (`library "<name>" post-sync fill`, which must not unwind into `safeSync` and turn a committed sync into a failed one), the purge sweep (gocron recovers job panics silently), a background purge, and each folder-watcher event (`folder watcher`, via `watcher.handleSafely`).
+  - A Deep Index worker goroutine that panics outside the parser would have killed the process. The pool recovers it and re-panics `*ingest.WorkerPanic{Value, Stack}` on the calling goroutine; like `TxPanic` it carries `CrashPlace()` (`book-file reading`) and `CrashStack()`, so the engine's recover reports it with the worker's stack, via the engine place.
+  - `ReportCrash` returns whether it queued the crash message, so callers can tell a sent crash from a counted or dropped one (see R6).
 
 ## R5. Crash de-duplication
 
@@ -131,8 +138,13 @@ Each topic has a Decision, a Rationale and the Alternatives considered. Telegram
     - "no parser for library type";
     - the Deep Index returned a non-cancel error;
     - a panic recovered in `safeSync`. The crash message stands in for "failed": `CrashReported: true` sets the state without a second message.
+
+      **Superseded:** when the crash was folded into an open de-dup window (or dropped on a full lane) no crash message went out, and the failure was silent. `CrashReported` is now `ReportCrash`'s result (whether the crash message was queued), so "failed" is sent unless a crash message really stands in for it.
+    - **Added in convergence:** a Deep Index whose read root (`ingest.CheckReadRoot`: the library path, or the `.inpx` file's directory) is missing, not a directory or unreachable. It is checked before any book is read, because otherwise every book failed one by one and the run *completed* with per-book errors, never reporting the library as failing.
   - A shutdown cancellation reports nothing.
   - A checkpoint-skipped sync counts as a success: the artifact was reachable and unchanged since the last good run, because failed runs store no checkpoint.
+
+    **Superseded:** "failed runs store no checkpoint" does not cover a failed Deep Index, or a forced sync that failed on an unchanged file: the checkpoint still matches, so the next skip reported a recovery (and set the library back to active) without reading anything. A library in `error` state is now never skipped; it is read in full, so a recovery is only reported after a run that actually read the library.
   - A post-sync fill failure is not a failed run: the sync result stands, as today, and the failure becomes one error-window line.
   - A purged library is forgotten without a "recovered" message.
 - **Rationale**: spec FR-007, SC-003, and the edge cases (deleted library, and a completed run with per-book errors counts as a success).
@@ -163,7 +175,11 @@ Each topic has a Decision, a Rationale and the Alternatives considered. Telegram
   - 10 s timeout per attempt (`http.Client.Timeout`).
   - A full queue drops the new message and records "queue full: N message(s) dropped" as the last failure, with no extra message (FR-011).
   - `Stop()` flushes open windows into the queue and gives the sender 5 s, then drops the rest.
+
+    **Superseded (detail):** the sender still waited the 3 s spacing after the last message, eating most of the 5 s drain and the container's stop grace. It now returns as soon as intake is closed and both lanes are empty.
 - **Rationale**: FR-013, FR-014 and SC-002. The 3 s spacing turns a burst of 10 distinct crashes into 30 s of delivery instead of a 429 storm. The urgent lane means a crash waits at most for the message in flight (≤ 30 s) plus the spacing, never for a full batch backlog, so SC-002's 1 minute holds while Telegram is reachable. Dropping on a long `retry_after` keeps the "well under a minute" intent instead of stalling every later message.
+
+  **Superseded:** dropping one message did not stop the next ones from being sent straight into the same flood ban, each dropped in turn and prolonging the ban. After a message dropped on a 429 the sender now waits `max(Spacing, min(retry_after, 10 min))` before the next send, so later messages wait in their bounded lanes (overflow is still dropped and counted). The per-message policy (3 attempts, 10 s cap, 30 s budget) is unchanged; during a flood ban a crash can wait longer than SC-002's minute, which Telegram would refuse anyway.
 - **Alternatives**:
   - Unbounded queue: forbidden (FR-014).
   - Retrying on all 4xx: pointless; a wrong chat stays wrong.
@@ -196,6 +212,8 @@ Each topic has a Decision, a Rationale and the Alternatives considered. Telegram
   - Two existing Error logs on online-enrichment paths move to Warn:
     - the `googlebooks` transport failure (`internal/googlebooks/logger.go`);
     - the Fix Match search failure (`internal/api/match.go`, "match search").
+
+    **Superseded (extended):** a third moved in convergence: the Fix Match apply failure when the provider call fails (`internal/api/match.go`, "apply match" after `ApplyMatch`). That call makes no DB access, so its failure is an upstream miss; the handler's DB faults stay at Error.
   - Unreadable files stay at Warn, as today. They reach the owner only through the run summary.
   - Delivery failures are logged at Warn on the base logger and never notified.
 - **Rationale**: FR-011 and FR-017. The enrichment behaviour (responses, retries) is unchanged; only the log level moves.

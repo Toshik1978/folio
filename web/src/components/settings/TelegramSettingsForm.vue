@@ -143,9 +143,10 @@ const testTitle = computed(() => {
   return dirty.value ? 'Save your changes first' : '';
 });
 
-const tokenPlaceholder = computed(() =>
-  tokenSet.value ? `Stored (ends with ${tokenLast4.value})` : 'Bot token from @BotFather',
-);
+const tokenPlaceholder = computed(() => {
+  if (!tokenSet.value) return 'Bot token from @BotFather';
+  return tokenLast4.value ? `Stored (ends with ${tokenLast4.value})` : 'Stored';
+});
 
 function formatTime(iso: string): string {
   return new Date(iso).toLocaleString();
@@ -220,11 +221,12 @@ async function save(): Promise<void> {
   try {
     const update: TelegramSettingsUpdate = {
       enabled: enabled.value,
-      chat_id: chatId.value,
+      chat_id: chatId.value.trim(),
       topic_id: topic,
       silent: silent.value,
     };
-    if (botToken.value) update.bot_token = botToken.value;
+    const token = botToken.value.trim();
+    if (token) update.bot_token = token;
     apply(await updateTelegramSettings(update));
     toast.success('Telegram settings saved');
   } catch (err) {

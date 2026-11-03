@@ -1,6 +1,6 @@
 # Contract: REST/JSON, Telegram settings
 
-All routes are new and additive, mounted under `/api` by `settings.TelegramHandler.Register`. The existing `GET/PUT /api/settings` (OPDS) is unchanged.
+All routes are new and additive, mounted under `/api` by `settings.TelegramHandler.Register`. The existing `GET/PUT /api/settings` (OPDS) is unchanged by this feature. (A separate later fix moved its credentials save under the write guard, so its `PUT` now also answers 503 `busy, try again` while a sync holds the guard.)
 
 The routes inherit the `/api` group middleware:
 - the external authenticator;
@@ -102,7 +102,7 @@ func NewTelegram(log *slog.Logger, svc TelegramService) *TelegramHandler
 func (h *TelegramHandler) Register(r chi.Router)
 ```
 
-Error mapping: `errors.As(*notify.ValidationError)` → 400; `errors.Is(context.DeadlineExceeded)` → 503; `errors.Is(notify.ErrNotConfigured)` → 409; `errors.As(*notify.APIError)` or any other send error → 502.
+Error mapping: `errors.As(*notify.ValidationError)` → 400; `errors.Is(notify.ErrNotConfigured)` → 409; `errors.Is(context.DeadlineExceeded)` → 503 on PUT only (a test send never takes the write guard, so its timeout is a network error → 502); `errors.As(*notify.APIError)` or any other send error → 502.
 
 Logging: request bodies are never logged. A failed test send (502) is logged at **Warn**, never Error, because the handler's logger is the tapped one after Phase C and a delivery failure must not reach the error window (FR-011, US4-AS3). `ErrNotConfigured` (409) and validation errors (400) are not logged. Store failures (500) stay at Error.
 
@@ -115,6 +115,6 @@ Logging: request bodies are never logged. A failed test send (502) is logged at 
   - `enabled: true` without a chat returns 400;
   - an invalid token format returns 400;
   - a guard timeout returns 503.
-- `POST /test`: success returns 200; `ErrNotConfigured` returns 409; an `APIError` returns 502 with its description.
+- `POST /test`: success returns 200; `ErrNotConfigured` returns 409; an `APIError` returns 502 with its description; a timeout (`context.DeadlineExceeded`) returns 502 with the status, not 503.
 - A failed test send (502) leaves no Error-level record in the handler's log (captured through a buffer logger); it logs one Warn.
 - A sentinel token never appears in any response body (SC-006).

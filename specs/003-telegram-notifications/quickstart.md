@@ -4,7 +4,7 @@
 
 - Run `task setup`, then `task build` (or `task dev:backend` + `task dev:frontend`).
 - Use a scratch data directory and scratch libraries, never a real one: `DATA_DIR=<scratch>/data`.
-- Libraries are folder libraries created under `<scratch>/lib-*` through the Settings page (or `POST /api/libraries`).
+- Libraries are folder libraries created under `<scratch>/lib-*` through the Settings page (or `POST /api/libraries`). §4 needs a scratch INPX library instead, built as described there.
 - No real bot is needed for §§1–7: the server talks to a local fake Telegram endpoint through `TELEGRAM_API_BASE` ([research.md §R13](./research.md#r13-testability-of-time-and-the-api-endpoint)). §8 uses a real test bot and channel that you own.
 - Message texts are specified in [contracts/messages.md](./contracts/messages.md), endpoints in [contracts/rest-api.md](./contracts/rest-api.md), and state rules in [data-model.md](./data-model.md).
 
@@ -57,10 +57,13 @@ These cover:
   - redaction of the token from transport errors and from Telegram's own `description`;
   - retry policy (3 attempts in total within a 30 s budget; 429 honoured up to 10 s, dropped above; 5xx / network retried; no retry on 400/401/403);
   - spacing, and a crash sent ahead of a full batch queue within the SC-002 bound;
+  - a message dropped on a 429 pausing the sender for `retry_after` (capped at 10 min);
+  - shutdown returning without the spacing wait after the last message, and staying bounded while the endpoint hangs;
   - queue overflow recorded as a failure;
   - store round trip and validation;
   - crash de-dup (first message at once, N repeats → one "repeated N more times" after the window, none when N = 0, normalization, the 256-key cap);
   - run state machine (SC-003 for N = 1, 3, 10; a crash-reported failure; skip-as-success; `LibraryRemoved`);
+  - `ReportCrash` reporting whether it queued the message;
   - unreadable summary cap (SC-004);
   - mass-removal thresholds (19/100 no, 20/200 yes, 20/201 no, 25/100 yes);
   - error window (one message per window, the count, 5 samples, empty window silent, run lines);
@@ -71,8 +74,9 @@ These cover:
 - **ebook / db / sync / server**:
   - the parser panic is reported without a file name;
   - `WithTx` re-panics a `*TxPanic`;
-  - engine outcomes per situation ([contracts/notifier.md](./contracts/notifier.md#internalsync-run-outcomes-and-engine-crashes));
-  - the recoverer gives 500 + a report, re-raises `ErrAbortHandler`, and reports a TxPanic with its place.
+  - engine outcomes per situation ([contracts/notifier.md](./contracts/notifier.md#internalsync-run-outcomes-and-engine-crashes)), including: a de-duplicated `safeSync` crash still sends `failed`; a library in `error` state is read in full, not skipped into a recovery; a Deep Index over an unreachable root fails, then recovers; a post-sync fill panic is a crash plus `FillFailed`, not a failed sync; panics in the purge sweep and in a folder-watcher event are reported and do not escape;
+  - the folder watcher marks a missing-root watch error as already reported and forwards other watch errors;
+  - the recoverer gives 500 + a report, re-raises `ErrAbortHandler` as the bare sentinel, and reports a TxPanic with its place.
 - **ingest**: `RemovedBooks` counts books; `NewlyBroken` is capped at 5 while `Broken` counts all.
 - **settings**: the `telegramSuite` ([contracts/rest-api.md](./contracts/rest-api.md#tests-telegramsuite-wired-in-testsettings)).
 - **Vitest**: see [contracts/spa-ui.md](./contracts/spa-ui.md#vitest-coverage).
@@ -86,7 +90,7 @@ These cover:
    - The page shows success, and the status line shows `Last delivered …`.
    - All of this happens within 10 s.
 4. Reload the page.
-   - The token field is empty, and its placeholder shows only the last 4 characters.
+   - The token field is empty, and its placeholder shows only the last 4 characters (`Stored (ends with …)`; a token shorter than 8 characters shows just `Stored`).
    - `curl -s localhost:8080/api/settings/telegram` shows `token_set: true` and no token.
    - `grep -c '<the token>' <server log>` prints `0`.
 5. Save again without typing a token, then send a test: it still works (the token was kept).
@@ -106,11 +110,25 @@ These cover:
 
 ## 4. Unreadable summary (US3, SC-004)
 
-1. In a folder library, add 7 files with a supported extension that are not valid books (e.g. random bytes named `*.epub`), then sync and run **Deep Index**.
-2. Exactly one message arrives: `found 7 newly unreadable book file(s)`, with 5 `- <book-ref>: <reason>` lines and `…and 2 more`.
-   - With `PUBLIC_URL` set, each ref is `<PUBLIC_URL>/books/<id>`.
+The summary comes from the post-sync fill, which reads each INPX book out of its archive. A folder library cannot produce it: files that fail to parse are dropped at import and never recorded as unreadable books, so they are never reported (FR-008). Use a scratch INPX library instead.
+
+1. Build `<scratch>/lib-inpx` holding `lib.inpx` and `lib.zip`. The archive has 7 entries, `1.fb2` to `7.fb2`, each random bytes; the index lists them. For example:
+
+   ```python
+   import os, zipfile
+   d = "<scratch>/lib-inpx"; os.makedirs(d, exist_ok=True)
+   with zipfile.ZipFile(f"{d}/lib.zip", "w") as z:
+       for i in range(1, 8): z.writestr(f"{i}.fb2", os.urandom(512))
+   # INP fields, \x04-separated: author, genre, title, series, serno, file, size, libid, del, ext
+   rows = [f"Doe,Jane,\x04sf\x04Junk {i}\x04\x040\x04{i}\x04512\x04{i}\x040\x04fb2\x04" for i in range(1, 8)]
+   with zipfile.ZipFile(f"{d}/lib.inpx", "w") as z: z.writestr("lib.inp", "\n".join(rows) + "\n")
+   ```
+
+   Add it as an INPX library (Settings page, or `POST /api/libraries`). INPX sync reads only the archive's file list, so the 7 books import normally.
+2. Wait for the sync and its post-sync fill to finish. Exactly one message arrives: `sync found 7 newly unreadable book file(s)`, with 5 `- <book-ref>: file is damaged or not in the expected format` lines and `…and 2 more. They will not be reported again unless the files change.`
+   - With `PUBLIC_URL` set, each ref is `<PUBLIC_URL>/books/<id>`; otherwise `book #<id>`.
    - The summary lines name books by link or ID and reason label only; no book title appears. (File paths inside a library are allowed in error texts, see §6, but the summary has none.)
-3. Run **Deep Index** again: no message.
+3. Run **Deep Index** on that library: no message, because the 7 books are already recorded as unreadable.
 
 ## 5. Mass removal (US3)
 
@@ -119,8 +137,8 @@ These cover:
 
 ## 6. Error window (US3-AS5)
 
-1. Produce errors outside runs. For example, make one file of a synced folder library unreadable (`chmod 000 <file>`) and download it a few times through OPDS: each attempt logs an Error. Any Error-level log outside a run works the same way.
-2. After 5 minutes (the window), exactly one `<N> error(s) in the last 5 minutes` message arrives, with at most 5 lines and `…and N-5 more` when needed. Lines carry only the log message and error text. The error text may include the file's path inside the library (for example `open …/x.epub: permission denied`); that is allowed for the owner's channel (constitution v1.1.0) and is not stripped. No book title appears.
+1. Produce errors outside runs, using the INPX scratch library from §4 (let its sync and fill finish first). Move its archive aside, `mv <scratch>/lib-inpx/lib.zip <scratch>/lib-inpx/lib.zip.off`, and download a few of its books through OPDS (Basic Auth required), for example `GET /opds/books/<id>/files/<fileID>` with the IDs from the library's OPDS feed. Each attempt answers 500 and logs the Error `opds: serve book file`. Do **not** sync, Deep Index, or wait for the watcher while the archive is away: the library's root is still there, but its archive is missing, so a run would report it as failing and muddy this check. (A library whose root itself is unreachable is already reported by its `failed` message, and its watch error is marked as already reported, so it never appears in this summary.) Any Error-level log outside a run works the same way.
+2. After 5 minutes (the window), exactly one `<N> error(s) in the last 5 minutes` message arrives, with at most 5 lines and `…and N-5 more. See the server log for details.` when needed. Each line is `HH:MM:SS <log message>: <error text>`. For a missing archive it reads like `opds: serve book file: open archive …/lib.zip: open …/lib.zip: no such file or directory`; the path inside the library is allowed for the owner's channel (constitution v1.1.0) and is not stripped. No book title appears. Move the archive back afterwards (`mv <scratch>/lib-inpx/lib.zip.off <scratch>/lib-inpx/lib.zip`).
 3. Wait another 5 minutes with no errors: nothing is sent.
 4. A Deep Index run that leaves some books for retry adds one `completed with <K> book(s) left for retry` line to the next summary, and sends no `failed` message.
 

@@ -33,6 +33,6 @@
 
 - "Telegram" is named because the delivery channel is the feature itself; no library, protocol
   detail or code structure is named.
-- Tunable numbers (5-minute window, 5 items, 3 retries) are recorded as assumptions the planner may
+- Tunable numbers (5-minute window, 5 items, 3 delivery attempts) are recorded as assumptions the planner may
   tune; the removal threshold (10% and 20 books) is fixed by the owner.
 - No personal or deployment-specific details appear.

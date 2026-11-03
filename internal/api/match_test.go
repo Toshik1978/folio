@@ -1,6 +1,8 @@
 package api
 
 import (
+	"bytes"
+	"errors"
 	"log/slog"
 	"net/http"
 	"os"
@@ -251,4 +253,44 @@ func (s *matchSuite) TestMatchDisabledWithoutEnricher() {
 
 	w := s.do(http.MethodGet, "/books/"+itoa(id)+"/match?q=dune", nil)
 	s.Equal(http.StatusNotImplemented, w.Code)
+}
+
+// A failed online search is a best-effort miss: it answers 502 and logs at Warn,
+// never Error, so it cannot trip the error notifier.
+func (s *matchSuite) TestSearchMatchFailureLogsAtWarn() {
+	var buf bytes.Buffer
+	log := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	enr := &fakeEnricher{searchErr: errors.New("upstream down")}
+	s.books = NewBooks(log, s.db, s.guard, s.covers, nil, enr, s.covers, nil)
+	r := chi.NewRouter()
+	s.books.Register(r)
+	s.router = r
+
+	id := s.seedBook(s.seedLibrary("folder", "/lib"), bookSeed{Title: "x"})
+	w := s.do(http.MethodGet, "/books/"+itoa(id)+"/match?q=dune", nil)
+
+	s.Equal(http.StatusBadGateway, w.Code)
+	s.Contains(buf.String(), "level=WARN")
+	s.Contains(buf.String(), "match search")
+	s.NotContains(buf.String(), "level=ERROR")
+}
+
+// A failed Fix Match apply is a provider failure: it answers 502 and logs at
+// Warn, never Error, so it cannot trip the error notifier.
+func (s *matchSuite) TestApplyMatchFailureLogsAtWarn() {
+	var buf bytes.Buffer
+	log := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	enr := &fakeEnricher{applyErr: errors.New("upstream down")}
+	s.books = NewBooks(log, s.db, s.guard, s.covers, nil, enr, s.covers, nil)
+	r := chi.NewRouter()
+	s.books.Register(r)
+	s.router = r
+
+	id := s.seedBook(s.seedLibrary("folder", "/lib"), bookSeed{Title: "x"})
+	w := s.do(http.MethodPost, "/books/"+itoa(id)+"/match", map[string]string{"volume_id": "v1"})
+
+	s.Equal(http.StatusBadGateway, w.Code)
+	s.Contains(buf.String(), "level=WARN")
+	s.Contains(buf.String(), "apply match")
+	s.NotContains(buf.String(), "level=ERROR")
 }

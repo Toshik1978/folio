@@ -35,7 +35,8 @@ Identical crashes in the next hour will be counted, not sent.
 ```
 
 - `<place>` is one of `book-file reading`, `database write path`, `sync engine` or `web request handling`.
-- For a `database write path` crash, `Where:` reads `via <outer place> (<outer detail>)`.
+- For a `database write path` crash, `Where:` reads `via <outer place> (<outer detail>)`. So does a `book-file reading` crash re-raised from a Deep Index worker (`ingest.WorkerPanic`), e.g. `via sync engine (library "<library>" deep index)`.
+- Engine work outside a run reports as `sync engine` with `Where:` naming the task: `library "<library>" post-sync fill`, `purge sweep`, `library #<id> purge` or `folder watcher`.
 - `At:` is omitted when no frame inside the module is found.
 
 Example (web request):
@@ -69,7 +70,7 @@ Where: <detail>
 Error: <panic text of the first occurrence>
 ```
 
-It is sent only when N ≥ 1.
+It is sent only when N ≥ 1: at the first 30 s tick after the hour ends, or at once when the same crash recurs after the hour but before that tick (the new occurrence then opens a new hour).
 
 ## Run failed (`KindRunFailed`), FR-007
 
@@ -120,7 +121,7 @@ The removal has been applied. If this was not expected, check that the library s
 
 ## Error summary (`KindErrorSummary`), FR-010
 
-Sent when a 5-minute window that had at least one entry closes.
+Sent when a 5-minute window that had at least one entry closes. On shutdown an open window is flushed early, with the same headline.
 
 ```text
 <instance>

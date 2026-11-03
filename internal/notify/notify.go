@@ -105,6 +105,9 @@ type Service struct {
 	failingMu sync.Mutex     // guards failing: runs finish on any goroutine
 	failing   map[int64]bool // library IDs whose last run failed
 
+	windowMu sync.Mutex  // guards window: LogError and runs arrive on any goroutine
+	window   errorWindow // the open error window, if any
+
 	dropMu  sync.Mutex
 	dropped int // messages dropped on a full lane since the last success
 
@@ -192,7 +195,7 @@ func (s *Service) Stop() {
 		s.stopTicker()
 		<-s.tickerDone
 	}
-	s.flush(s.now())
+	s.flush()
 	s.closed.Store(true)
 	close(s.closing)
 
@@ -276,14 +279,26 @@ func (s *Service) tickLoop(ctx context.Context) {
 // tick closes the time windows that have expired at now.
 func (s *Service) tick(now time.Time) {
 	s.tickCrashes(now)
+	s.tickErrors(now)
 }
 
-// flush closes every open window into the queue on Stop. Empty in this phase.
-func (s *Service) flush(time.Time) {}
+// flush closes every open window into the queue on Stop. Open crash windows
+// are not flushed: their repeat counts are only reported when a window expires.
+func (s *Service) flush() {
+	s.flushErrors()
+}
+
+// on reports whether notifications are enabled and ready.
+func (s *Service) on() bool {
+	cfg := s.cfg.Load()
+
+	return cfg != nil && cfg.Enabled && cfg.Ready()
+}
 
 // resetCollected discards all in-memory collected state when notifications
 // are switched off; UpdateTelegram calls it.
 func (s *Service) resetCollected() {
 	s.resetCrashes()
 	s.resetFailing()
+	s.resetErrors()
 }

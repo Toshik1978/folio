@@ -52,6 +52,7 @@ var (
 	_ ebook.CrashReporter  = (*notify.Service)(nil)
 	_ server.CrashReporter = (*notify.Service)(nil)
 	_ sync.Notifier        = (*notify.Service)(nil)
+	_ logging.ErrorSink    = (*notify.Service)(nil)
 )
 
 func main() {
@@ -64,11 +65,11 @@ func main() {
 func run() int { //revive:disable:function-length
 	_ = godotenv.Load()
 	cfg := config.MustParse()
-	log := logging.New(cfg.NoColorEnabled(), cfg.Env)
+	base := logging.New(cfg.NoColorEnabled(), cfg.Env)
 
-	database, err := db.Open(log, cfg.DataDir)
+	database, err := db.Open(base, cfg.DataDir)
 	if err != nil {
-		log.Error("database open failed", slog.Any("error", err))
+		base.Error("database open failed", slog.Any("error", err))
 		return 1
 	}
 	defer func() { _ = database.Close() }()
@@ -81,15 +82,21 @@ func run() int { //revive:disable:function-length
 	// The notifier delivers opt-in Telegram messages to the owner's channel; its
 	// settings live in the database and it never blocks its producers.
 	notifier, err := notify.New(
-		log,
+		base,
 		notify.NewStore(database, writeGuard),
 		notify.NewClient(cfg.TelegramAPIBase, &http.Client{Timeout: telegramHTTPTimeout}),
 		notify.WithPublicURL(cfg.PublicURL),
 	)
 	if err != nil {
-		log.Error("notifier init failed", slog.Any("error", err))
+		base.Error("notifier init failed", slog.Any("error", err))
 		return 5
 	}
+
+	// Every other component logs through the tapped logger, so an Error nobody
+	// else reported reaches the notifier's error window. The notifier and the
+	// database open keep the untapped base logger: its own records can never loop
+	// back into it.
+	log := logging.WithErrorSink(base, notifier)
 
 	// One ebook dispatcher owns the per-format parser set; injected into every
 	// consumer. It reports recovered parser panics to the notifier.

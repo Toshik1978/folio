@@ -72,6 +72,12 @@ describe('TelegramSettingsForm', () => {
     expect(input(w, 'tg-token').attributes('placeholder')).toBe('Bot token from @BotFather');
   });
 
+  it('shows Stored without the suffix when a token is stored but its last4 is empty', async () => {
+    vi.mocked(fetchTelegramSettings).mockResolvedValue(settings({ token_last4: '' }));
+    const w = await mountForm();
+    expect(input(w, 'tg-token').attributes('placeholder')).toBe('Stored');
+  });
+
   it('saves without bot_token when the field is empty', async () => {
     const w = await mountForm();
     await input(w, 'tg-topic').setValue('7');
@@ -92,6 +98,17 @@ describe('TelegramSettingsForm', () => {
     await input(w, 'tg-save').trigger('click');
     await flushPromises();
     expect(vi.mocked(updateTelegramSettings).mock.calls[0][0].topic_id).toBeNull();
+  });
+
+  it('trims the channel ID and token before saving', async () => {
+    const w = await mountForm();
+    await input(w, 'tg-chat').setValue('  @test_channel ');
+    await input(w, 'tg-token').setValue(` ${SENTINEL} `);
+    await input(w, 'tg-save').trigger('click');
+    await flushPromises();
+    const sent = vi.mocked(updateTelegramSettings).mock.calls[0][0];
+    expect(sent.chat_id).toBe('@test_channel');
+    expect(sent.bot_token).toBe(SENTINEL);
   });
 
   it('saves with bot_token when typed and clears the field afterwards', async () => {

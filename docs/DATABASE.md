@@ -651,6 +651,13 @@ local files only, never calls the network, and never writes to a library source.
   and its fingerprint matches, the book is known broken: no entry is opened and
   nothing is written. A replaced file or a new reader version lifts the skip,
   and the book is read again.
+- **Unreachable root.** Before a Deep Index run (the button, not the post-sync
+  fill, which follows a sync that just read the source), the sync engine stats
+  the library's read root with `ingest.CheckReadRoot` — `library.Path`, or for
+  INPX the directory holding the `.inpx` and its archives. A stat only; nothing
+  is opened for writing. A missing root, a non-directory, or one not reachable through its parents fails the
+  run as a whole: the library is marked errored and a failed run is reported,
+  and the next run that reaches the root reports it recovered.
 - **Failures and cancellation.** Each read outcome is handled in the writer's
   batch transaction. A done book is persisted as above, its metadata record is
   deleted (`DeleteReadFailure`) and it is marked checked. A newly broken book

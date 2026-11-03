@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
+	"path/filepath"
 	stdsync "sync"
 	"time"
 
@@ -13,6 +15,8 @@ import (
 	"github.com/Toshik1978/folio/internal/db/dbq"
 	"github.com/Toshik1978/folio/internal/ebook"
 	"github.com/Toshik1978/folio/internal/ingest"
+	"github.com/Toshik1978/folio/internal/libtype"
+	"github.com/Toshik1978/folio/internal/logging"
 	"github.com/Toshik1978/folio/internal/notify"
 )
 
@@ -225,7 +229,7 @@ func (s *engineSuite) TestNotifySyncPanicDedupedCrashStillFails() {
 func (s *engineSuite) TestNotifyDeepIndexPanicNamesDeepIndex() {
 	idx := &fakeDeepIndexer{onRun: func(context.Context, dbq.Library, ingest.Reporter) { panic("deep kaboom") }}
 	eng, rec := s.newNotifyEngine(WithDeepIndexer(idx))
-	src := s.insertNamedLibrary("Shelf", "stub", "/lib/n-deep-panic")
+	src := s.insertNamedLibrary("Shelf", "stub", s.T().TempDir())
 
 	s.NotPanics(func() { eng.safeSync(syncReq{id: src.ID, kind: kindDeepIndex}) })
 
@@ -241,7 +245,7 @@ func (s *engineSuite) TestNotifyDeepIndexPanicNamesDeepIndex() {
 func (s *engineSuite) TestNotifyDeepIndexOutcomes() {
 	idx := &fakeDeepIndexer{err: errors.New("disk gone")}
 	eng, rec := s.newNotifyEngine(WithDeepIndexer(idx))
-	src := s.insertNamedLibrary("Shelf", "stub", "/lib/n-deep")
+	src := s.insertNamedLibrary("Shelf", "stub", s.T().TempDir())
 
 	eng.syncLibrary(syncReq{id: src.ID, kind: kindDeepIndex})
 	idx.err = nil
@@ -259,7 +263,7 @@ func (s *engineSuite) TestNotifyDeepIndexOutcomes() {
 func (s *engineSuite) TestNotifyDeepIndexCancelReportsNothing() {
 	idx := &fakeDeepIndexer{err: context.Canceled}
 	eng, rec := s.newNotifyEngine(WithDeepIndexer(idx))
-	src := s.insertNamedLibrary("Shelf", "stub", "/lib/n-deep-cancel")
+	src := s.insertNamedLibrary("Shelf", "stub", s.T().TempDir())
 
 	eng.syncLibrary(syncReq{id: src.ID, kind: kindDeepIndex})
 
@@ -412,7 +416,7 @@ func (s *engineSuite) TestNotifyDeepIndexReportsCounts() {
 		NewlyBroken: []ingest.BrokenBook{{BookID: 21, Reason: ebook.ReasonTooLarge}},
 	}}
 	eng, rec := s.newNotifyEngine(WithDeepIndexer(idx))
-	src := s.insertNamedLibrary("Shelf", "stub", "/lib/n-deep-counts")
+	src := s.insertNamedLibrary("Shelf", "stub", s.T().TempDir())
 
 	eng.syncLibrary(syncReq{id: src.ID, kind: kindDeepIndex})
 
@@ -421,4 +425,79 @@ func (s *engineSuite) TestNotifyDeepIndexReportsCounts() {
 		PerBookErrors: 3, NewlyUnreadable: 1,
 		UnreadableSample: []notify.UnreadableBook{{BookID: 21, Reason: "too_large"}},
 	}}, rec.runs())
+}
+
+// newTappedNotifyEngine is newNotifyEngine with its logger feeding sink, so a
+// test can see which Error records reach the error tap.
+func (s *engineSuite) newTappedNotifyEngine(sink logging.ErrorSink, opts ...Option) (*Engine, *recordingNotifier) {
+	rec := &recordingNotifier{}
+	opts = append(opts, WithNotifier(rec))
+	log := logging.WithErrorSink(slog.New(slog.DiscardHandler), sink)
+	eng, err := New(log, s.db, db.NewWriteGuard(), map[string]Parser{"stub": s.parser}, s.store, opts...)
+	s.Require().NoError(err)
+
+	return eng, rec
+}
+
+func (s *engineSuite) TestNotifyDeepIndexUnreachableRootFailsThenRecovers() {
+	idx := &fakeDeepIndexer{result: ingest.DeepIndexResult{Errors: 4}}
+	sink := &captureSink{}
+	eng, rec := s.newTappedNotifyEngine(sink, WithDeepIndexer(idx))
+	root := filepath.Join(s.T().TempDir(), "gone")
+	src := s.insertNamedLibrary("Shelf", "stub", root)
+
+	eng.syncLibrary(syncReq{id: src.ID, kind: kindDeepIndex})
+
+	s.Empty(idx.runs(), "an unreachable root is not indexed book by book")
+	runs := rec.runs()
+	s.Require().Len(runs, 1)
+	s.Equal(notify.RunDeepIndex, runs[0].Kind)
+	s.Equal(notify.RunFailed, runs[0].Status)
+	s.Contains(runs[0].Reason, root)
+	s.Equal("error", s.getLibrary(src.ID).Status)
+	s.Empty(sink.msgs, "the run-failed message stands in for the error log record")
+
+	// The root comes back: the next Deep Index completes, which notify turns into "recovered".
+	s.Require().NoError(os.Mkdir(root, 0o700))
+	eng.syncLibrary(syncReq{id: src.ID, kind: kindDeepIndex})
+
+	s.Equal([]int64{src.ID}, idx.runs())
+	runs = rec.runs()
+	s.Require().Len(runs, 2)
+	s.Equal(notify.RunOutcome{
+		LibraryID: src.ID, Library: "Shelf", Kind: notify.RunDeepIndex, Status: notify.RunCompleted,
+		PerBookErrors: 4,
+	}, runs[1])
+}
+
+func (s *engineSuite) TestNotifyDeepIndexRootIsFileReportsFailed() {
+	idx := &fakeDeepIndexer{}
+	eng, rec := s.newNotifyEngine(WithDeepIndexer(idx))
+	file := filepath.Join(s.T().TempDir(), "file")
+	s.Require().NoError(os.WriteFile(file, []byte("x"), 0o600))
+	src := s.insertNamedLibrary("Shelf", "stub", file)
+
+	eng.syncLibrary(syncReq{id: src.ID, kind: kindDeepIndex})
+
+	s.Empty(idx.runs())
+	runs := rec.runs()
+	s.Require().Len(runs, 1)
+	s.Equal(notify.RunFailed, runs[0].Status)
+}
+
+func (s *engineSuite) TestNotifyDeepIndexINPXRootIsArchiveDirectory() {
+	idx := &fakeDeepIndexer{}
+	eng, rec := s.newNotifyEngine(WithDeepIndexer(idx))
+	dir := filepath.Join(s.T().TempDir(), "gone")
+	src := s.insertNamedLibrary("Shelf", libtype.INPX, filepath.Join(dir, "catalog.inpx"))
+
+	eng.syncLibrary(syncReq{id: src.ID, kind: kindDeepIndex})
+	s.Require().NoError(os.Mkdir(dir, 0o700)) // archives are read from here; the bundle itself is not needed
+	eng.syncLibrary(syncReq{id: src.ID, kind: kindDeepIndex})
+
+	s.Equal([]int64{src.ID}, idx.runs())
+	runs := rec.runs()
+	s.Require().Len(runs, 2)
+	s.Equal(notify.RunFailed, runs[0].Status)
+	s.Equal(notify.RunCompleted, runs[1].Status)
 }

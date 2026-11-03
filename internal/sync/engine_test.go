@@ -417,7 +417,7 @@ func (s *engineSuite) TestDeepIndexRunsIndexerWithAllScope() {
 	idx := &fakeDeepIndexer{}
 	rec := &recordingPublisher{}
 	eng := s.newDeepIndexEngine(idx, WithEvents(rec))
-	src := s.insertLibrary("stub", "/lib/deep")
+	src := s.insertLibrary("stub", s.T().TempDir())
 
 	eng.syncLibrary(syncReq{id: src.ID, kind: kindDeepIndex})
 
@@ -433,7 +433,7 @@ func (s *engineSuite) TestDeepIndexIgnoresCheckpoint() {
 	s.parser.result = ingest.Result{} // no new books: keep the post-sync fill out of the count
 	idx := &fakeDeepIndexer{}
 	eng := s.newDeepIndexEngine(idx)
-	src := s.insertLibrary("stub", "/lib/deep-cp")
+	src := s.insertLibrary("stub", s.T().TempDir())
 
 	// A sync stores the checkpoint; an unchanged artifact would gate the next sync.
 	eng.syncLibrary(syncReq{id: src.ID})
@@ -460,7 +460,7 @@ func (s *engineSuite) TestDeepIndexDoesNotHoldWriteGuard() {
 	eng, err := New(slog.New(slog.DiscardHandler), s.db, guard,
 		map[string]Parser{"stub": s.parser}, s.store, WithDeepIndexer(idx))
 	s.Require().NoError(err)
-	src := s.insertLibrary("stub", "/lib/deep-guard")
+	src := s.insertLibrary("stub", s.T().TempDir())
 
 	eng.syncLibrary(syncReq{id: src.ID, kind: kindDeepIndex})
 
@@ -470,7 +470,7 @@ func (s *engineSuite) TestDeepIndexDoesNotHoldWriteGuard() {
 func (s *engineSuite) TestDeepIndexErrorMarksLibraryFailed() {
 	idx := &fakeDeepIndexer{err: errors.New("disk gone")}
 	eng := s.newDeepIndexEngine(idx)
-	src := s.insertLibrary("stub", "/lib/deep-err")
+	src := s.insertLibrary("stub", s.T().TempDir())
 
 	eng.syncLibrary(syncReq{id: src.ID, kind: kindDeepIndex})
 
@@ -486,7 +486,7 @@ func (s *engineSuite) TestDeepIndexReportsProgress() {
 	}}
 	rec := &recordingPublisher{}
 	eng := s.newDeepIndexEngine(idx, WithEvents(rec))
-	src := s.insertLibrary("stub", "/lib/deep-progress")
+	src := s.insertLibrary("stub", s.T().TempDir())
 
 	eng.syncLibrary(syncReq{id: src.ID, kind: kindDeepIndex})
 
@@ -548,7 +548,7 @@ func (s *engineSuite) TestDeepIndexAndSyncSameLibraryRunSequentially() {
 	s.parser.result = ingest.Result{} // no new books: only the queued Deep Index runs the indexer
 	idx := &fakeDeepIndexer{onRun: func(context.Context, dbq.Library, ingest.Reporter) { enter() }}
 	eng := s.newDeepIndexEngine(idx)
-	src := s.insertLibrary("stub", "/lib/deep-seq")
+	src := s.insertLibrary("stub", s.T().TempDir())
 
 	// Queue both before the worker starts so they are pending side by side.
 	eng.TriggerLibrary(src.ID)
@@ -569,7 +569,7 @@ func (s *engineSuite) TestStatusCarriesRunningKind() {
 	idx := &fakeDeepIndexer{onRun: func(context.Context, dbq.Library, ingest.Reporter) { <-release }}
 	rec := &recordingPublisher{}
 	eng := s.newDeepIndexEngine(idx, WithEvents(rec))
-	src := s.insertLibrary("stub", "/lib/deep-kind")
+	src := s.insertLibrary("stub", s.T().TempDir())
 	s.runWorker(eng)
 
 	eng.TriggerDeepIndex(src.ID)

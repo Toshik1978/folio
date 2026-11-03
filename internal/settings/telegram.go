@@ -93,6 +93,17 @@ func toTelegramView(s notify.Settings) telegramView {
 	}
 }
 
+// validationMessage is the 400 text for a rejected update. The FR-003
+// "enabled without a token or chat" case is documented as bare text; every
+// field-specific reason keeps its "<field>: " prefix.
+func validationMessage(ve *notify.ValidationError) string {
+	if ve.Field == "enabled" {
+		return ve.Msg
+	}
+
+	return ve.Error()
+}
+
 // get handles GET /settings/telegram.
 func (h *TelegramHandler) get(w http.ResponseWriter, r *http.Request) {
 	s, err := h.svc.TelegramSettings(r.Context())
@@ -123,7 +134,7 @@ func (h *TelegramHandler) update(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		if ve, ok := errors.AsType[*notify.ValidationError](err); ok {
-			h.writeError(w, http.StatusBadRequest, ve.Error())
+			h.writeError(w, http.StatusBadRequest, validationMessage(ve))
 			return
 		}
 		if errors.Is(err, context.DeadlineExceeded) {
@@ -149,10 +160,10 @@ func (h *TelegramHandler) test(w http.ResponseWriter, r *http.Request) {
 		})
 	case errors.Is(err, notify.ErrNotConfigured):
 		h.writeError(w, http.StatusConflict, "save a bot token and a channel ID first")
-	case errors.Is(err, context.DeadlineExceeded):
-		h.writeError(w, http.StatusServiceUnavailable, "busy, try again")
 	default:
-		// A delivery failure is Warn, never Error: it must not reach the error window.
+		// A send never takes the write guard, so a timeout is a network
+		// failure (502), not a busy guard. A delivery failure is Warn, never
+		// Error: it must not reach the error window.
 		h.log.Warn("telegram test send failed", slog.Any("error", err))
 		h.writeJSON(w, http.StatusBadGateway, map[string]any{
 			errorKey: err.Error(),

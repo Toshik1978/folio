@@ -241,7 +241,12 @@ runs; both are no-ops unless a deep indexer was wired with `WithDeepIndexer`.
 A Deep Index run emits the same events as a sync: `status` transitions,
 `progress {library, processed, total}` (total is the number of unchecked books,
 `processed` advances per committed batch), and at the end `library {id,"active"}`
-so the client refetches; on failure it emits `library {id,"error"}`. It is never
+so the client refetches; on failure it emits `library {id,"error"}`. Before it
+reads anything it stats the library's read root (`ingest.CheckReadRoot`: the
+library directory, or for INPX the directory holding the `.inpx` and its
+archives); a missing root, a non-directory, or one not reachable through its parents fails the run at once
+with `library {id,"error"}` and a failed-run notification, instead of
+"completing" with one retryable error per book. It is never
 checkpoint-gated, skips a `pending_purge` library at run time, and holds the write
 guard per batch rather than for the whole run. A cancelled run (shutdown) marks
 nothing as errored.

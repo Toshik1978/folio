@@ -258,7 +258,8 @@ the theme picker, and a settings gear.
   write-only password with "set"/"not set" status) and the **Telegram
   notifications** form (`TelegramSettingsForm`): on/off toggle, write-only bot
   token (never shown; the placeholder reads `Stored (ends with <last4>)` once
-  set, and it is sent only when typed), channel ID, optional topic ID, silent
+  set, or plain `Stored` when no last-four is available, and it is sent only
+  when typed), channel ID, optional topic ID, silent
   option, a **Send test message** button (enabled only when the saved settings
   have a token and channel) and a status line with the last delivered / last
   failed time. **Libraries** holds library management (list with

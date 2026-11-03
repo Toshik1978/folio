@@ -109,6 +109,7 @@ folio/
 │   ├── htmltext/           # HTML annotation → plain text / entity tables
 │   ├── covers/             # Cover store + HTTP serving + embedded placeholder
 │   ├── sync/               # Background sync engine (scheduler, fsnotify watcher, purge teardown)
+│   ├── notify/             # Optional Telegram notifications: log tap, crash/failure grouping, Bot API client
 │   ├── bookfile/           # Shared file-format helpers (content types, extensions)
 │   ├── config/             # Env-var config parsing
 │   ├── logging/            # slog logger construction

@@ -60,11 +60,12 @@ func (t *loggingTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 		// A cancelled or timed-out round trip is expected, not a fault: the
 		// metadata/cover aggregator wraps each source in its own per-source
 		// deadline and cancels the losers, so logging those at Error would flood
-		// the logs with spurious noise. Keep genuine transport failures at Error.
+		// the logs with spurious noise. Genuine transport failures log at Warn: a
+		// missed online lookup is best-effort and must not count as an error.
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			t.log.Debug(msg, "error", err)
 		} else {
-			t.log.Error(msg, "error", err)
+			t.log.Warn(msg, "error", err)
 		}
 
 		return nil, fmt.Errorf("google books failed: %w", err)

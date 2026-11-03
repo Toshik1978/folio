@@ -66,12 +66,12 @@ func (s *transportSuite) TestCancelledRoundTripLogsAtDebug() {
 	}
 }
 
-// TestFailedRoundTripLogsAtError verifies a genuine transport failure still logs
-// at Error.
-func (s *transportSuite) TestFailedRoundTripLogsAtError() {
+// TestFailedRoundTripLogsAtWarn verifies a genuine transport failure logs at
+// Warn, not Error: a missed online lookup is not an error worth reporting.
+func (s *transportSuite) TestFailedRoundTripLogsAtWarn() {
 	levels := s.roundTripLoggingAt(errors.New("dial tcp: connection refused"))
 	s.Require().Len(levels, 1)
-	s.Equal(slog.LevelError, levels[0])
+	s.Equal(slog.LevelWarn, levels[0])
 }
 
 // TestRoundTripWrapsUnderlyingError verifies a transport-level failure surfaces

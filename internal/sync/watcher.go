@@ -1,6 +1,8 @@
 package sync
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"io/fs"
 	"log/slog"
@@ -15,6 +17,7 @@ import (
 
 	"github.com/Toshik1978/folio/internal/db/dbq"
 	"github.com/Toshik1978/folio/internal/libtype"
+	"github.com/Toshik1978/folio/internal/logging"
 )
 
 // initWatcher creates the file-system watcher and starts its event loop. The
@@ -121,7 +124,13 @@ func (w *watcher) reconcile(want map[int64]string) {
 	for id, root := range want {
 		if current[id] != root {
 			if err := w.watch(id, root); err != nil {
-				w.log.Error("watch library",
+				// An unreachable root is already reported by the run's failed
+				// message, so keep it out of the error summary.
+				ctx := context.Background()
+				if errors.Is(err, fs.ErrNotExist) || errors.Is(err, fs.ErrPermission) {
+					ctx = logging.MarkReported(ctx)
+				}
+				w.log.ErrorContext(ctx, "watch library",
 					slog.Int64("library", id), slog.String("path", root), slog.Any("error", err))
 			}
 		}

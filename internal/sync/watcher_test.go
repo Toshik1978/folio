@@ -1,6 +1,7 @@
 package sync
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"log/slog"
@@ -11,6 +12,7 @@ import (
 	"github.com/fsnotify/fsnotify"
 
 	"github.com/Toshik1978/folio/internal/libtype"
+	"github.com/Toshik1978/folio/internal/logging"
 )
 
 type watcherSuite struct {
@@ -88,6 +90,39 @@ func (s *watcherSuite) TestReschedulePicksUpRuntimeFolderLibrary() {
 	s.markPendingPurge(src.ID, sql.NullInt64{})
 	s.Require().NoError(s.engine.Reschedule(context.Background()))
 	s.Zero(s.engine.watcher.watchedLibraryCount())
+}
+
+// captureSink records the Error records that reach the error tap, i.e. those
+// not marked as already reported.
+type captureSink struct{ msgs []string }
+
+func (c *captureSink) LogError(_ context.Context, r slog.Record) { c.msgs = append(c.msgs, r.Message) }
+
+func (s *watcherSuite) reconcileOne(root string) []string {
+	sink := &captureSink{}
+	base := slog.New(slog.NewTextHandler(&bytes.Buffer{}, &slog.HandlerOptions{Level: slog.LevelError}))
+	log := logging.WithErrorSink(base, sink)
+	w, err := newWatcher(log, time.Millisecond, func(int64) {})
+	s.Require().NoError(err)
+	s.T().Cleanup(func() { _ = w.fsw.Close() })
+
+	w.reconcile(map[int64]string{1: root})
+
+	return sink.msgs
+}
+
+func (s *watcherSuite) TestMissingRootWatchErrorIsMarkedReported() {
+	missing := filepath.Join(s.T().TempDir(), "gone")
+
+	s.Empty(s.reconcileOne(missing), "a missing root is reported by the run's failed message")
+}
+
+func (s *watcherSuite) TestOtherWatchErrorIsStillForwarded() {
+	file := filepath.Join(s.T().TempDir(), "file")
+	s.Require().NoError(os.WriteFile(file, []byte("x"), 0o600))
+
+	// A path below a regular file fails with ENOTDIR, neither not-exist nor permission.
+	s.Equal([]string{"watch library"}, s.reconcileOne(filepath.Join(file, "sub")))
 }
 
 // TestHandlePanicIsReported: a panic while handling one event is reported and

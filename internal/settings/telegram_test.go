@@ -178,10 +178,13 @@ func (s *telegramSuite) TestPutErrors() {
 }
 
 func (s *telegramSuite) TestPutFR003Message() {
-	s.svc.updateErr = &notify.ValidationError{Field: "enabled", Msg: "needs token"}
+	s.svc.updateErr = &notify.ValidationError{
+		Field: "enabled",
+		Msg:   "notifications need a bot token and a channel ID",
+	}
 	w := s.do(http.MethodPut, "/settings/telegram", `{"enabled":true,"chat_id":"","silent":false}`)
 	s.Equal(http.StatusBadRequest, w.Code)
-	s.Equal("enabled: needs token", s.decode(w)["error"])
+	s.Equal("notifications need a bot token and a channel ID", s.decode(w)["error"])
 }
 
 func (s *telegramSuite) TestPutBadJSON() {
@@ -219,11 +222,13 @@ func (s *telegramSuite) TestTestSendAPIErrorLogsWarnOnly() {
 	s.Equal(1, strings.Count(s.logBuf.String(), "\n"))
 }
 
-func (s *telegramSuite) TestTestSendBusy() {
-	s.svc.testErr = context.DeadlineExceeded
+func (s *telegramSuite) TestTestSendTimeoutIsBadGateway() {
+	s.svc.testErr = fmt.Errorf("Post: %w", context.DeadlineExceeded)
 	w := s.do(http.MethodPost, "/settings/telegram/test", "")
-	s.Equal(http.StatusServiceUnavailable, w.Code)
-	s.Equal("busy, try again", s.decode(w)["error"])
+	s.Equal(http.StatusBadGateway, w.Code)
+	m := s.decode(w)
+	s.Contains(m["error"], "deadline exceeded")
+	s.Contains(m, "status")
 }
 
 func (s *telegramSuite) TestStatusOnly() {

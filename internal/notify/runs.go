@@ -77,7 +77,7 @@ func (s *Service) RunFinished(o RunOutcome) {
 
 // runCompleted sends the recovery message for a library that was failing,
 // then the unreadable summary and mass-removal alert, which depend only on
-// this run.
+// this run, and enters its error lines into the error window.
 func (s *Service) runCompleted(o RunOutcome) {
 	if s.clearFailing(o.LibraryID) {
 		s.enqueue(message{kind: KindRunRecovered, text: runRecoveredText(s.prefix, o)})
@@ -88,6 +88,7 @@ func (s *Service) runCompleted(o RunOutcome) {
 	if massRemoval(o) {
 		s.enqueue(message{kind: KindMassRemoval, text: massRemovalText(s.prefix, o)})
 	}
+	s.addRunErrors(o)
 }
 
 // LibraryRemoved forgets a deleted library's failing state, sending nothing.
