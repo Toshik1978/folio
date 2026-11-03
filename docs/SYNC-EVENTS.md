@@ -49,7 +49,7 @@ no import cycles.
 internal/events/
   event.go      // Event envelope + EventType constants (no behavior)
   broker.go     // Broker + Subscription: Subscribe/Unsubscribe/Publish/Close
-  broker_test.go
+  broker_test.go, subscription_test.go, events_test.go
 internal/api/
   events.go     // GET /api/sync/events handler (SSE framing)
 ```
@@ -62,7 +62,8 @@ is the idiomatic Go "accept interfaces where they're used" placement (and the
 
 **Wiring.** The composition root (`cmd/folio-idx/main.go`) constructs one
 `*events.Broker` and injects the same instance into both `sync.New(...)` (via the
-`WithEvents` option) and `api.New(...)` (through `server.Deps.Events`). The
+`WithEvents` option) and `api.NewSync(log, syncEngine, broker)`, the handler
+that serves the stream. The
 publisher is **nil-tolerant** — a nil publisher makes every emit a no-op, so
 engine/parser tests that don't care about events stay unchanged.
 
@@ -97,7 +98,7 @@ event sharing that key.
 | Event | Delivery | `CoalesceKey` | JSON `data` |
 | :--- | :--- | :--- | :--- |
 | `status` | reliable | `"status"` | `{"running":bool,"current":int,"kind":"sync"\|"deep_index","queued":[int]}` |
-| `library` | reliable | `""` | `{"id":int,"status":"active"\|"error"}` |
+| `library` | reliable | `""` | `{"id":int,"status":"active"\|"error"\|"purged"}` |
 | `progress` | best-effort | `"progress:<id>"` | `{"library":int,"processed":int,"total":int?}` |
 
 - `status` is `sync.Status` verbatim, so the frontend `SyncStatus` type matches.
@@ -127,9 +128,10 @@ guarantees a fresh client never waits for the next transition. **No initial
 `progress` frame is sent** — the handler has no access to the per-run reporter's
 counts; during an active sync the first `progress` event follows within one
 throttle interval (~250 ms). The snapshot is eventually-consistent rather than
-strictly serialized: because the engine emits `status` *after* releasing `e.mu`,
-a coalesced `status` event may land immediately after the connect snapshot, but
-coalescing keeps only the latest, so the client converges on current state within
+strictly serialized: the handler subscribes before it takes the snapshot, and the
+engine re-takes `e.mu` to emit `status` after each mutation, so a coalesced
+`status` event may land immediately after the connect snapshot, but coalescing
+keeps only the latest, so the client converges on current state within
 microseconds. Because every reconnect re-delivers a full snapshot, **no
 `Last-Event-ID` / replay is implemented** (YAGNI).
 
@@ -202,8 +204,8 @@ public-facing deployment would add a per-remote-addr limit upstream.
 
 ## Graceful shutdown
 
-`cmd/folio-idx/main.go`'s `serve()` calls `broker.Close()` **before**
-`srv.Shutdown()`. SSE handlers are long-lived and never become idle on their own,
+`cmd/folio-idx/main.go`'s `shutdown()` (run by `serve()` on a signal or a server
+failure) calls `broker.Close()` **before** `srv.Shutdown()`. SSE handlers are long-lived and never become idle on their own,
 so `http.Server.Shutdown` (which waits for in-flight requests to finish) would
 otherwise block for the full shutdown timeout. `broker.Close()` fires every
 subscription's `Done()`, the handlers return promptly (their `select` unblocks on
@@ -224,9 +226,12 @@ chokepoints — surgical instrumentation:
 | queue grows | `enqueue` (`internal/sync/engine.go`) | `status` |
 | run starts / advances | `dequeue` sets `current` | `status` |
 | run ends (`current=0`) | worker loop | `status` |
+| post-sync fill starts (kind → `deep_index`) | `setCurrentKind` | `status` |
 | sync success | `recordLastSync` | `library {id,"active"}` |
 | checkpoint-skip that lifted read failures | `recheckSkipped` | `library {id,"active"}` |
-| sync error / panic | `markError` (covers both `runSync` error and `safeSync` panic) | `library {id,"error"}` |
+| Deep Index / post-sync fill success | `deepIndexLibrary` / `fillImported` | `library {id,"active"}` |
+| sync or Deep Index error / panic | `markError` (covers `runSync` error, `failDeepIndex` and `safeSync` panic) | `library {id,"error"}` |
+| library torn down (sweep or "Purge Now") | `purgeLibrary` (`internal/sync/purge.go`) | `library {id,"purged"}` |
 
 Progress events are emitted from the per-run reporter (see [Progress](#progress)).
 
@@ -254,8 +259,9 @@ nothing as errored.
 **Post-sync fill.** A sync that added files runs a Deep Index over the books it inserted, in the same queue turn (only when a deep indexer is wired via `WithDeepIndexer`; otherwise a no-op), after its write guard is released (see [DATABASE.md](./DATABASE.md#sync-engine)). During the fill `status.kind` is `"deep_index"`, so the UI shows "Deep indexing…", and it emits the same `progress` frames. On success it emits `library {id,"active"}`. On failure it only logs a warning and emits no `library {id,"error"}`, because the sync itself succeeded.
 
 **Scope boundary (deliberate):** `library` events cover **background** row changes
-(scheduled / watcher syncs) — what the 5s poll existed to catch. User-initiated
-**add / purge** keep their existing client-side refetch-after-action. Accepted
+(scheduled / watcher syncs, Deep Index runs, and the async purge teardown) — what
+the 5s poll existed to catch. User-initiated **add / delete** keep their existing
+client-side refetch-after-action. Accepted
 trade-off: a library added/removed *from another tab* won't appear live until a
 sync event or manual refresh; a future `library`-added/removed event closes that
 gap with no schema change.
@@ -276,13 +282,14 @@ _ = http.NewResponseController(w).SetWriteDeadline(time.Time{})
 ```
 
 **Compression.** The middleware chain (`internal/server/server.go`) is
-`proxyHeaders → (dev) Logger → recoverer` — there is **no** `middleware.Compress`,
-so no gzip buffering to defeat.
+`proxyHeaders → (dev) Logger → recoverer`, plus `sameSiteGuard → formBodyGuard`
+on the `/api` group — there is **no** `middleware.Compress`, so no gzip buffering
+to defeat.
 
 **Flow:**
 
-1. Assert `http.Flusher` (else `500`); reject a nil/closed broker with `503`.
-2. `broker.Subscribe()` → `(sub, ok)`; `!ok` → `503`. `defer Unsubscribe(sub)`.
+1. Assert `http.Flusher` (else `500`); reject a nil broker with `503`.
+2. `broker.Subscribe()` → `(sub, ok)`; `!ok` (at cap, or closed) → `503`. `defer Unsubscribe(sub)`.
 3. Clear the write deadline (above).
 4. Headers, then flush: `Content-Type: text/event-stream`,
    `Cache-Control: no-cache`, `Connection: keep-alive`, `X-Accel-Buffering: no`.
@@ -307,9 +314,10 @@ client (see the watchdog rationale under *Frontend*).
 ## Frontend
 
 `useSyncStatus.ts` uses an `EventSource` instead of a poll; its public API
-(`running`/`current`/`currentKind`/`queued`/`isSyncing`/`isBusy`/`currentName`/`currentProgress`)
-is consumed by `SyncBanner`, `LibraryStats`, and `SettingsPage`. `connect()` /
-`disconnect()` are driven by the app-shell lifecycle. SSE payloads are parsed
+(`running`/`current`/`currentKind`/`queued`/`isSyncing`/`isQueued`/`isBusy`/`currentName`/`currentProgress`/`refresh`)
+is consumed by `SyncBanner`, `SettingsPage` and its `LibraryTable`, `BooksPage`,
+and `useLibraryActions`. `connect()` / `disconnect()` are driven by the app-shell
+lifecycle (`AppShell.vue`). SSE payloads are parsed
 through a guarded `parseEvent<T>` helper (a malformed frame is ignored, not
 thrown out of the listener).
 
@@ -354,20 +362,27 @@ tab-switch-back.
 
 ### Parser interface
 
-`internal/ingest/ingest.go` carries a `Reporter` on the parser contract (explicit
-param, not context-smuggled):
+`internal/ingest/ingest.go` declares the `Reporter`; the parser contract that
+carries it (explicit param, not context-smuggled) is declared by its consumer, in
+`internal/sync/parser.go`:
 
 ```go
+// internal/ingest/ingest.go
 type Reporter interface {
     SetTotal(n int) // call when an exact total is cheaply known (0 = indeterminate)
     Add(n int)      // increment processed
 }
+
+// internal/sync/parser.go
 type Parser interface {
-    Sync(ctx context.Context, library dbq.Library, db *sql.DB, covers CoverStore, r Reporter) (Result, error)
+    Sync(ctx context.Context, library dbq.Library, db *sql.DB,
+        covers ingest.CoverStore, r ingest.Reporter) (ingest.Result, error)
 }
 ```
 
-`ingest.NopReporter` (no-op) is used by parser tests and non-progress callers.
+There is no exported no-op reporter: the engine's unexported `nopReporter`
+(`internal/sync/reporter.go`) stands in when no publisher is wired, and the ingest
+tests use their own.
 
 **Counting lives in the reconciler**, the single per-record chokepoint shared by
 all three parsers: `reconciler.upsert` calls `Add(1)` *after* a record is
@@ -375,8 +390,9 @@ persisted (a failed upsert doesn't tick the bar), and `markSeen` (unchanged file
 on re-sync) also counts. So every parser reports progress with no per-loop
 plumbing.
 
-**The concrete reporter** lives in `sync`, constructed per run in `runSync`, bound
-to the library id, the broker, and the injectable clock `e.now`:
+**The concrete reporter** lives in `sync`, constructed per run by `beginProgress`
+(called from `runSync`, `deepIndexLibrary` and `fillImported`), bound to the
+library id, the broker, and the injectable clock `e.now`:
 
 - Throttles to ~250ms between emits (via `e.now`, so tests are deterministic).
   `Add` accumulates and emits only when the interval elapsed; `SetTotal` emits
@@ -384,7 +400,8 @@ to the library id, the broker, and the injectable clock `e.now`:
 - Publishes `{library, processed, total?}` with `CoalesceKey "progress:<id>"`.
 - The reporter is single-goroutine-per-run (the worker drives one sync at a time);
   its mutex is defensive, and a redundant emit would be harmless (coalesced).
-- When `e.events == nil`, `runSync` passes `NopReporter` — zero overhead.
+- When `e.events == nil`, `beginProgress` returns `nopReporter` and an inert
+  finish func — zero overhead.
 
 **Per-parser total** (determinate vs count-up):
 

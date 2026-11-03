@@ -8,11 +8,11 @@
 
 | Tool | Version | Role |
 | :--- | :--- | :--- |
-| Vue 3 | 3.4.x | Framework (Composition API, `<script setup>`) |
+| Vue 3 | 3.5.x | Framework (Composition API, `<script setup>`) |
 | Vue Router | 5.x | Client-side routing |
 | TypeScript | 6.x | All source files are `.ts` / `<script setup lang="ts">` |
 | Vite | 8.x | Dev server (HMR), production bundler |
-| Vitest | 4.x | Unit / component tests (happy-dom + `@vue/test-utils`) |
+| Vitest | 5.x | Unit / component tests (happy-dom + `@vue/test-utils`) |
 | Tailwind CSS | 4.x | Utility styling via `@tailwindcss/vite` plugin |
 | DaisyUI | 5.x | Tailwind plugin: component classes (`btn`, `card`, `modal`, `toast`, …) + the multi-theme system |
 | PrimeIcons | 7.x | Icon font (`pi pi-*`). There is no Vue component library (e.g. PrimeVue) — components are built from DaisyUI/Tailwind classes |
@@ -29,7 +29,8 @@ The frontend is a standalone npm project inside `web/`. It has its own `package.
 | Script | Command | Purpose |
 | :--- | :--- | :--- |
 | `dev` | `vite` | Dev server with HMR on `:5173` |
-| `build` | `vue-tsc --noEmit && vite build` | Type-check then bundle to `dist/` |
+| `typecheck` | `vue-tsc --noEmit` | Type-check all `.ts` / `.vue` sources (CI lint gate) |
+| `build` | `npm run typecheck && vite build` | Type-check then bundle to `dist/` |
 | `preview` | `vite preview` | Preview production build locally |
 | `test` | `vitest run` | Run unit/component tests once |
 | `test:watch` | `vitest` | Run tests in watch mode |
@@ -39,7 +40,7 @@ The frontend is a standalone npm project inside `web/`. It has its own `package.
 | `format` | `prettier --write "src/**/*.{ts,vue,css}"` | Prettier write |
 | `format:check` | `prettier --check "src/**/*.{ts,vue,css}"` | Prettier check (CI lint gate) |
 
-The `build` script enforces type safety: `vue-tsc --noEmit` runs the TypeScript compiler against all `.ts` and `.vue` files before Vite bundles anything.
+The `build` script enforces type safety: `typecheck` (`vue-tsc --noEmit`) runs the TypeScript compiler against all `.ts` and `.vue` files before Vite bundles anything.
 
 ---
 
@@ -54,7 +55,8 @@ The `build` script enforces type safety: `vue-tsc --noEmit` runs the TypeScript 
 
 `vite.config.ts` also holds the Vitest block (`test`): `happy-dom` environment,
 `src/**/*.spec.ts` includes, a shared `src/test/setup.ts`, and v8 coverage with
-a `json-summary` reporter consumed by CI for the coverage badge.
+`json-summary` and `cobertura` reporters consumed by CI (coverage badge and PR
+coverage comment).
 
 ### Path Alias
 
@@ -261,8 +263,8 @@ the theme picker, and a settings gear.
   set, or plain `Stored` when no last-four is available, and it is sent only
   when typed), channel ID, optional topic ID, silent
   option, a **Send test message** button (enabled only when the saved settings
-  have a token and channel) and a status line with the last delivered / last
-  failed time. **Libraries** holds library management (list with
+  have a token and channel and the form has no unsaved edits) and a status line
+  with the last delivered / last failed time. **Libraries** holds library management (list with
   status/last-sync/book-count, add-library form, and the per-library actions
   described under [Notable component behaviors](#notable-component-behaviors)).
 
@@ -303,24 +305,26 @@ App.vue
 ├── ToastHost.vue          # renders queued toasts (DaisyUI `toast`)
 └── ConfirmModal.vue       # app-wide confirm dialog (DaisyUI `modal`, useConfirm)
 BooksPage → BookCard.vue (grid; star rating) + sort control
-          + BookDetailModal.vue → BookDetail.vue → FixMatchModal.vue
-            (the /books/:id detail overlay; "Fix match" opens the modal)
+          + BookDetailModal.vue → BookDetail.vue → FixMatchModal.vue ·
+            EditBookModal.vue (→ TagSelect.vue, IdentifierEditor.vue) · CoverPickerModal.vue
+            (the /books/:id detail overlay; "Fix match", edit and cover buttons open the modals)
 SettingsPage (thin composition surface) → LibraryStats.vue (catalog overview +
             Re-index All slot) · settings/OpdsSettingsForm.vue ·
             settings/TelegramSettingsForm.vue · settings/LibraryTable.vue · settings/LibraryForm.vue
-Shared: AlphabetSelector.vue, AlphabetList.vue
+Shared: AlphabetSelector.vue, AlphabetList.vue, StarRating.vue
 Composables: useInfiniteScroll.ts, useTheme.ts, useLibrary.ts, useLibraryActions.ts,
              useFacetValues.ts, useSyncStatus.ts, useAlphabetBrowse.ts,
              useToast.ts, useConfirm.ts, useModalFocus.ts
-Utils: libraryStatus.ts (statusClass / statusLabel / typeLabel)
+Utils: libraryStatus.ts (statusClass / statusLabel / typeLabel), format.ts,
+       language.ts, query.ts (asString for route query values)
 ```
 
 `useToast`/`ToastHost` and `useConfirm`/`ConfirmModal` replace ad-hoc
 `alert`/`confirm` calls with app-styled DaisyUI components; `useAlphabetBrowse`
 backs the list pages (loads one alphabet bucket at a time — see
 [List pages](#pages) and [API.md](./API.md#rest-api-api)). `useModalFocus`
-gives the three class-toggled modals (`BookDetailModal`, `ConfirmModal`,
-`FixMatchModal`) the keyboard behavior a native `showModal()` would provide:
+gives the five class-toggled modals (`BookDetailModal`, `ConfirmModal`,
+`FixMatchModal`, `EditBookModal`, `CoverPickerModal`) the keyboard behavior a native `showModal()` would provide:
 focus moves into the dialog on open, Tab is trapped inside it, focus returns to
 the trigger on close, and Escape closes only the **top-most** modal (a shared
 stack, so a confirm layered over another modal never closes both).
@@ -333,8 +337,9 @@ instead of spinning forever) — `fetchBooks`, `fetchBook`, `searchMatch`,
 `syncLibrary`, `reactivateLibrary`, `forcePurgeLibrary`, `fetchSettings`,
 `updateSettings`, `fetchFacets`, and so on. A few **feature composables** now sit
 over that wrapper where logic is shared or stateful: `useLibraryActions`
-centralizes every library mutation (create/update/sync/reindex/delete/reactivate/
-purge) with the toast + refresh handling, and `useFacetValues` loads the search
+centralizes every library mutation (create/update/sync/reindex/deep-index/delete/
+reactivate/purge, plus Re-index All and Deep Index All) with the confirm + toast +
+refresh handling, and `useFacetValues` loads the search
 bar's Format/Language pickers from `/api/facets`.
 
 Pages are **composition surfaces, not monoliths.** `SettingsPage` is a thin shell
@@ -366,7 +371,9 @@ filters. `route.query` is the source of truth; chips are derived from it (so
 navigation and removal stay in sync — the bar never holds stale local text).
 
 - Focus the input to open the facet menu: **Author**, **Book Title**,
-  **Book Series**.
+  **Book Series**, plus the value facets **Format** and **Language**, which open
+  a pick-list of the values `/api/facets` reports (`useFacetValues`) instead of
+  taking typed text.
 - Pick a facet, type a value, press Enter to commit a chip. A value beginning
   with `=` (e.g. `=Terry Pratchett`) commits an **exact** match; otherwise it is a
   token-level full-text search.
@@ -390,36 +397,31 @@ filter. Covered by `SearchInput.spec.ts` (real memory-router tests).
 
 ### Settings → Libraries tab (`SettingsPage.vue`)
 
-- **Status-branched actions.** Each library card branches on `library.status`. A
-  `pending_purge` library hides **Sync**/**Delete** and instead shows
-  **Reactivate** and **Purge Now** (the latter behind a `ConfirmModal` via
-  `useConfirm`), plus a
-  "Books purge {purge_at}" note; all other statuses keep Sync/Delete. The
+- **Status-branched actions.** Each library row (`LibraryTable.vue`) branches on
+  `library.status`. A `pending_purge` library hides its normal actions and
+  instead shows **Reactivate** and **Purge Now** (the latter behind a
+  `ConfirmModal` via `useConfirm`), with "Purges {purge_at}" in the Last sync
+  column; all other statuses keep **Sync Now**, **Re-index**, **Deep Index**,
+  **Edit** and **Delete**. The
   matching API clients are `reactivateLibrary` and `forcePurgeLibrary` in
   `api.ts`. (Books remain visible until the grace period ends or Purge Now runs
   — `DELETE` only starts the countdown.)
-- **Live polling.** While the Libraries tab is open the page polls `fetchLibraries`
-  every 5 s (`watch(tab)` starts/stops the timer; cleared on unmount), so a card
-  reflects `syncing → active`/`error` without a manual refresh. The backend
-  leaves the DB status `active` on success / writes `error` on failure;
-  `syncing` is in-memory only, so without polling the card froze on whatever
-  status it first rendered. This tab-scoped list poll is **separate from** the
-  app-wide sync heartbeat (`useSyncStatus`, a steady 3 s interval driving the global
-  `SyncBanner`). Both must stay **fixed intervals — never an idle backoff**: a fast
-  sync (a bad path fails in milliseconds, a small library indexes in seconds) can
-  start *and* finish inside a longer gap, so a slower idle cadence silently misses
-  the whole run — the banner never shows and the status never settles. The list poll
-  exists precisely because that running window is unobservable to the heartbeat for
-  such syncs, so the list must re-read regardless of what the heartbeat saw.
-- **Empty state.** When `libraries.length === 0` the tab renders a centered
-  `.source-empty` placeholder ("No libraries yet — add one below to start indexing
-  your library.") instead of a collapsed list, so the gap between the tab border
-  and the add-library separator reads intentionally.
+- **Live updates.** There is no page-level poll. Rows reflect
+  `syncing → active`/`error` and live progress through the app-wide
+  `useSyncStatus` SSE stream (`GET /api/sync/events`, connected once by
+  `AppShell`): a `library` event refetches the shared `useLibrary` list, and a
+  `progress` event drives the row's progress bar. Only when the stream is dead
+  does `useSyncStatus` fall back to a fixed 3 s poll of `/api/sync/status` that
+  also refetches the list every tick. See [SYNC-EVENTS.md](./SYNC-EVENTS.md).
+- **Empty state.** When `libraries.length === 0` the tab renders a
+  `role="status"` alert (`data-testid="library-empty"`: "No libraries yet — add
+  one below to start indexing your library.") above the empty table.
 - **Re-index All.** Above the libraries table (shown only when at least one
   library exists) a **Re-index All** button (behind a `ConfirmModal`) calls
   `triggerReindexAll` → `POST /api/sync`, which forces a full re-read of every
-  library, bypassing checkpoint gating. Per-library **Sync Now** is forced the
-  same way; automatic (scheduled/watcher) syncs stay gated.
+  library, bypassing checkpoint gating. Per-library **Re-index** (also behind a
+  `ConfirmModal`) is forced the same way; per-library **Sync Now** (no confirm)
+  and automatic (scheduled/watcher) syncs stay gated.
 - **Deep Index.** Each library row has a **Deep Index** button (disabled while
   the row is busy) next to Re-index, and the table header has **Deep Index All**
   (shown when at least one library exists, disabled while a run is active) next
@@ -449,14 +451,14 @@ filter. Covered by `SearchInput.spec.ts` (real memory-router tests).
   a per-library scope would be misleading.
 
 Covered by `SettingsPage.spec.ts` (Reactivate/Purge-Now branch, Re-index All,
-polling start/stop, empty-state) and `api.spec.ts` (purge path).
+empty-state), `LibraryTable.spec.ts`, and `api.spec.ts` (purge path).
 
 ### Ratings & Fix Match (`BookCard.vue`, `BookDetail.vue`, `FixMatchModal.vue`)
 
 - **Star ratings.** `BookCard.vue` (grid) and `BookDetail.vue` render a 1–5 star
   row when `book.rating` is set (`pi-star-fill` / `pi-star`); unrated books show
-  none. `BooksPage` adds a "Newest / Top rated" sort `<select>` that writes
-  `?sort=rating` to the route, which the grid `watch`es and refetches.
+  none. `BooksPage` adds a "Recently added / Newest / Top rated" sort `<select>`
+  that writes `?sort=source` / `?sort=rating` (nothing for the default) to the route, which the grid `watch`es and refetches.
 - **Fix Match.** `BookDetail.vue` has a "Fix match" button that opens
   `FixMatchModal.vue`, prefilled with the book's title + authors. The modal calls
   `searchMatch(id, q)` to list Google Books candidates and

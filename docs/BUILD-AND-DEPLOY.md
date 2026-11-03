@@ -9,7 +9,7 @@
 ### Prerequisites
 
 - Go ≥ 1.27
-- Node.js ≥ 20
+- Node.js 24 (`web/package.json` `engines`: `>=24 <25`; pinned in `.mise.toml` and `web/.nvmrc`)
 - npm (bundled with Node)
 - [Task](https://taskfile.dev) (`brew install go-task`)
 - Optional: `golangci-lint` (for `task lint:backend`), `sqlc` (for `task generate`), and [git-cliff](https://git-cliff.org) ≥ 2.13.0 (for `task changelog`, only needed to cut a release — `mise use -g git-cliff@latest`)
@@ -69,12 +69,14 @@ The output binary is `./bin/folio-idx`.
 | `build` | depends on `build:backend` | Full production build |
 | `test:backend` | `go test -v -coverpkg=./internal/... ./internal/...` | Run all Go tests with coverage |
 | `test:frontend` | `npm run test` (in `web/`) | Run Vitest unit/component tests (`test:frontend:ci` adds coverage + JSON) |
-| `test` | `test:backend` + `test:frontend` | Run all tests |
+| `test:beads` | `sh tools/beads/test.sh` | Test the beads git hook scripts against a fake `br` |
+| `test` | `test:frontend` + `test:backend` + `test:beads` | Run all tests |
+| `lint:sql` | `grep` over `internal/db/queries` + `internal/db/migrations` | Fail on non-ASCII bytes in SQL fed to sqlc (they silently truncate generated queries) |
 | `lint:backend` | `golangci-lint run` + `lint:layout` | Run Go linters |
 | `lint:layout` | `go run ./internal/tools/layoutcheck ./cmd ./internal` | Source-layout conventions no golangci-lint linter covers (see `.claude/CLAUDE.md`) |
 | `lint:frontend` | `npm run typecheck`, `npm run lint`, `npm run format:check` (in `web/`) | Type-check, ESLint, Prettier check |
 | `lint` | `lint:frontend` + `lint:sql` + `lint:backend` | Lint everything |
-| `format:backend` | `golangci-lint fmt` | Run gofumpt via golangci-lint |
+| `format:backend` | `golangci-lint fmt` + `golangci-lint run --fix` | Run gofumpt via golangci-lint, then apply linter auto-fixes |
 | `format:frontend` | `npm run format` (in `web/`) | Prettier write |
 | `format` | backend + frontend | Run all formatters |
 | `build:docker` | `docker build -t folio-idx:latest .` | Build the production image |
@@ -130,12 +132,14 @@ Two GitHub Actions workflows live in `.github/workflows/`.
 
 ### `ci.yml` — "Code Verification"
 
-Runs on every push to `main` and on every pull request. Three jobs:
+Runs on every push to `main`, on every pull request, and weekly (Mondays 04:37
+UTC, against `main`) so a new Go patch or golangci-lint release that adds a
+finding turns `main` red before it lands on an unrelated PR. Three jobs:
 
 | Job | Steps |
 | :--- | :--- |
-| `lint` | `task setup:ci`, then golangci-lint (via `golangci/golangci-lint-action` at `latest`, matching `.mise.toml`), and the frontend gates (`task lint:frontend`: type-check, ESLint, Prettier check) |
-| `test` | Both test suites with coverage (commands above). Test/coverage results are parsed into shields.io badge JSON and pushed to a Gist (`GIST_ID`/`GIST_SECRET_TOKEN` secrets) — **badges update only on push to `main`**. The final gate step fails the workflow on any test failure or a <80% coverage stack, *after* the (red) badges have published |
+| `lint` | `task setup:ci`, then the frontend gates (`task lint:frontend`: type-check, ESLint, Prettier check), `task lint:sql`, `task lint:layout`, `task test:beads`, and golangci-lint (via `golangci/golangci-lint-action` at `latest`, matching `.mise.toml`, with `skip-cache`) |
+| `test` | Both test suites with coverage (commands above). Test/coverage results are parsed into shields.io badge JSON and pushed to a Gist (`GIST_ID`/`GIST_SECRET_TOKEN` secrets) — **badges update only for runs on `main`** (pushes and the weekly run). On pull requests a coverage summary is posted as a sticky PR comment. The final gate step fails the workflow on any test failure or a <80% coverage stack, *after* the (red) badges have published |
 | `build` | `needs: [lint, test]`; runs `task build` to prove the full frontend-embed-backend production build compiles |
 
 Every job takes its toolchain from `go-version-file: go.mod` with
@@ -177,12 +181,13 @@ Stage 1: frontend-builder (node:24-alpine)
   ├── npm install
   └── npm run build → /app/web/dist/
 
-Stage 2: backend-builder (golang:1.27-alpine)
+Stage 2: backend-builder (golang:1.27-alpine, on $BUILDPLATFORM)
   ├── go mod download
-  ├── COPY Go sources (cmd/, internal/, web/embed.go)
+  ├── COPY Go sources (cmd/, internal/, web/embed.go) + web/src/test/fixtures/
   ├── COPY --from=frontend-builder dist/ → web/dist/
-  ├── CGO_ENABLED=0 go test -v ./...
-  └── CGO_ENABLED=0 go build → /app/bin/folio-idx
+  ├── CGO_ENABLED=0 go test -v ./...   (once, natively; cached across targets)
+  ├── CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build → /app/bin/folio-idx
+  └── mkdir /data, chown 65532:65532
 
 Stage 3: runtime (gcr.io/distroless/static-debian12)
   ├── Pre-installed ca-certificates, tzdata, nonroot user
@@ -221,9 +226,10 @@ docker run -p 8080:8080 -v /path/to/library:/library:ro -v folio-data:/data foli
 | `node_modules/` | npm dependencies |
 | `/web/dist` | Build output directory (fully git-ignored) |
 | `/bin/` | Compiled binary |
-| `*.db`, `*.db-journal`, `*.db-shm`, `*.db-wal` | SQLite runtime files |
+| `/web/coverage/`, `/web/test_status.json` | Frontend test/coverage artifacts |
+| `/data/`, `*.db`, `*.db-journal`, `*.db-shm`, `*.db-wal` | Local data dir and SQLite runtime files |
 | `.env` | Local environment secrets |
 
 ## `.dockerignore` Summary
 
-Excludes `.git`, `node_modules`, `bin`, `web/dist`, DB files, `.env`, `Dockerfile`, and `docs` from the Docker build context.
+Excludes `.git`, `node_modules`, `bin`, `web/dist`, `data/`, DB files, `.env`, `Dockerfile`, `Taskfile.yml`, and `docs` from the Docker build context.

@@ -28,7 +28,7 @@ All automation is managed via `go-task` (`Taskfile.yml`).
   ```
 
 ### Local Development Servers
-* Run backend Go server (watches for changes, listens on `PORT` or default `8080`):
+* Run backend Go server (`go run`, no file watching — restart it after Go changes; listens on `PORT` or default `8080`):
   ```bash
   task dev:backend
   ```
@@ -46,7 +46,7 @@ All automation is managed via `go-task` (`Taskfile.yml`).
   ```bash
   task test
   ```
-* Run all linters (Go + frontend) — the same gate CI enforces. Run it before finishing any change:
+* Run all linters (Go + frontend + SQL, plus the Go layout check) — the same gate CI enforces. Run it before finishing any change:
   ```bash
   task lint
   ```

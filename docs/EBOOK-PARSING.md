@@ -20,9 +20,10 @@ by extension (`.epub`, `.fb2`, `.fb2.zip`, `.mobi`, `.azw`, `.azw3`, `.pdf`);
 each format's quirks are documented below. The `.fb2.zip` wrapper normalizes to
 the `fb2` format label (see the FB2 section).
 
-The package depends only on the standard library plus `pdfcpu` and
+The package depends only on the standard library plus `pdfcpu`,
 `golang.org/x/text` (legacy charset decoding — FB2 declared encodings via
-`encoding/ianaindex`, MOBI cp1252 via `encoding/charmap`), all pure-Go, with a
+`encoding/ianaindex`, MOBI cp1252 via `encoding/charmap`), `samber/lo` and the
+sibling `internal/htmltext` (the FB2 decoder's HTML entity table), all pure-Go, with a
 sanitizer at the serve boundary — no CGo — so the binary still builds statically
 (`CGO_ENABLED=0`) for Alpine/Distroless. See
 [BUILD-AND-DEPLOY.md](./BUILD-AND-DEPLOY.md).
@@ -225,7 +226,9 @@ attribute and the EPUB `calibre:series_index` meta (see per-format notes).
   closing tag is consumed, so the body and the large base64 `<binary>` blocks
   after it are never read or decoded. Over a lazy zip entry this inflates only
   the first few KB. The read is capped at 64 MiB and honours the declared
-  charset; a stream with no `<description>` is an error. This is an unexported
+  charset. A well-formed document with no `<description>` (the header ends at
+  the first `<body>` or `<binary>`) reads as empty metadata; only a stream with
+  no XML element at all is an error. This is an unexported
   detail of the parser; callers reach it only through `Dispatcher.Metadata`.
 - **Cover** — `Cover` token-scans the stream for the `<coverpage>` image
   reference in the description, then decodes only the `<binary>` carrying that
@@ -305,10 +308,10 @@ What each parser can populate (✓ = yes, — = not available in the format):
 | Title | ✓ | ✓ | ✓ (EXTH 503 ▸ header) | ✓ |
 | Authors | ✓ | ✓ | ✓ | ✓ |
 | Genres | ✓ (`dc:subject`, free text) | ✓ (`<genre>`, flibusta codes) | — | — |
-| Annotation | ✓ (HTML) | ✓ (normalized) | ✓ (EXTH 103, often absent) | — |
+| Annotation | ✓ (HTML) | ✓ (normalized) | ✓ (EXTH 103, often absent) | ✓ (info `Subject`, plain text) |
 | Series | ✓ | ✓ | — | — |
 | Series number | ✓ (`calibre:series_index`) | ✓ (`<sequence number>`) | — | — |
-| Language | ✓ | ✓ | ✓ | maybe |
+| Language | ✓ | ✓ | ✓ (EXTH 524) | — |
 | Publisher | ✓ (`dc:publisher`) | ✓ (`publish-info`) | ✓ (EXTH 101) | — |
 | Year | ✓ (`dc:date`) | ✓ (`publish-info`) | ✓ (EXTH 106) | ✓ (`CreationDate`) |
 | Pages | — | — | — | ✓ |
@@ -322,8 +325,9 @@ format (see [DATABASE.md](./DATABASE.md#metadata-merge--gap-fill)).
 
 Two further tiers fill what the index and sibling formats can't, lazily on first
 view: a **local backfill** parses the actual book file
-(`ingest.Extractor.Description`, used for INPX books — it recovers the annotation
-and identifiers the index lacks), and an **online enrichment** tier queries
+(`ingest.LocalBackfiller` over `ingest.Extractor.Description`; it matters most
+for INPX books, recovering the annotation and identifiers the index lacks, and
+the **Deep Index** runs the same read in bulk), and an **online enrichment** tier queries
 Google Books for the metadata-poor formats above — PDFs (no
 annotation/genres/identifiers) and retail MOBIs (often no EXTH 103 description)
 especially, matching by ISBN or title+author. Both gap-fill, are guarded, and run
@@ -448,6 +452,9 @@ total:
   This is deliberate defense-in-depth — the browser never trusts the payload
   even if a server-side pass is bypassed or regresses. Covered by
   `BookDetail.spec.ts`.
+- The MCP endpoint (`internal/mcpserver`) never returns HTML: its tools reduce
+  the annotation to plain text with `htmltext.StripMarkup` (shortened to an
+  excerpt in search results).
 - Serve-time was chosen over ingest-time because it protects **every** source
   and any already-stored data immediately, with no re-ingest needed.
 

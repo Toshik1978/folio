@@ -16,7 +16,7 @@
 | :--- | :--- | :--- | :--- |
 | **Web UI + REST API** | `/`, `/api/*`, SPA routes | **None.** Unauthenticated. | **Mandatory** external authenticator (reverse-proxy SSO, forward-auth, VPN/LAN isolation, …). |
 | **OPDS catalog** | `/opds/*` (except cover) | **HTTP Basic Auth** (bcrypt, configured at runtime). | Nothing required; works for mobile reading apps that can't do browser SSO. |
-| **OPDS cover** | `/opds/books/{id}/cover` | None (intentionally public). | Nothing — covers are low-sensitivity and many readers fetch them without forwarding credentials. |
+| **OPDS cover** | `/opds/books/{id}/cover`, `/opds/books/{id}/cover/thumbnail` | None (intentionally public). | Nothing — covers are low-sensitivity and many readers fetch them without forwarding credentials. |
 | **MCP endpoint** | `/mcp` | **None.** Unauthenticated. | **Mandatory** external authenticator that speaks OAuth for MCP clients (e.g. Cloudflare Access). See [MCP endpoint](#mcp-endpoint-mcp-and-claudeai). |
 
 The rest of this document explains each row and the cross-cutting hardening
@@ -59,13 +59,14 @@ authenticates itself), and put everything else behind your authenticator.
 
 Folio enforces its own authentication for OPDS feeds and book downloads using
 `auth.Authenticator.Middleware` (`internal/auth/auth.go`), injected into the OPDS
-handler as the `opds.Authenticator` interface. The cover endpoint is routed
+handler as the `opds.Authenticator` interface. The cover endpoints are routed
 separately and left unauthenticated to accommodate reading-client limitations.
 
 ```go
 func (h *Handler) Register(r chi.Router) {
-    // 1. Unauthenticated cover endpoint (supports reader image-loader limitations)
+    // 1. Unauthenticated cover endpoints (supports reader image-loader limitations)
     r.Get("/books/{id}/cover", h.serveCover)
+    r.Get("/books/{id}/cover/thumbnail", h.serveThumbnail)
 
     // 2. Protected catalog endpoints
     r.Group(func(pr chi.Router) {
@@ -90,7 +91,7 @@ func (h *Handler) Register(r chi.Router) {
     **closed, not open** — OPDS won't serve feeds or downloads until a credential
     is set. A **severe startup security warning** (`WarnIfUnprotected`) flags the
     empty state, but it does *not* fall through to unauthenticated serving. The
-    only always-public route is the cover endpoint.
+    only always-public routes are the cover and cover-thumbnail endpoints.
 - **Verification (`verifyCredentials`):** the username is compared in constant
   time, and a username mismatch still runs a full bcrypt compare against a
   process-local dummy hash — so a wrong username costs the same ~100ms as a wrong
@@ -111,7 +112,8 @@ func (h *Handler) Register(r chi.Router) {
   images asynchronously. These sub-frameworks do not forward the HTTP Basic Auth
   credentials supplied when registering the OPDS feed. If the cover endpoint
   required auth, covers would fail to load (broken-image icons). Excluding
-  `/opds/books/{id}/cover` from Basic Auth lets clients render covers cleanly;
+  `/opds/books/{id}/cover` (and its `/thumbnail` variant, which feeds advertise
+  as the OPDS thumbnail link) from Basic Auth lets clients render covers cleanly;
   since covers are not highly sensitive metadata, exposing them is an acceptable
   trade-off for feed usability.
 
@@ -214,8 +216,9 @@ The canonical external base URL is configured instead, via the optional
 ## Outbound Connections
 
 Historically Folio made **no outbound network calls** — every catalog source is a
-local, read-only file or SQLite DB. It now has two outbound dependencies, both
-optional and best-effort: Google Books (metadata enrichment) and Telegram (owner
+local, read-only file or SQLite DB. It now has three kinds of outbound
+connection, all optional and best-effort: Google Books (metadata enrichment),
+the user-initiated cover search and cover-from-URL actions, and Telegram (owner
 notifications, off by default).
 
 ### Google Books
@@ -252,6 +255,22 @@ and the Fix Match feature (`internal/googlebooks`, stdlib `net/http`).
 
 A deployment that must stay fully offline can block egress to `googleapis.com` at
 the network layer.
+
+### Cover search and cover from URL
+
+Only on an explicit user action in the book detail's cover picker:
+
+- **Cover search** (`GET /api/books/{id}/cover/search`, `internal/metasearch`)
+  queries Amazon (`www.amazon.com`), Goodreads (`www.goodreads.com`), Open
+  Library (`openlibrary.org`) and Google Books for cover candidates, sending the
+  book's title, first author and ISBN (a typed query replaces the title and
+  drops the author). Each provider has an 8s per-request timeout; a failing
+  provider is skipped.
+- **Set cover from URL** (`POST /api/books/{id}/cover` with `{"url":…}`) makes
+  the server download that image (a picked candidate or a URL the user typed).
+  Only `http`/`https` URLs are fetched, the body is size-capped, and hosts that
+  resolve to private, loopback or link-local addresses are refused (SSRF guard,
+  `internal/api/edit.go`).
 
 ### Telegram (owner notifications)
 
@@ -386,10 +405,11 @@ redirected to or rejected by Access, not answered by Folio.
    glibc dependencies. Reduces attack surface in the Distroless runtime image.
 5. **Read-only source access** — The application never writes to mounted library
    volumes.
-6. **Minimal egress** — The outbound dependencies are the Google Books API and,
-   when the owner opts in, the Telegram Bot API (see
-   [Outbound Connections](#outbound-connections)); both are best-effort. Google
-   Books carries no catalog contents or credentials. Telegram is the owner
+6. **Minimal egress** — The outbound dependencies are the Google Books API, the
+   user-initiated cover search / cover-from-URL fetches and, when the owner opts
+   in, the Telegram Bot API (see
+   [Outbound Connections](#outbound-connections)); all are best-effort. Google
+   Books and the cover providers carry no catalog contents or credentials. Telegram is the owner
    notification exception: messages to the channel the owner configured may carry
    library names, error texts (including file paths inside a library), and book
    IDs or links to the instance, but never book titles taken from catalog

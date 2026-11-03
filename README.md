@@ -86,9 +86,9 @@ docker run -p 8080:8080 -v /path/to/library:/library:ro -v folio-data:/data foli
 | [EBOOK-PARSING.md](docs/EBOOK-PARSING.md) | Per-format metadata & cover extraction (epub/fb2/mobi/pdf), annotation pipeline. |
 | [FRONTEND.md](docs/FRONTEND.md) | Vue 3 SPA: Vite, TypeScript, Tailwind v4 + DaisyUI, theming, dev proxy. |
 | [DATABASE.md](docs/DATABASE.md) | SQLite schema, FTS5 search, ingestion sources, sync engine. |
-| [API.md](docs/API.md) | REST API, OPDS catalog, file streaming strategy. |
+| [API.md](docs/API.md) | REST API, OPDS catalog, file streaming strategy, read-only MCP endpoint (`/mcp`). |
 | [SYNC-EVENTS.md](docs/SYNC-EVENTS.md) | Real-time sync status via Server-Sent Events (SSE), event broker, progress reporting. |
-| [NETWORKING.md](docs/NETWORKING.md) | Security model: OPDS Basic Auth, bring-your-own authenticator for the UI/API, CSRF guard. |
+| [NETWORKING.md](docs/NETWORKING.md) | Security model: OPDS Basic Auth, bring-your-own authenticator for the UI/API and `/mcp`, CSRF guard, outbound connections (Google Books, cover search, Telegram). |
 | [BUILD-AND-DEPLOY.md](docs/BUILD-AND-DEPLOY.md) | Taskfile targets, Docker multi-stage build, local dev workflow. |
 | [CHANGELOG.md](CHANGELOG.md) | What changed in each release and why, with the commit list behind it. |
 

@@ -46,7 +46,8 @@ internal/db/migrations/
 ├── 005_fts_rowid_key.sql              # books_fts keyed by rowid (= books.id) instead of a book_id column
 ├── 006_fts_contentless.sql            # books_fts becomes contentless-delete; adds the books_fts_vocab view
 ├── 007_book_read_failures.sql         # book_read_failures: remembered unreadable sources, per book and flow
-└── 008_fts_vocab_col.sql              # books_fts_vocab (row view) replaced by books_fts_vocab_col (per-column view)
+├── 008_fts_vocab_col.sql              # books_fts_vocab (row view) replaced by books_fts_vocab_col (per-column view)
+└── 009_books_described_index.sql      # idx_books_described: partial index over books with a non-empty annotation
 ```
 
 The migration files are embedded into the binary (`go:embed`) and run
@@ -67,9 +68,11 @@ CREATE TABLE libraries (
     type TEXT NOT NULL,                -- 'calibre' | 'inpx' | 'folder'
     path TEXT NOT NULL UNIQUE,         -- filesystem path to source
     sync_interval_seconds INTEGER NOT NULL DEFAULT 3600,
-    status TEXT NOT NULL DEFAULT 'active', -- 'active' | 'syncing' | 'pending_purge' | 'error';
-                                       -- a successful (or skipped-unchanged) sync resets
-                                       -- 'error' back to 'active'
+    status TEXT NOT NULL DEFAULT 'active', -- 'active' | 'pending_purge' | 'error' ('syncing'
+                                       -- is reported in memory, never stored); a failed
+                                       -- sync or Deep Index run sets 'error', and a
+                                       -- successful sync resets it to 'active' (an
+                                       -- errored library is never checkpoint-skipped)
     purge_at INTEGER,                  -- unix timestamp; NULL if not pending purge
     last_sync_at INTEGER,
     last_sync_error TEXT,
@@ -141,6 +144,8 @@ CREATE TABLE books (
                                   -- 1000 = manual, 0 = none or online enrichment.
                                   -- Persisted so a partial re-sync can't downgrade a
                                   -- richer edition's cover
+    cover_state INTEGER NOT NULL DEFAULT 0, -- migration 004; lazy cover marker:
+                                  -- 0 = unknown, 1 = cover cached, 2 = parsed, none
     UNIQUE (library_id, library_key),
     FOREIGN KEY (library_id) REFERENCES libraries(id) ON DELETE CASCADE,
     FOREIGN KEY (series_id) REFERENCES series(id) ON DELETE SET NULL
@@ -214,6 +219,9 @@ CREATE INDEX idx_book_identifiers_book ON book_identifiers (book_id);
 CREATE INDEX idx_books_imported_at ON books (imported_at DESC, added_at DESC, id DESC); -- default "Recently added" browse sort
 CREATE INDEX idx_book_files_format ON book_files (file_format, book_id);         -- covering: per-format facet / stats group-by
 CREATE INDEX idx_books_language ON books (language);                            -- language facet / stats
+CREATE INDEX idx_book_identifiers_lookup ON book_identifiers (type, value);     -- migration 003: identifier lookups
+CREATE INDEX idx_books_described ON books (id)                                  -- migration 009: count of described
+    WHERE annotation IS NOT NULL AND annotation <> '';                          -- books for "similar books"
 ```
 
 ### Read Failures
@@ -335,7 +343,10 @@ CREATE VIRTUAL TABLE books_fts_vocab_col USING fts5vocab (books_fts, 'col'); -- 
   index: one row per (term, column) with that column's document frequency. "Similar
   books" reads the `annotation` rows, so a word's weight depends on descriptions
   only. It replaced 006's `books_fts_vocab` `row` view, which counted a book for a
-  match in any column. Both are views; neither stores data.
+  match in any column. Both are views; neither stores data. The other input of
+  that weight, the number of described books, is counted through the partial
+  index `idx_books_described` (migration 009, `internal/db/similar.go`), whose
+  `WHERE` clause must stay identical to the count's.
 - `unicode61 remove_diacritics 1` normalizes accented characters for multilingual search.
 - The up leg of 006 re-tokenizes every row once, on the first startup that carries it.
   The down leg is lossy: it rebuilds rows from `books` with the raw (unstripped)
@@ -411,19 +422,21 @@ different book (see [Stable identity](#stable-identity-library_key)).
 
 ```
 [ fsnotify Event ] ---+
-                      +---> [ Go Channel (cap: 1) ] ---> [ Sequential Worker Goroutine ]
+                      +---> [ FIFO queue, deduped per (library, kind) ] --wake chan (cap: 1)--> [ Sequential Worker Goroutine ]
 [ Cron / Ticker ]  ---+
                       |
-[ UI POST /sync ]  ---+
+[ UI / API triggers ]-+   (Sync Now, Re-index, Re-index All, Deep Index)
 ```
 
 ### Design Constraints
 
-1. **Single writer** — The work-queue channel has capacity `1`, so only one indexing
-   routine runs at a time. Process-wide, *every* writer serializes on one shared
-   `db.WriteGuard`: a sync, a library **teardown** (the deadline-driven purge sweep and
-   the on-demand "Purge Now"), and the API write handlers (manual edit, Fix Match,
-   cover upload, library CRUD). So a cascade delete or an API edit never races an
+1. **Single writer** — One worker goroutine drains the request queue (one pending
+   request per library and kind; a capacity-`1` wake channel nudges it), so only one
+   indexing routine runs at a time. Process-wide, *every* writer serializes on one shared
+   `db.WriteGuard`: a sync, a Deep Index batch, a library **teardown** (the deadline-driven
+   purge sweep and the on-demand "Purge Now"), the API write handlers (manual edit, Fix
+   Match, cover upload, library CRUD), and the settings writes (OPDS credentials,
+   Telegram notification settings). So a cascade delete or an API edit never races an
    in-flight sync transaction even though it is invoked off the worker goroutine.
    Readers do **not** take the guard — WAL lets them run concurrently with the one
    writer. Acquisition is **context-aware** (`Lock(ctx) error`): the sync and purge
@@ -431,7 +444,8 @@ different book (see [Stable identity](#stable-identity-library_key)).
    completion or shutdown), while an API write waits at most a short budget (≈2s) and
    then returns `503` ("indexing in progress; retry shortly") rather than blocking past
    the server's 60s `WriteTimeout`. Best-effort write-on-read paths (lazy metadata
-   backfill, enrichment mark-checked) skip the write and retry on a later view.
+   backfill, enrichment mark-checked, read-failure records) skip the write and retry on
+   a later view.
    `WithTx` rolls back a panicking transaction and re-panics with a `*db.TxPanic`
    (original value plus the stack captured at the recover point; `Unwrap` exposes an
    error value, so `errors.Is(p, http.ErrAbortHandler)` still works). An already-wrapped
@@ -439,7 +453,7 @@ different book (see [Stable identity](#stable-identity-library_key)).
    recover reports the crash once, with the panicking frames. `TxPanic` exposes
    `CrashPlace()`/`CrashStack()` for the crash reporter; `db` has no reporter dependency.
 2. **Debouncing** — `fsnotify` file-write events start a 10-second cooldown timer. Subsequent mutations reset the timer. This avoids parsing partially transferred files.
-3. **Checkpoint gating** — Before reading a source the engine compares the parser's current artifact fingerprint (`Checkpointer.Checkpoint`) with the stored `libraries.checkpoint`; an unchanged Calibre/INPX source is skipped entirely. The fingerprint is computed once, *before* the read, and that pre-read value is what gets stored on success — so an artifact modified mid-sync mismatches on the next pass and is re-read instead of skipped. Folder is event-driven (fsnotify) and has no single artifact, so it always walks. A manual "Sync Now" bypasses the gate.
+3. **Checkpoint gating** — Before reading a source the engine compares the parser's current artifact fingerprint (`Checkpointer.Checkpoint`) with the stored `libraries.checkpoint`; an unchanged Calibre/INPX source is skipped entirely. The fingerprint is computed once, *before* the read, and that pre-read value is what gets stored on success — so an artifact modified mid-sync mismatches on the next pass and is re-read instead of skipped. Folder is event-driven (fsnotify) and has no single artifact, so it always walks. A library whose last run failed (`status = 'error'`) is never skipped. The per-library "Sync Now" respects the gate; the manual "Re-index" (`POST /api/libraries/{id}/reindex`) and "Re-index All" (`POST /api/sync`) bypass it.
 4. **Reconciliation (no wipe-and-reinsert)** — Each run upserts books by `(library_id, library_key)` and diffs their files by `source_path`+size, writing only real changes, then prunes files that vanished and books left with no files. Because IDs are not regenerated, `/books/{id}` links and cached covers survive re-syncs. Metadata a grouped book lacks (annotation, series, publisher, year, rating) is gap-filled from whichever edition carries it.
 5. **Atomic purge teardown** — `purgeLibrary` evicts each book's cached cover
    first, **best-effort** (a stuck cover file must not block reclaiming the rows;
@@ -556,14 +570,15 @@ book (old one pruned). Fully clearing a field still needs a force-rebuild
 Sync writes what each source cheaply offers. Two further tiers fill gaps the
 first time a book's detail is viewed (`GET /api/books/{id}`), each guarded by a
 `books` flag so it runs at most once. A per-book in-flight claim
-(`Handler.claimLazy`) additionally keeps two *concurrent* first views from
+(`BooksHandler.claimLazy`) additionally keeps two *concurrent* first views from
 running the tiers twice: the losing request skips them and serves the current
 row, and the persisted result shows on the next view.
 
 1. **Local backfill** (`metadata_checked`) — parse the actual book file (an INPX
    index, unlike the file it points at, carries no annotation or identifiers) and
-   persist the annotation + cleaned identifiers. Implemented by `ingest.Extractor`
-   (`Description`) behind the api `MetadataExtractor` interface. Formats that are
+   persist the annotation + cleaned identifiers. Implemented by
+   `ingest.LocalBackfiller`, which reads through `ingest.Extractor.Description`
+   (its `FileExtractor` interface); the books handler and OPDS share it. Formats that are
    not read for descriptions (PDF) are skipped; of a book's other files, the
    highest-ranked one that reads successfully wins (EPUB, then FB2, then the
    MOBI family). Files are read in place through `ingest`'s resolver: a plain
@@ -593,7 +608,8 @@ row, and the persisted result shows on the next view.
    transaction. The Google fetch is bounded by `enrichTimeout` (5s) and the
    persist by its own detached `persistTimeout` (3s), so a slow answer or a
    client disconnect can't roll back a commit (see
-   [NETWORKING.md](./NETWORKING.md#outbound-connections)). Implemented by `ingest.Enricher` behind the api
+   [NETWORKING.md](./NETWORKING.md#outbound-connections)). Implemented by `metasearch.Coordinator` (over the
+   registry's identify-capable sources; Google Books is the only one) behind the api
    `MetadataEnricher` interface; see [BACKEND.md](./BACKEND.md) and
    [EBOOK-PARSING.md](./EBOOK-PARSING.md#metadata-coverage-by-format).
 
@@ -670,7 +686,9 @@ local files only, never calls the network, and never writes to a library source.
   nothing, and the rest is picked up next time.
 - **Result.** `DeepIndexResult` counts `Checked`, `Filled` (annotation newly
   set), `Skipped` (already had one), `Broken` (recorded broken this run),
-  `KnownBroken` (skipped by the rule above) and `Errors` (retryable only). Each
+  `KnownBroken` (skipped by the rule above) and `Errors` (retryable only), and
+  keeps the first five newly broken books with their reasons in `NewlyBroken`
+  (for the run-finished notification). Each
   committed book lands in exactly one of `Checked`, `Broken`, `KnownBroken` or
   `Errors`. The `deep index finished` log line carries all six, as `checked`,
   `filled`, `skipped`, `broken`, `known_broken` and `errors`. A re-run over an
@@ -698,7 +716,8 @@ description/publisher/year.
 - **Dynamic book filter** — `db.FilterBooks` / `CountFilteredBooks`
   (`internal/db/booksfilter.go`) assemble their query with the
   `github.com/stephenafamo/bob` query builder (sqlite dialect): conditional
-  joins/WHERE via `sm` mods, FTS5 `MATCH` and the `EXISTS` format guard via
+  joins/WHERE via `sm` mods, FTS5 `MATCH` and the `EXISTS` format and
+  unreadable (`book_read_failures`, flow `metadata`, current reader version) guards via
   `sqlite.Raw`, and a dynamic `ORDER BY`: BM25 relevance for searches; otherwise
   `rating` DESC (unrated last) when `sort=rating`, `added_at` DESC ("Newest")
   when `sort=source`, and `imported_at` DESC ("Recently added", the default)

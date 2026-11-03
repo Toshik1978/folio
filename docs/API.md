@@ -20,7 +20,7 @@
 | `GET` | `/api/books/{id}/cover/thumbnail` | Aspect-preserving cover thumbnail (≤400px longest side); falls back to the full cover (no-cache) until generated | Image binary (`image/jpeg`) |
 | `GET` | `/api/books/{id}/cover/search` | Cover search: multi-source cover candidates for `?q=<query>` | JSON array of `CoverCandidate` objects |
 | `GET` | `/api/books/{id}/match` | Fix Match: Google Books candidates for `?q=<query>` | JSON array of candidates |
-| `POST` | `/api/books/{id}/match` | Apply a chosen volume (`{"volume_id":"…"}`), overwriting the book's metadata | JSON updated book object |
+| `POST` | `/api/books/{id}/match` | Apply a chosen candidate (`{"source":"…","volume_id":"…"}`), overwriting the book's metadata | JSON updated book object |
 | `PUT` | `/api/books/{id}` | Update book fields (title, authors, annotation, etc.) | JSON updated book object |
 | `PUT` | `/api/books/{id}/cover` | Upload a new cover image (binary body) | JSON updated book object |
 | `POST` | `/api/books/{id}/cover` | Set cover from URL (`{"url":"…"}`) — server downloads the image | JSON updated book object |
@@ -34,7 +34,9 @@
 | `GET` | `/api/publishers` | One alphabet bucket of publishers (`?letter=&page=&limit=`) | JSON array `[{name,book_count}]` |
 | `GET` | `/api/publishers/letters` | Alphabet buckets that have publishers | JSON array of letters |
 | `POST` | `/api/sync` | Force a re-index of all active libraries, bypassing checkpoint gating (the "Re-index All" action) | JSON sync status |
+| `POST` | `/api/deep-index` | Queue Deep Index for every library that is not `pending_purge` (the "Deep Index All" action; see below) | `202` JSON sync status |
 | `GET` | `/api/sync/status` | Current sync state (idle/running, active library, queue) | JSON object |
+| `GET` | `/api/sync/events` | Live sync status and progress stream (see [SYNC-EVENTS.md](./SYNC-EVENTS.md)) | `text/event-stream` |
 | `GET` | `/api/stats` | Whole-catalog statistics (counts, sizes, per-format/per-language breakdowns). **Always global** — `/api/stats` is not library-scoped; any `?library=` is ignored | JSON object (see Stats Object) |
 | `GET` | `/api/facets` | Distinct format & language **values** for the search-bar facet pickers; `?library=<id>` scopes, absent = all | JSON `{"formats":[…],"languages":[…]}` |
 
@@ -217,7 +219,7 @@ ratings (see [DATABASE.md](./DATABASE.md#ingestion-sources)). It also includes:
 
 - `cover_url` (string|null) — the cached cover image URL, versioned `?v=<content_hash>-<cover_version>` (e.g. `/api/books/42/cover?v=abc123-1717200000`).
 - `thumbnail_url` (string|null) — the downscaled cover URL, versioned `?v=<content_hash>-<cover_version>-<thumb_token>` (e.g. `/api/books/42/cover/thumbnail?v=abc123-1717200000-t400q85`). The token encodes the rendering spec (max dimension + JPEG quality) and changes when those constants change, so clients automatically re-fetch when the thumbnail generation parameters are updated.
-- `unreadable` (object, detail only) — `{"reason": "<reason>"}`, present only on `GET /api/books/{id}` when the book's metadata could not be read at the current reader version (the same rule as the `unreadable` filter and `unreadable_count`). A recorded failure makes the on-view fill re-read the file, so the field disappears once the file is fixed. Absent otherwise; list items never carry it.
+- `unreadable` (object, single-book responses only) — `{"reason": "<reason>"}` with `reason` one of `corrupt`, `missing_entry`, `too_large`, `crashed`; present only on responses that return one book (`GET /api/books/{id}` and the edit, cover and Fix Match writes) when the book's metadata could not be read at the current reader version (the same rule as the `unreadable` filter and `unreadable_count`). A recorded failure makes the on-view fill re-read the file, so the field disappears once the file is fixed. Absent otherwise; list items never carry it.
 
 ### Alphabet browse (`/api/<entity>` + `/api/<entity>/letters`)
 
@@ -239,10 +241,12 @@ quota when empty). When no enricher is wired both return `501`.
 
 - `GET /api/books/{id}/match?q=<query>` — candidates for a free-text query:
   ```json
-  [{ "volume_id": "zyTCAlFPjgYC", "title": "Dune", "authors": ["Frank Herbert"], "year": 1965, "thumbnail": "https://…" }]
+  [{ "source": "googlebooks", "volume_id": "zyTCAlFPjgYC", "title": "Dune", "authors": ["Frank Herbert"], "year": 1965, "thumbnail": "https://…" }]
   ```
   A missing `q` → `400`; an upstream failure → `502`.
-- `POST /api/books/{id}/match` with `{"volume_id":"…"}` fetches that volume,
+- `POST /api/books/{id}/match` with `{"source":"…","volume_id":"…"}` (both
+  echoed from the chosen candidate; `source` routes the id to the provider that
+  produced it) fetches that volume,
   **overwrites** the book's annotation/publisher/year (plus identifiers and
   cover), restamps `content_hash` (so the `?v=<content_hash>-<cover mtime>`
   cache-buster updates), and returns the updated book object. A missing `volume_id` → `400`.
@@ -298,7 +302,7 @@ implicitly on credential rotation, since the cache key embeds the stored hash).
 Credentials are stored in the `settings` table (password hashed) and are
 configured solely via `PUT /api/settings`; there is no environment-variable seed.
 Until a credential is set, every protected OPDS route returns `401` — the catalog
-is closed (the public cover endpoint is the only exception).
+is closed (the public cover and cover-thumbnail endpoints are the only exceptions).
 
 ### OPDS Feed Format
 
@@ -307,7 +311,7 @@ Responses conform to the OPDS 1.2 / Atom XML specification. Reading apps (Moon+ 
 #### Decision: hand-rolled feed, not a feed library
 
 `internal/opds/atom.go` defines its own `feed`/`entry`/`link` structs and
-marshals the XML directly (~107 lines, dependency-free). This is deliberate:
+marshals the XML directly (~170 lines, dependency-free). This is deliberate:
 OPDS is **not** vanilla Atom but a constrained Atom profile with required
 extensions this code models explicitly — OPDS link relations
 (`http://opds-spec.org/acquisition`, `/image`, `/image/thumbnail`), the catalog
@@ -385,8 +389,8 @@ timeout.
 | PDF | `application/pdf` |
 | _anything else_ | `application/octet-stream` (fallback) |
 
-The mapping lives in `bookfile.ContentType` (`internal/bookfile/bookfile.go`),
-keyed on the stored `book_files.file_format` label. A `.fb2.zip` file is stored
+The mapping lives in `ebook.ContentType` (`internal/ebook/dispatch.go`, which
+`bookfile.ContentType` delegates to), keyed on the stored `book_files.file_format` label. A `.fb2.zip` file is stored
 with format `fb2` (the dispatcher normalizes the wrapper — see
 [EBOOK-PARSING.md](./EBOOK-PARSING.md#fb2)), so it serves with the FB2 type.
 
@@ -412,9 +416,10 @@ Set `PUBLIC_URL` so the `link` in results is absolute.
 - **Read-only:** every tool is annotated `readOnlyHint: true`, reads only the
   catalog database, and makes no outbound network calls.
 - **Instructions** sent at `initialize` tell the model that search matches whole
-  words without stemming, to use `stem*` prefixes and `any_terms` for word forms
-  and synonyms, to narrow with `genre`/`language` from `list_facets`, and to give
-  the user each book's `link`.
+  words without stemming, to use `stem*` prefixes for word forms and `any_terms`
+  for synonyms, to narrow with `genre`/`language` from `list_facets`, to read the
+  `excerpt` (or call `get_book`) to judge plot-level fit, and to give the user
+  each book's `link`.
 - **Errors** are tool errors (`isError: true`) with an actionable message, e.g.
   `genre not found; call list_facets`, `book not found`, or a message asking for
   at least one search criterion.

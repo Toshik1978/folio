@@ -78,7 +78,7 @@ The only write targets are the internal SQLite database and the extracted cover 
 
 The `/*` catch-all handler implements this decision tree:
 
-1. **API/OPDS guard** — Requests to `/api/*` or `/opds/*` that don't match a registered handler return `404` (never serve HTML for missed API/OPDS routes).
+1. **API/OPDS/MCP guard** — Requests to `/api/*`, `/opds/*` or `/mcp/*` that don't match a registered handler return `404` (never serve HTML for missed API/OPDS/MCP routes).
 2. **Root path** — `/` or empty path serves `index.html` directly via `http.FileServer`.
 3. **Static asset check** — The embedded FS is probed. If the file exists and is not a directory, it is served directly.
 4. **Missing asset guard** — Requests with a non-`.html` file extension that don't exist in the FS return `404` (prevents broken JS/CSS loads returning HTML).
@@ -95,10 +95,10 @@ folio/
 │       └── main.go         # Composition root: wire deps, serve, graceful shutdown
 ├── internal/               # Private Go packages (compiler-enforced; no pkg/)
 │   ├── api/                # REST handlers (/api/*) — books, lists, libraries, sync, stats, facets
-│   ├── settings/           # /api/settings handler (thin adapter over the auth service)
+│   ├── settings/           # /api/settings (thin adapter over the auth service) and /api/settings/telegram (over notify)
 │   ├── auth/               # OPDS Basic Auth: credential storage, hashing, middleware
 │   ├── opds/               # OPDS catalog handlers + hand-rolled Atom XML (/opds/*)
-│   ├── mcpserver/          # Read-only MCP server (/mcp): list_libraries, list_facets, search_books, get_book
+│   ├── mcpserver/          # Read-only MCP server (/mcp): list_libraries, list_facets, search_books, get_book, similar_books
 │   ├── server/             # Router assembly, middleware, SPA serving
 │   ├── db/                 # SQLite open/migrations, sqlc queries (dbq/), dynamic book filter (Bob)
 │   ├── ingest/             # Source parsers (calibre/inpx/folder) + reconciliation/merge
@@ -113,7 +113,8 @@ folio/
 │   ├── bookfile/           # Shared file-format helpers (content types, extensions)
 │   ├── config/             # Env-var config parsing
 │   ├── logging/            # slog logger construction
-│   └── events/             # Sync-event broker (SSE fan-out); see SYNC-EVENTS.md
+│   ├── events/             # Sync-event broker (SSE fan-out); see SYNC-EVENTS.md
+│   └── tools/layoutcheck/  # Dev-only lint command for Go source-layout conventions (`task lint:layout`)
 ├── web/                    # Vue 3 SPA (separate npm project; see FRONTEND.md)
 │   ├── embed.go            # go:embed directive, GetFileSystem()
 │   ├── index.html          # SPA entry HTML
@@ -124,6 +125,7 @@ folio/
 │   ├── vite.config.ts      # Vite + Vue + Tailwind/DaisyUI plugins + Vitest config
 │   └── tsconfig.json       # TypeScript strict config
 ├── docs/                   # Living design documents
+├── specs/                  # Spec Kit feature specs, plans and contracts (e.g. MCP tool contract)
 ├── Dockerfile              # Multi-stage production build
 ├── Taskfile.yml            # Dev and build automation (go-task)
 ├── sqlc.yaml               # sqlc codegen config
@@ -137,7 +139,10 @@ The composition root (`cmd/folio-idx/main.go`) owns the wiring: it injects an
 through one random-access `ebook.Source`), assembles the per-library-type
 parser map the sync engine dispatches on, and registers a stats
 observer (`WithStatsObserver`) the engine notifies when catalog stats change, so a
-finished sync refreshes the cached catalog stats. The full `internal/` package layout, dependency graph, and
+finished sync refreshes the cached catalog stats. It also hands the engine the
+Deep Index runner (`WithDeepIndexer`) and the optional Telegram notifier
+(`WithNotifier`), which additionally taps the error log and receives recovered
+handler panics. The full `internal/` package layout, dependency graph, and
 composition root are documented in [BACKEND.md](./BACKEND.md#package-structure).
 
 ### Boundary: `web/` Package
@@ -157,26 +162,27 @@ package is imported as `github.com/Toshik1978/folio/web`.
 | Layer | Technology | Version | Purpose |
 | :--- | :--- | :--- | :--- |
 | Backend language | Go | 1.27 | Server, embedding, file I/O |
-| HTTP router | go-chi/chi/v5 | 5.3.x | Routing, middleware |
+| HTTP router | go-chi/chi/v5 | 5.5.x | Routing, middleware |
 | Logging | log/slog (stdlib) | — | Structured logging via a custom `slog.Handler` (`logging.New`) that writes to **stdout** with per-env levels (dev → Debug, else Info), an `[ENV]` line tag, and ANSI colors when the output is a TTY; chi `middleware.Logger` bridged to slog for dev request logs |
 | Config | caarlos0/env/v11 | 11.x | Struct-based environment variable parsing |
 | Env files | joho/godotenv | 1.5.x | Auto-load `.env` files in development |
-| SQLite driver | modernc.org/sqlite | 1.51.x | Pure-Go SQLite (no CGo), includes FTS5 |
-| Migrations | pressly/goose/v3 | 3.27.x | Versioned SQL migration files (embedded) |
+| SQLite driver | modernc.org/sqlite | 1.60.x | Pure-Go SQLite (no CGo), includes FTS5 |
+| Migrations | pressly/goose/v3 | 3.29.x | Versioned SQL migration files (embedded) |
 | DB codegen | sqlc | — | Type-safe Go from SQL (config in `sqlc.yaml`) |
-| Dynamic queries | stephenafamo/bob | 0.45.x | Builder-only (no codegen) for the dynamic book filter |
-| Scheduler | go-co-op/gocron/v2 | 2.21.x | Per-library periodic sync scheduling |
+| Dynamic queries | stephenafamo/bob | 0.50.x | Builder-only (no codegen) for the dynamic book filter |
+| MCP server | modelcontextprotocol/go-sdk | 1.8.x | Stateless Streamable-HTTP MCP server for `/mcp` (`internal/mcpserver`) |
+| Scheduler | go-co-op/gocron/v2 | 2.23.x | Per-library periodic sync scheduling |
 | File watching | fsnotify | 1.10.x | Kernel-level FS events (folder sources) |
 | HTML sanitizer | microcosm-cc/bluemonday | 1.0.x | Sanitize annotations at the serve boundary |
-| PDF parsing | pdfcpu/pdfcpu | 0.12.x | Pure-Go PDF cover/page extraction |
+| PDF parsing | pdfcpu/pdfcpu | 0.16.x | Pure-Go PDF cover/page extraction |
 | Crypto | golang.org/x/crypto | — | OPDS password hashing (bcrypt) |
 | Charset decoding | golang.org/x/text | — | Legacy encodings in ebook parsers (FB2 via `encoding/ianaindex`, MOBI cp1252 via `encoding/charmap`); name folding itself is stdlib `strings.ToUpper` (`db.Fold`) |
 | Image decoding | golang.org/x/image | — | BMP/TIFF/WebP cover decoding for JPEG normalization (`covers/convert.go`) |
-| UUID detection | gofrs/uuid/v5 | 5.4.x | Drop UUID-like junk identifiers during identifier cleaning (`ingest/identifier.go`) |
-| Frontend framework | Vue 3 | 3.4.x | SPA (Composition API, `<script setup>`) |
+| UUID detection | gofrs/uuid/v5 | 5.5.x | Drop UUID-like junk identifiers during identifier cleaning (`ingest/identifier.go`) |
+| Frontend framework | Vue 3 | 3.5.x | SPA (Composition API, `<script setup>`) |
 | Router | Vue Router | 5.x | Client-side routing |
 | Frontend lang | TypeScript | 6.x | Type safety across all `.ts` and `.vue` files |
-| Bundler / tests | Vite · Vitest | 8.x · 4.x | Dev server, production build, unit/component tests |
+| Bundler / tests | Vite · Vitest | 8.x · 5.x | Dev server, production build, unit/component tests |
 | CSS framework | Tailwind CSS | 4.3.x | Utility-first styling via `@tailwindcss/vite` |
 | Component classes | DaisyUI | 5.x | Tailwind plugin: component classes + multi-theme system |
 | Icon font | PrimeIcons | 7.x | Icon set (`pi pi-*`); no Vue component library (e.g. PrimeVue) |
