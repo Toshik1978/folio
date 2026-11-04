@@ -2,12 +2,16 @@ package ebook
 
 import (
 	"archive/zip"
+	"bytes"
 	"context"
 	"io"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
+
+	"golang.org/x/text/encoding"
+	"golang.org/x/text/encoding/unicode"
 )
 
 type fb2Suite struct {
@@ -200,6 +204,51 @@ func (s *fb2Suite) TestHeaderNoAnnotation() {
 	s.Require().NoError(err)
 	s.Equal("T", m.Title)
 	s.Empty(m.Annotation)
+}
+
+// TestHeaderUTF16 covers FB2 files saved as UTF-16 with a byte order mark,
+// common in older flibusta archives. The BOM decides the encoding, even when
+// the XML declaration names another one (some such files declare UTF-8).
+func (s *fb2Suite) TestHeaderUTF16() {
+	cases := []struct {
+		name string
+		enc  encoding.Encoding
+		decl string
+	}{
+		{"le declared utf-16", unicode.UTF16(unicode.LittleEndian, unicode.UseBOM), "utf-16"},
+		{"be declared utf-16", unicode.UTF16(unicode.BigEndian, unicode.UseBOM), "UTF-16"},
+		{"le mislabelled utf-8", unicode.UTF16(unicode.LittleEndian, unicode.UseBOM), "UTF-8"},
+		{"le mislabelled windows-1251", unicode.UTF16(unicode.LittleEndian, unicode.UseBOM), "windows-1251"},
+	}
+	for _, tc := range cases {
+		doc := `<?xml version="1.0" encoding="` + tc.decl + `"?>` +
+			`<FictionBook><description><title-info><book-title>Проверка</book-title>` +
+			`<annotation><p>Описание</p></annotation></title-info></description></FictionBook>`
+		raw, err := tc.enc.NewEncoder().Bytes([]byte(doc))
+		s.Require().NoError(err, tc.name)
+
+		m, err := parseFB2Header(bytes.NewReader(raw))
+		s.Require().NoError(err, tc.name)
+		s.Equal("Проверка", m.Title, tc.name)
+		s.Equal("<p>Описание</p>", m.Annotation, tc.name)
+	}
+}
+
+// TestCoverUTF16 proves the cover scan reads a UTF-16 file the same way.
+func (s *fb2Suite) TestCoverUTF16() {
+	plain, err := os.ReadFile(s.fixture("test.fb2"))
+	s.Require().NoError(err)
+	want, err := fb2ScanCover(bytes.NewReader(plain))
+	s.Require().NoError(err)
+	s.Require().NotEmpty(want)
+
+	doc := strings.Replace(string(plain), `encoding="UTF-8"`, `encoding="utf-16"`, 1)
+	raw, err := unicode.UTF16(unicode.LittleEndian, unicode.UseBOM).NewEncoder().Bytes([]byte(doc))
+	s.Require().NoError(err)
+
+	got, err := fb2ScanCover(bytes.NewReader(raw))
+	s.Require().NoError(err)
+	s.Equal(want, got)
 }
 
 func (s *fb2Suite) TestHeaderMalformed() {

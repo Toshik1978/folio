@@ -3,6 +3,7 @@ package ebook
 import (
 	"archive/zip"
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/xml"
@@ -13,6 +14,7 @@ import (
 	"strings"
 
 	"golang.org/x/text/encoding/ianaindex"
+	"golang.org/x/text/encoding/unicode"
 
 	"github.com/Toshik1978/folio/internal/htmltext"
 )
@@ -115,9 +117,17 @@ func parseFB2Header(r io.Reader) (Metadata, error) {
 	}
 }
 
+// newFB2Decoder returns an XML decoder over r. A UTF-16 file is recognised by
+// its byte order mark and transcoded to UTF-8 first; the BOM wins over the
+// encoding the XML declaration names (XML 1.0, Appendix F), so the declared
+// charset is then ignored. Any other file is decoded per its declaration.
 func newFB2Decoder(r io.Reader) *xml.Decoder {
+	r, transcoded := decodeUTF16BOM(r)
 	dec := htmltext.NewDisplayDecoder(r)
 	dec.CharsetReader = charsetReader
+	if transcoded {
+		dec.CharsetReader = keepCharset
+	}
 
 	return dec
 }
@@ -304,6 +314,34 @@ func charsetReader(charset string, input io.Reader) (io.Reader, error) {
 	}
 
 	return enc.NewDecoder().Reader(input), nil
+}
+
+// keepCharset is the CharsetReader for input already transcoded to UTF-8: it
+// ignores the declared charset and passes the input through.
+func keepCharset(_ string, input io.Reader) (io.Reader, error) {
+	return input, nil
+}
+
+// decodeUTF16BOM returns r transcoded to UTF-8, without the BOM, when it starts
+// with a UTF-16 byte order mark, and reports whether it did. Otherwise it
+// returns r's bytes unchanged.
+func decodeUTF16BOM(r io.Reader) (io.Reader, bool) {
+	br := bufio.NewReader(r)
+	// A short or failed peek is not a BOM; the read error, if any, resurfaces
+	// from the decoder's first Read.
+	bom, _ := br.Peek(2)
+
+	var order unicode.Endianness
+	switch {
+	case bytes.Equal(bom, []byte{0xFF, 0xFE}):
+		order = unicode.LittleEndian
+	case bytes.Equal(bom, []byte{0xFE, 0xFF}):
+		order = unicode.BigEndian
+	default:
+		return br, false
+	}
+
+	return unicode.UTF16(order, unicode.ExpectBOM).NewDecoder().Reader(br), true
 }
 
 // fb2Open returns the stream holding the FB2 XML for src: the source itself, or

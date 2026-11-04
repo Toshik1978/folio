@@ -5,4 +5,4 @@ package ebook
 // A stored broken-read record skips the read (ingest's readBook gate) only
 // while its reader version equals ReaderVersion, so a bump re-checks every
 // recorded book.
-const ReaderVersion = 1
+const ReaderVersion = 2
