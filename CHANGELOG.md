@@ -9,6 +9,29 @@ Versions follow [semver](https://semver.org). Commits follow
 
 ---
 
+## v1.7.2 — 2026-11-04
+
+A one-fix release: **search works from a phone**. On mobile, typing a
+query and pressing the keyboard's → (Go) key did nothing, so the search bar
+was effectively unusable there.
+
+### Notable fixes
+
+- **The mobile keyboard's Go key runs the search.** The search bar only
+  reacted to an Enter key press, which Android keyboards often do not report
+  as such. Some send an unnamed key code instead, and others send it while the
+  word just typed is still underlined as unfinished, before the search bar has
+  seen it. Either way the query was dropped. The search bar now runs on the
+  keyboard's submit action and reads the text straight from the box, so both
+  cases work. The keyboard also shows a search key in place of the plain
+  arrow. Desktop behaviour is unchanged.
+
+### Bug Fixes
+
+- [07f73d2](https://github.com/Toshik1978/folio/commit/07f73d20df6943225554437d2217efc89855f0ed) fix(web): submit search from mobile keyboards
+
+---
+
 ## v1.7.1 — 2026-11-04
 
 A small follow-up to v1.7.0. Its new unreadable-book records showed which
