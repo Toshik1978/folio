@@ -2,9 +2,13 @@
   <div class="relative w-full">
     <!-- Container mimics a DaisyUI input; chips + native input stay on one line
          and scroll horizontally when they overflow. -->
-    <div
+    <!-- A form, so a mobile keyboard's Go/→ key submits it: those keyboards
+         do not reliably send an Enter keydown (Android often sends keyCode 229). -->
+    <form
       class="input input-sm flex w-full flex-nowrap items-center gap-1.5 overflow-x-auto focus-within:border-primary focus-within:ring-1"
+      role="search"
       @click="focusInput"
+      @submit.prevent="commit"
     >
       <!-- Active filter chips (one per active route param). -->
       <span
@@ -34,14 +38,14 @@
         ref="inputEl"
         v-model="text"
         type="text"
+        enterkeyhint="search"
         :placeholder="activeFacet ? `Enter ${facetLabel(activeFacet)}…` : 'Search the library…'"
         class="min-w-24 grow border-none bg-transparent p-0 text-sm outline-none focus:outline-none"
         @focus="onFocus"
         @blur="onBlur"
-        @keydown.enter="commit"
         @keydown.esc="resetEntry"
       />
-    </div>
+    </form>
 
     <!-- Facet menu: text facets plus value facets (Format/Language). -->
     <ul
@@ -232,7 +236,10 @@ function nextQuery(): LocationQuery {
 // commit turns the typed text into a chip: into the active facet if one is
 // chosen (value keeps any leading "=" for exact), otherwise a free-text q chip.
 function commit(): void {
-  const value = text.value.trim();
+  // Read the element, not the v-model ref: mobile keyboards keep the typed word
+  // in an IME composition, and v-model only syncs it on compositionend — which
+  // can come after the Go key, leaving the ref empty here.
+  const value = (inputEl.value?.value ?? text.value).trim();
   if (!value) return;
 
   const query = nextQuery();

@@ -48,7 +48,7 @@ describe('SearchInput', () => {
     await wrapper.find('input').trigger('focus');
     await wrapper.findAll('[data-testid="facet-option"]')[0].trigger('mousedown'); // Author
     await wrapper.find('input').setValue('Pratchett');
-    await wrapper.find('input').trigger('keydown.enter');
+    await wrapper.find('form').trigger('submit');
     await flushPromises();
 
     expect(router.currentRoute.value.query).toEqual({ author: 'Pratchett' });
@@ -61,7 +61,7 @@ describe('SearchInput', () => {
     await wrapper.find('input').trigger('focus');
     await wrapper.findAll('[data-testid="facet-option"]')[0].trigger('mousedown'); // Author
     await wrapper.find('input').setValue('=Terry Pratchett');
-    await wrapper.find('input').trigger('keydown.enter');
+    await wrapper.find('form').trigger('submit');
     await flushPromises();
 
     expect(router.currentRoute.value.query).toEqual({ author: '=Terry Pratchett' });
@@ -71,7 +71,23 @@ describe('SearchInput', () => {
     const router = makeRouter();
     const wrapper = await mountAt(router, '/');
     await wrapper.find('input').setValue('robots');
-    await wrapper.find('input').trigger('keydown.enter');
+    await wrapper.find('form').trigger('submit');
+    await flushPromises();
+
+    expect(router.currentRoute.value.query).toEqual({ q: 'robots' });
+  });
+
+  // Mobile keyboards (Gboard etc.) keep the typed word in an IME composition
+  // until it is accepted, and v-model only syncs on compositionend — so the
+  // keyboard's Go/→ key arrives while the bound ref is still empty.
+  it('commits text still under IME composition when the form is submitted', async () => {
+    const router = makeRouter();
+    const wrapper = await mountAt(router, '/');
+    const input = wrapper.find('input');
+    await input.trigger('compositionstart');
+    (input.element as HTMLInputElement).value = 'robots';
+    await input.trigger('input');
+    await wrapper.find('form').trigger('submit');
     await flushPromises();
 
     expect(router.currentRoute.value.query).toEqual({ q: 'robots' });
@@ -81,7 +97,7 @@ describe('SearchInput', () => {
     const router = makeRouter();
     const wrapper = await mountAt(router, '/authors');
     await wrapper.find('input').setValue('   ');
-    await wrapper.find('input').trigger('keydown.enter');
+    await wrapper.find('form').trigger('submit');
     await flushPromises();
 
     expect(router.currentRoute.value.path).toBe('/authors');
@@ -126,7 +142,7 @@ describe('SearchInput', () => {
     const router = makeRouter();
     const wrapper = await mountAt(router, '/?sort=rating');
     await wrapper.find('input').setValue('robots');
-    await wrapper.find('input').trigger('keydown.enter');
+    await wrapper.find('form').trigger('submit');
     await flushPromises();
 
     expect(router.currentRoute.value.query).toEqual({ q: 'robots', sort: 'rating' });
