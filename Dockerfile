@@ -1,8 +1,11 @@
-# Stage 1: Build the Vue frontend
-FROM node:24-alpine AS frontend-builder
+# Stage 1: Build the Vue frontend.
+# Pinned to the native build host ($BUILDPLATFORM) like the Go stage: the output
+# is architecture-independent JS/CSS, so it is built once and shared by every
+# target arch instead of running npm under QEMU for each non-native one.
+FROM --platform=$BUILDPLATFORM node:24-alpine AS frontend-builder
 WORKDIR /app/web
 COPY web/package*.json ./
-RUN npm install
+RUN npm ci
 COPY web/ ./
 RUN npm run build
 

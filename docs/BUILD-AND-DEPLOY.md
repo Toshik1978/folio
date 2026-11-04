@@ -177,9 +177,9 @@ published image (see [Build & Run](#build--run)).
 ### Multi-Stage Pipeline
 
 ```
-Stage 1: frontend-builder (node:24-alpine)
-  ├── npm install
-  └── npm run build → /app/web/dist/
+Stage 1: frontend-builder (node:24-alpine, on $BUILDPLATFORM)
+  ├── npm ci
+  └── npm run build → /app/web/dist/   (once, natively; shared by all targets)
 
 Stage 2: backend-builder (golang:1.27-alpine, on $BUILDPLATFORM)
   ├── go mod download
@@ -205,6 +205,7 @@ Stage 3: runtime (gcr.io/distroless/static-debian12)
 | **Image size** | Final stage is Distroless static (~2MB overhead). Only the static binary + pre-created data folder are copied |
 | **Security** | Non-root `nonroot` user (UID 65532). Binary is root-owned (read-only). Only `/data` is writable |
 | **Static linking** | `CGO_ENABLED=0` removes glibc dependency. Safe for scratch, Alpine, or Distroless bases |
+| **Multi-arch speed** | Both builder stages run on `$BUILDPLATFORM`: the frontend is built once and Go cross-compiles, so no `RUN` step executes under QEMU for a non-native target |
 | **Build cache** | `go.mod`/`go.sum` are copied before source to maximize layer caching on `go mod download` |
 
 ### Build & Run
