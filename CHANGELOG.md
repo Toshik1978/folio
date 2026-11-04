@@ -9,6 +9,49 @@ Versions follow [semver](https://semver.org). Commits follow
 
 ---
 
+## v1.7.1 — 2026-11-04
+
+A small follow-up to v1.7.0. Its new unreadable-book records showed which
+files Folio could not read, and on a large flibusta library most of them turned
+out to be one problem Folio could fix: **FB2 files saved as UTF-16**. This
+release reads them, so their descriptions and covers become available.
+
+### Notable fixes
+
+- **UTF-16 FB2 files are readable.** Older archives contain FB2 files saved as
+  UTF-16 with a byte order mark, which Folio reported as corrupt
+  ("invalid UTF-8" on line 1). It now recognises the byte order mark and
+  converts the file before parsing, trusting the mark over the encoding the
+  file declares — some of these files wrongly declare UTF-8. On one
+  580,000-book catalog this fixed 50 of the 53 unreadable books, and 39 of them
+  carry a description. The other three are genuinely broken and stay reported
+  as corrupt.
+
+### Robustness
+
+- **Faster multi-arch release builds.** The arm64 image no longer builds the
+  frontend under emulation; it is built once and shared by both architectures.
+  This changes nothing in the image itself.
+
+### Upgrading
+
+- **Run Deep Index once on affected libraries.** Books recorded as unreadable
+  by v1.7.0 are re-read under the new reader instead of being skipped. Until
+  that happens they drop out of the unreadable count and filter, so the count
+  may briefly read lower than it will settle at. A Deep Index run re-reads
+  them in seconds, since they are the only books it still has to check, and
+  fills the recovered descriptions.
+
+### Bug Fixes
+
+- [baf20f0](https://github.com/Toshik1978/folio/commit/baf20f09cdbf814bf2b497a6eee0df6bf06833d5) fix(ebook): read UTF-16 FB2 files by their byte order mark
+
+### Others
+
+- [599a414](https://github.com/Toshik1978/folio/commit/599a4142741da4b8bbed7abdee5b41d9df455fed) build: build the frontend natively for multi-arch images
+
+---
+
 ## v1.7.0 — 2026-11-03
 
 This release is about **knowing what is in your library and hearing when
