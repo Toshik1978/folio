@@ -38,10 +38,22 @@ type CoverState interface {
 	MarkFileCover(ctx context.Context, bookID int64) error
 }
 
+// maxColdExtractions bounds how many covers are extracted and decoded at once.
+// Each cold cover holds its source entry, the decoded image and the thumbnail
+// in memory (tens of MB for a large FB2 cover), and a grid page asks for every
+// thumbnail at the same time: unbounded, one cold page of large covers peaked
+// near 1 GB and got the container OOM-killed. Measured on a 12-core host, 4
+// loads a cold page as fast as unbounded extraction (which contends for CPU)
+// at a fraction of the memory.
+const maxColdExtractions = 4
+
 type Store struct {
 	dir       string
 	extractor CoverExtractor
 	state     CoverState
+	// coldGate holds a slot per in-flight cold extraction or thumbnail decode
+	// (see maxColdExtractions). Serving files already on disk never takes one.
+	coldGate chan struct{}
 }
 
 // NewStore opens (creating if needed) the cover cache under dataDir. extractor
@@ -52,7 +64,13 @@ func NewStore(dataDir string, extractor CoverExtractor, state CoverState) (*Stor
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, fmt.Errorf("create covers directory: %w", err)
 	}
-	return &Store{dir: dir, extractor: extractor, state: state}, nil
+
+	return &Store{
+		dir:       dir,
+		extractor: extractor,
+		state:     state,
+		coldGate:  make(chan struct{}, maxColdExtractions),
+	}, nil
 }
 
 // Save transcodes data to JPEG (a no-op for already-JPEG bytes) and caches it,
@@ -131,12 +149,8 @@ func (s *Store) HasLocalCover(ctx context.Context, bookID int64) bool {
 	if s.extractor == nil {
 		return false
 	}
-	data, ok, err := s.extractor.Cover(ctx, bookID)
-	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-		return true // undetermined within budget; assume a cover may exist
-	}
 
-	return err == nil && ok && len(data) > 0
+	return s.probeCover(ctx, bookID)
 }
 
 func (s *Store) Path(bookID int64) string {
@@ -205,7 +219,12 @@ func (s *Store) shardDir(bookID int64) string {
 // miss so the caller serves it no-cache.
 func (s *Store) coverBytesForThumb(ctx context.Context, bookID int64) ([]byte, bool) {
 	if data, err := os.ReadFile(s.Path(bookID)); err == nil {
-		s.writeThumbnail(bookID, data, nil)
+		// Deriving the thumbnail decodes the full cover; bound it like an
+		// extraction. Without a slot the cover is still served, just not thumbed.
+		if release, err := s.acquireCold(ctx); err == nil {
+			s.writeThumbnail(bookID, data, nil)
+			release()
+		}
 		return data, true
 	}
 	if st, err := s.state.Get(ctx, bookID); err == nil && st == StateNone {
@@ -305,6 +324,11 @@ func (s *Store) lazyExtract(ctx context.Context, bookID int64) ([]byte, bool) {
 	if s.extractor == nil {
 		return nil, false
 	}
+	release, err := s.acquireCold(ctx)
+	if err != nil {
+		return nil, false // the client went away while queued
+	}
+	defer release()
 
 	data, ok, err := s.extractor.Cover(ctx, bookID)
 	if err != nil {
@@ -326,6 +350,34 @@ func (s *Store) lazyExtract(ctx context.Context, bookID int64) ([]byte, bool) {
 	}
 
 	return jpegData, true
+}
+
+// probeCover extracts bookID's cover under the cold gate to learn whether its
+// files carry one. Running out of budget, while queued or while extracting, is
+// undetermined and reported as "a cover may exist".
+func (s *Store) probeCover(ctx context.Context, bookID int64) bool {
+	release, err := s.acquireCold(ctx)
+	if err != nil {
+		return true
+	}
+	defer release()
+	data, ok, err := s.extractor.Cover(ctx, bookID)
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+
+	return err == nil && ok && len(data) > 0
+}
+
+// acquireCold waits for a cold-work slot, returning the func that frees it, or
+// the context's error if the request ends first.
+func (s *Store) acquireCold(ctx context.Context) (func(), error) {
+	select {
+	case s.coldGate <- struct{}{}:
+		return func() { <-s.coldGate }, nil
+	case <-ctx.Done():
+		return nil, fmt.Errorf("wait for cover extraction slot: %w", ctx.Err())
+	}
 }
 
 func (s *Store) servePlaceholder(w http.ResponseWriter) {

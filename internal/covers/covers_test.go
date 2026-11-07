@@ -81,6 +81,7 @@ func (f *fakeState) MarkFileCover(_ context.Context, id int64) error {
 
 func TestCovers(t *testing.T) {
 	suite.Run(t, new(coversTestSuite))
+	suite.Run(t, new(extractGateTestSuite))
 }
 
 type coversTestSuite struct {
