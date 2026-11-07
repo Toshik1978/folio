@@ -207,6 +207,93 @@ describe('BooksPage', () => {
     expect(fetchBooks).toHaveBeenCalled();
   });
 
+  it('keeps the current grid while a sync-triggered reload is in flight', async () => {
+    vi.mocked(fetchBooks).mockResolvedValue({
+      items: [makeBook({ id: 1 }), makeBook({ id: 2 })],
+      total: 2,
+      page: 1,
+      limit: 24,
+    });
+    const wrapper = mount(BooksPage, opts);
+    await flushPromises();
+
+    const { running, current } = useSyncStatus();
+    running.value = true;
+    current.value = 5;
+    await flushPromises();
+
+    let resolveReload!: (v: { items: Book[]; total: number; page: number; limit: number }) => void;
+    vi.mocked(fetchBooks).mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveReload = resolve;
+        }),
+    );
+    running.value = false;
+    current.value = 0; // sync finished → reload
+    await flushPromises();
+    expect(wrapper.findAllComponents(BookCard)).toHaveLength(2);
+
+    resolveReload({ items: [makeBook({ id: 3 })], total: 1, page: 1, limit: 24 });
+    await flushPromises();
+    const ids = wrapper.findAllComponents(BookCard).map((c) => (c.props('book') as Book).id);
+    expect(ids).toEqual([3]);
+  });
+
+  it('keeps the current grid when a sync-triggered reload fails', async () => {
+    vi.mocked(fetchBooks).mockResolvedValue({
+      items: [makeBook({ id: 1 }), makeBook({ id: 2 })],
+      total: 2,
+      page: 1,
+      limit: 24,
+    });
+    const wrapper = mount(BooksPage, opts);
+    await flushPromises();
+
+    const { running, current } = useSyncStatus();
+    running.value = true;
+    current.value = 5;
+    await flushPromises();
+
+    // The backend is restarting: the reload after the sync gets a 502.
+    vi.mocked(fetchBooks).mockRejectedValue(new Error('Bad Gateway'));
+    running.value = false;
+    current.value = 0;
+    await flushPromises();
+
+    expect(wrapper.findAllComponents(BookCard)).toHaveLength(2);
+    expect(toastError).toHaveBeenCalledWith(expect.stringContaining('Bad Gateway'));
+    expect(wrapper.find('[data-testid="books-load-error"]').exists()).toBe(false);
+  });
+
+  it('shows a retry state instead of a blank page when a filter load fails', async () => {
+    vi.mocked(fetchBooks).mockRejectedValue(new Error('Bad Gateway'));
+    route.query = { tag: 'Crime' };
+    const wrapper = mount(BooksPage, opts);
+    await flushPromises();
+
+    expect(wrapper.findAllComponents(BookCard)).toHaveLength(0);
+    const error = wrapper.find('[data-testid="books-load-error"]');
+    expect(error.exists()).toBe(true);
+    expect(toastError).toHaveBeenCalledWith(expect.stringContaining('Bad Gateway'));
+
+    vi.mocked(fetchBooks).mockReset();
+    vi.mocked(fetchBooks).mockResolvedValue({
+      items: [makeBook({ id: 1 })],
+      total: 1,
+      page: 1,
+      limit: 24,
+    });
+    await wrapper.find('[data-testid="books-retry"]').trigger('click');
+    await flushPromises();
+
+    expect(fetchBooks).toHaveBeenCalledWith(
+      expect.objectContaining({ tag: 'Crime', page: 1, limit: 24 }),
+    );
+    expect(wrapper.findAllComponents(BookCard)).toHaveLength(1);
+    expect(wrapper.find('[data-testid="books-load-error"]').exists()).toBe(false);
+  });
+
   it('keeps the detail modal closed when the route has no book id', async () => {
     vi.mocked(fetchBooks).mockResolvedValue({ items: [], total: 0, page: 1, limit: 24 });
     const wrapper = mount(BooksPage, opts);

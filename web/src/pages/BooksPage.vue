@@ -13,6 +13,22 @@
       </select>
     </div>
 
+    <div
+      v-if="loadError && books.length === 0"
+      data-testid="books-load-error"
+      class="flex flex-col items-center gap-3 py-16 text-center"
+    >
+      <span class="text-error text-sm" role="alert">Couldn't load books.</span>
+      <button
+        type="button"
+        data-testid="books-retry"
+        class="btn btn-sm"
+        @click="loadBooks('replace')"
+      >
+        Retry
+      </button>
+    </div>
+
     <div class="grid gap-x-5 gap-y-7 [grid-template-columns:repeat(auto-fill,minmax(150px,1fr))]">
       <BookCard v-for="book in books" :key="book.id" :book="book" />
     </div>
@@ -73,8 +89,13 @@ function onBookUpdated(updated: Book): void {
   if (i !== -1) books.value[i] = updated;
 }
 
+const PAGE_SIZE = 24;
+
 const books = ref<Book[]>([]);
 const page = ref(1);
+// Set when the first page of a fresh result set failed, so the grid shows a
+// retry state instead of a blank page.
+const loadError = ref(false);
 // Starts false so the IntersectionObserver, which can fire against the empty
 // grid before the first page resolves, doesn't kick off a concurrent page-2
 // fetch. It's flipped true only after a load reports more rows are available.
@@ -104,31 +125,55 @@ function setSort(value: string): void {
   router.push({ path: route.path, query });
 }
 
-// loadGen invalidates in-flight responses: a filter change resets the list and
-// bumps the generation, so a slow response from the previous filter (or an
-// in-flight page load) can't append stale rows into the fresh result set.
+// loadGen invalidates in-flight responses: a reload bumps the generation, so a
+// slow response from the previous filter (or an in-flight page load) can't
+// append stale rows into the fresh result set.
 let loadGen = 0;
 
-async function loadBooks(reset = false): Promise<boolean> {
-  if (reset) {
-    loadGen += 1;
+// How loadBooks treats the rows already on screen:
+//   more    — append the next page (infinite scroll);
+//   replace — a new result set (mount, filter change, retry): clear the grid now,
+//             since the old rows no longer match the filters;
+//   refresh — the same result set re-read (a sync finished): keep the rows on
+//             screen until page 1 arrives, and keep them if the reload fails.
+type LoadMode = 'more' | 'replace' | 'refresh';
+
+async function loadBooks(mode: LoadMode = 'more'): Promise<boolean> {
+  if (mode !== 'more') loadGen += 1;
+  if (mode === 'replace') {
     page.value = 1;
     books.value = [];
     hasMore.value = false;
+    loadError.value = false;
   }
   const gen = loadGen;
+  const pageNo = mode === 'more' ? page.value : 1;
 
   try {
-    const res = await fetchBooks({ ...filters.value, page: page.value, limit: 24 });
-    if (gen !== loadGen) return true; // superseded by a newer reset
-    books.value.push(...res.items);
+    const res = await fetchBooks({ ...filters.value, page: pageNo, limit: PAGE_SIZE });
+    if (gen !== loadGen) return true; // superseded by a newer reload
+    if (mode === 'more') {
+      books.value.push(...res.items);
+    } else {
+      books.value = res.items;
+      page.value = 1;
+    }
     hasMore.value = books.value.length < res.total;
+    loadError.value = false;
     return true;
   } catch (err) {
     if (gen !== loadGen) return true; // superseded; the newer load reports its own errors
-    // Roll back the optimistic increment so the next scroll retries this page
-    // instead of skipping it.
-    if (!reset && page.value > 1) page.value -= 1;
+    if (mode === 'more' && page.value > 1) {
+      // Roll back the optimistic increment so the next scroll retries this page
+      // instead of skipping it.
+      page.value -= 1;
+    } else if (mode === 'refresh') {
+      // The rows stay; re-derive the page from them, since a scroll load this
+      // refresh superseded may have advanced it without appending.
+      page.value = Math.max(1, Math.ceil(books.value.length / PAGE_SIZE));
+    } else {
+      loadError.value = true;
+    }
     toast.error(`Failed to load books: ${(err as Error).message}`);
     return false;
   }
@@ -155,7 +200,7 @@ watch(
   () => JSON.stringify(filters.value),
   (newVal, oldVal) => {
     if (newVal !== oldVal) {
-      loadBooks(true);
+      loadBooks('replace');
     }
   },
 );
@@ -168,8 +213,8 @@ watch(
 // the departed id (not the arriving one) means we don't reload on sync *start*,
 // when nothing new exists yet, and we refresh once per library in a queued run.
 watch(syncingLibrary, (_now, previous) => {
-  if (previous !== 0) loadBooks(true);
+  if (previous !== 0) loadBooks('refresh');
 });
 
-onMounted(() => loadBooks());
+onMounted(() => loadBooks('replace'));
 </script>
