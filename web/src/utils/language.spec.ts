@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { languageLabel, sortLanguageCodes } from './language';
 
@@ -23,6 +23,24 @@ describe('languageLabel', () => {
 
   it('does not throw on malformed legacy values', () => {
     expect(languageLabel('zzzz')).toBe('zzzz');
+  });
+
+  it('names codes the browser ICU data has no name for', () => {
+    // Chrome's trimmed ICU returns the raw code for these; Node's full ICU does
+    // not, so simulate the browser by making Intl echo the code back.
+    const spy = vi.spyOn(Intl.DisplayNames.prototype, 'of').mockImplementation((c) => c);
+    try {
+      expect(languageLabel('io')).toBe('Ido');
+      expect(languageLabel('cu')).toBe('Church Slavic');
+      expect(languageLabel('cv')).toBe('Chuvash');
+      expect(languageLabel('ce')).toBe('Chechen');
+      expect(languageLabel('ba')).toBe('Bashkir');
+      expect(languageLabel('sah')).toBe('Yakut');
+      expect(languageLabel('ie')).toBe('Interlingue');
+      expect(languageLabel('xyz')).toBe('xyz');
+    } finally {
+      spy.mockRestore();
+    }
   });
 });
 

@@ -11,13 +11,28 @@ const LANGUAGE_NAMES = new Intl.DisplayNames(['en'], {
   fallback: 'code',
 });
 
+// FALLBACK_LANGUAGE_NAMES covers codes present in real catalogs that Chrome's
+// trimmed ICU data cannot name (Intl echoes the code back). Names follow CLDR.
+const FALLBACK_LANGUAGE_NAMES: Record<string, string> = {
+  ba: 'Bashkir',
+  ce: 'Chechen',
+  cu: 'Church Slavic',
+  cv: 'Chuvash',
+  ie: 'Interlingue',
+  io: 'Ido',
+  sah: 'Yakut',
+};
+
 export function languageLabel(code: string): string {
   if (code === 'und') return 'Unknown';
+  let name: string | undefined;
   try {
-    return LANGUAGE_NAMES.of(code) ?? code;
+    name = LANGUAGE_NAMES.of(code);
   } catch {
-    return code;
+    // Malformed legacy value; fall through to the fallback map / raw code.
   }
+  if (name && name !== code) return name;
+  return FALLBACK_LANGUAGE_NAMES[code] ?? code;
 }
 
 // sortLanguageCodes orders facet language codes for display: the 'und'/"Unknown"
