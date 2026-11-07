@@ -9,6 +9,53 @@ Versions follow [semver](https://semver.org). Commits follow
 
 ---
 
+## v1.8.0 — 2026-11-07
+
+This release makes **Folio safe to run with a container memory limit**. Opening
+a page of books whose covers Folio had never shown before (a fresh tag filter
+over a large INPX library, say) made it pull every cover out of its archive and
+decode it at the same time. That briefly took close to 1 GB of memory, so a
+container capped at 1 GB was killed and restarted, and the page went blank.
+The same page now peaks under 300 MB and loads in about the same time.
+
+### Highlights
+
+- **Covers are extracted at most four at a time.** Covers Folio has already
+  cached are served immediately, as before. Only first-time extraction is
+  queued, and a request the browser has abandoned leaves the queue.
+- **Folio sizes its memory use to its container.** When the container has a
+  memory limit, Folio tells the Go runtime to stay under 90% of it, so memory
+  is reclaimed harder as the limit approaches instead of the process being
+  killed. Setting `GOMEMLIMIT` yourself overrides this. Without a limit, or
+  outside a Linux container, nothing changes.
+
+### Notable fixes
+
+- **The books grid no longer goes blank when a reload fails.** After a sync
+  finishes, the grid now keeps the current books on screen until the fresh list
+  arrives, and keeps them if the request fails. A filter whose first page fails
+  to load shows "Couldn't load books" with a **Retry** button instead of an
+  empty page.
+- **No more manifest CORS error behind Cloudflare Access.** The web app
+  manifest is now requested with your login cookie, so Access no longer
+  redirects it to its sign-in page on every page load.
+
+### Features
+
+- [1f7f2ee](https://github.com/Toshik1978/folio/commit/1f7f2ee63b30dd659d0a0e6f421670e713d87998) feat: size the Go memory limit from the container's cgroup
+
+### Bug Fixes
+
+- [df8977b](https://github.com/Toshik1978/folio/commit/df8977b40bf949039c52ed88fe98b91c00ead25c) fix(covers): extract at most 4 cold covers at once
+- [aa3327f](https://github.com/Toshik1978/folio/commit/aa3327f9adca9d950d9b8a837be383ae0483b4b2) fix(web): keep the books grid until a reload succeeds
+- [f83857c](https://github.com/Toshik1978/folio/commit/f83857c247eae7104f089dc93fc0c7d08b28210d) fix(web): fetch the web manifest with credentials
+
+### Others
+
+- [eea4131](https://github.com/Toshik1978/folio/commit/eea4131e98451e032f71896f8b45aed0e06cfb0f) docs: document the cover extraction cap, memory limit and grid reloads
+
+---
+
 ## v1.7.2 — 2026-11-04
 
 A one-fix release: **search works from a phone**. On mobile, typing a
