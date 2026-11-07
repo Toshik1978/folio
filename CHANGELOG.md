@@ -9,6 +9,26 @@ Versions follow [semver](https://semver.org). Commits follow
 
 ---
 
+## v1.8.1 — 2026-11-07
+
+A small fix release. In Chrome, the language filter showed a few languages as
+bare codes (`ba`, `ce`, `cu`, `cv`, `ie`, `io`, `sah`) instead of their names.
+The books were tagged correctly; Chrome's built-in language data just has no
+English names for these languages, so the filter fell back to the code.
+
+### Notable fixes
+
+- **Every language in the filter now has a name.** Bashkir, Chechen, Church
+  Slavic, Chuvash, Interlingue, Ido and Yakut now show by name in the language
+  filter and on the book page. Folio supplies these names itself when the
+  browser can't, and nothing changes for languages the browser already names.
+
+### Bug Fixes
+
+- [92462c9](https://github.com/Toshik1978/folio/commit/92462c93dea25a3571bfea8647ef460c32bc21a2) fix(web): name languages missing from Chrome's ICU data
+
+---
+
 ## v1.8.0 — 2026-11-07
 
 This release makes **Folio safe to run with a container memory limit**. Opening
