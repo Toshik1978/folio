@@ -13,6 +13,9 @@ on:
   schedule:
     - cron: '37 4 * * 1'
 
+permissions:
+  contents: read
+
 jobs:
   lint:
     runs-on: ubuntu-latest
@@ -81,6 +84,10 @@ jobs:
         with:
           version: latest
           skip-cache: true
+
+      # Reachability-aware: fails only on advisories in code this module actually calls.
+      - name: Check for known vulnerabilities
+        run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
 
   test:
     runs-on: ubuntu-latest
