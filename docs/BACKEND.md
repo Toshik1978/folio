@@ -12,7 +12,7 @@
 
 ```
 main() → run():
-  godotenv.Load() → config.MustParse() → logging.New() (base logger)
+  godotenv.Load() → config.MustParse() → logging.New() (base logger) → memlimit.Apply()
   → db.Open() → db.NewWriteGuard() → notify.New(base, store, client, …)
   → logging.WithErrorSink(base, notifier) (tapped logger `log`, used from here on)
   → ebook.NewStandardDispatcher(ebook.WithCrashReporter(notifier)) → ingest.NewExtractor(…,parser,guard)
@@ -48,7 +48,12 @@ an arbitrary host path like `/etc` and serve files back out; empty leaves
 library paths unconstrained, matching historical behavior). `TELEGRAM_API_BASE`
 (default `https://api.telegram.org`; testing only — an absolute `http`/`https`
 URL pointing the Telegram client at a local fake endpoint, trailing `/` trimmed;
-not for production use). OPDS Basic Auth credentials are **not** environment variables — they are
+not for production use). `GOMEMLIMIT` is the Go runtime's own soft memory
+limit; when it is unset, `memlimit.Apply` sets the limit to 90% of the cgroup v2
+`memory.max` (followed through `/proc/self/cgroup`, so it works with private
+and host cgroup namespaces), letting the GC work harder as a memory-capped
+container nears its cap instead of being OOM-killed. No cgroup v2 or no limit
+leaves the runtime untouched. OPDS Basic Auth credentials are **not** environment variables — they are
 configured at runtime via `PUT /api/settings` and stored hashed in the `settings`
 table (the `auth` package owns them). Structured logging uses the standard library `log/slog`. `run`
 returns a non-zero exit code on a failed dependency so the container restarts
@@ -213,14 +218,15 @@ Layout that follows from the rules:
 
 - **One file per area of behaviour**, each declaring its own `suite.Suite` (embedding `baseSuite` when it shares setup) and its test methods. Use `s.Run(name, func(){…})` for table subtests.
 
-This groups `go test` output by suite, isolates fixtures per concern, and gives each suite its own `SetupTest`/`TearDownTest`. A single-concern package keeps one suite (`covers`, `server`); a multi-concern package splits per concern (`ebook`, `ingest`).
+This groups `go test` output by suite, isolates fixtures per concern, and gives each suite its own `SetupTest`/`TearDownTest`. A single-concern package keeps one suite (`server`, `memlimit`); a multi-concern package splits per concern (`ebook`, `ingest`).
 
 ### Coverage by package
 
 | Package | Runner | Suites / focus |
 | :--- | :--- | :--- |
 | `internal/server` | `TestServer` | Router + SPA serving via `httptest` + `fstest.MapFS`: health, SPA routing & directory fallback, `/api` & `/opds` 404 protection, static-asset serving |
-| `internal/covers` | `TestCovers` | Cover store (save / read / overwrite) and HTTP serving with placeholder fallback |
+| `internal/covers` | `TestCovers` | `coversTestSuite`: cover store (save / read / overwrite) and HTTP serving with placeholder fallback; `extractGateTestSuite`: the cap on concurrent cold extraction |
+| `internal/memlimit` | `TestMemlimit` | `configureSuite`: cgroup v2 limit discovery (own and host namespace), `GOMEMLIMIT` precedence, unlimited/absent cgroups |
 | `internal/ebook`  | `TestEbook`  | Per-format parsers (`epub`/`fb2`/`mobi`/`pdf`) + dispatcher, against `testdata/` fixtures |
 | `internal/ingest` | `TestIngest` | Source parsers (`folder`/`calibre`/`inpx`), merge/importer, extractor and read outcomes, lazy backfill, Deep Index, against a temp folio DB + generated fixtures |
 | `internal/api` | `TestAPI` | REST handlers over a temp DB: `booksSuite`, `matchSuite`, `enrichSuite`, `editSuite`, `coverSearchSuite`, `librariesSuite`, `listsSuite`, `lettersBoundsSuite`, `statsSuite`, `metaSuite`, `contractSuite`, `utilSuite` |
@@ -350,10 +356,17 @@ internal/
 │                          #   Dependency-free; shared by API, composition root,
 │                          #   sync engine, and ingest without import cycles.
 ├── htmltext/              # HTML annotation → plain text / entity tables    [leaf]
+├── memlimit/              # Go soft memory limit from the cgroup v2 cap     [leaf]
 ├── covers/                # Cover store + HTTP serving + placeholder       [leaf]
 │                          #   The cover Store also generates and serves aspect-preserving
 │                          #   thumbnails (ServeThumbnail, generated eagerly in writeFile
 │                          #   alongside the cover); the cover-serving method is ServeCover.
+│                          #   Cold work (lazy extraction, deriving a missing thumbnail,
+│                          #   the HasLocalCover probe) runs at most 4 at once
+│                          #   (maxColdExtractions): a grid page requests every thumbnail
+│                          #   together, and each cold cover holds tens of MB. Queued
+│                          #   requests give up when the client leaves; files already on
+│                          #   disk are served without waiting.
 ├── events/                # Sync-event broker (SSE fan-out + coalescing)   [leaf]
 └── tools/layoutcheck/     # Dev tool run by `task lint`: methods grouped by receiver,
                            #   no compile-time interface guards (stdlib go/ast only)

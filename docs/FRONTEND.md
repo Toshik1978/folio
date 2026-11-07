@@ -233,7 +233,11 @@ the theme picker, and a settings gear.
   the moment a library's rows are committed — so newly indexed books appear
   without a manual page refresh. Keying off the *departed* id (not the arriving
   one) skips a wasted reload at sync *start* and refreshes once per library in a
-  queued multi-library run.
+  queued multi-library run. That refresh keeps the current cards on screen until
+  page 1 arrives and keeps them if the reload fails (a toast reports it), so a
+  backend restart cannot blank the grid. A new result set (first load, filter
+  change) clears the grid immediately; if its first page fails, the grid shows a
+  "Couldn't load books" state with a Retry button.
 - **Book detail (`/books/:id`)** — a **modal dialog** (`BookDetailModal.vue`,
   DaisyUI `modal`) overlaid on the books grid, not a standalone page: navigating
   to `/books/:id` keeps `BooksPage` mounted and opens the modal; closing
