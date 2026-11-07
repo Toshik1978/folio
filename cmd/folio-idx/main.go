@@ -25,6 +25,7 @@ import (
 	"github.com/Toshik1978/folio/internal/libtype"
 	"github.com/Toshik1978/folio/internal/logging"
 	"github.com/Toshik1978/folio/internal/mcpserver"
+	"github.com/Toshik1978/folio/internal/memlimit"
 	"github.com/Toshik1978/folio/internal/metasearch"
 	msamazon "github.com/Toshik1978/folio/internal/metasearch/providers/amazon"
 	msgoodreads "github.com/Toshik1978/folio/internal/metasearch/providers/goodreads"
@@ -55,6 +56,7 @@ func run() int { //revive:disable:function-length
 	_ = godotenv.Load()
 	cfg := config.MustParse()
 	base := logging.New(cfg.NoColorEnabled(), cfg.Env)
+	memlimit.Apply(base)
 
 	database, err := db.Open(base, cfg.DataDir)
 	if err != nil {
