@@ -4,9 +4,12 @@ import (
 	"context"
 	"database/sql"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/samber/lo"
+	"github.com/stephenafamo/bob/dialect/sqlite"
+	"github.com/stephenafamo/bob/dialect/sqlite/sm"
 	"github.com/stretchr/testify/suite"
 
 	"github.com/Toshik1978/folio/internal/db/dbq"
@@ -339,6 +342,109 @@ func (s *booksFilterSuite) TestExactFacetSearchRequiresFullValue() {
 	)
 	s.Require().NoError(err)
 	s.Empty(partialName, "exact match must require the full author name")
+}
+
+// TestExactFacetsStayCaseSensitive confirms the fold term added for the index
+// does not loosen an exact facet: a case variant of a stored name still finds
+// nothing, and publisher case variants (stored side by side) stay apart.
+func (s *booksFilterSuite) TestExactFacetsStayCaseSensitive() {
+	ctx := context.Background()
+	src := s.library()
+	s.seed(src, bookSeed{
+		key: "k1", title: "Западня", author: "Кевин Джеймс Андерсон", series: "Тёмные дуэты", publisher: "Ace",
+	})
+	s.seed(src, bookSeed{key: "k2", title: "Dune", publisher: "ACE"})
+
+	variants := []BookFilter{
+		{Author: FieldFilter{Value: "кевин джеймс андерсон", Exact: true}, Limit: 10},
+		{Series: FieldFilter{Value: "Темные дуэты", Exact: true}, Limit: 10},
+	}
+	for i := range variants {
+		books, err := FilterBooks(ctx, s.db, variants[i])
+		s.Require().NoError(err)
+		s.Empty(books, "%+v", variants[i])
+	}
+
+	books, err := FilterBooks(ctx, s.db, BookFilter{Publisher: "Ace", Limit: 10})
+	s.Require().NoError(err)
+	s.Equal([]string{"Западня"}, titles(books))
+}
+
+// TestExactTitleStaysExact confirms the FTS narrowing of an exact title keeps
+// the comparison exact (a longer title sharing the tokens, or a case variant,
+// is excluded), leaves the requested sort in charge, and still works for a
+// title with no searchable token.
+func (s *booksFilterSuite) TestExactTitleStaysExact() {
+	ctx := context.Background()
+	src := s.library()
+	s.seed(src, bookSeed{key: "k1", title: "Dune", importedAt: 1})
+	s.seed(src, bookSeed{key: "k2", title: "Dune", importedAt: 3})
+	s.seed(src, bookSeed{key: "k3", title: "Dune Messiah", importedAt: 2})
+	s.seed(src, bookSeed{key: "k4", title: "dune", importedAt: 4})
+	s.seed(src, bookSeed{key: "k5", title: "?!", importedAt: 5})
+
+	f := BookFilter{Title: FieldFilter{Value: "Dune", Exact: true}, Limit: 10}
+	books, err := FilterBooks(ctx, s.db, f)
+	s.Require().NoError(err)
+	s.Equal([]string{"k2", "k1"}, lo.Map(books, func(b dbq.Book, _ int) string { return b.LibraryKey }),
+		"newest import first, as with no title filter")
+	n, err := CountFilteredBooks(ctx, s.db, f)
+	s.Require().NoError(err)
+	s.EqualValues(2, n)
+
+	books, err = FilterBooks(ctx, s.db, BookFilter{Title: FieldFilter{Value: "?!", Exact: true}, Limit: 10})
+	s.Require().NoError(err)
+	s.Equal([]string{"?!"}, titles(books))
+
+	books, err = FilterBooks(ctx, s.db, BookFilter{
+		Query: "Messiah", Title: FieldFilter{Value: "Dune", Exact: true}, Limit: 10,
+	})
+	s.Require().NoError(err)
+	s.Empty(books, "the free-text query and the exact title combine with AND")
+}
+
+// TestExactFacetsUseFoldIndex guards the plan of the exact facet filters on a
+// database without ANALYZE statistics: each must look its name up through the
+// fold index (a title, which has none, through the FTS index) rather than
+// scan. Before the fold term, the count of an author's books walked every
+// book_authors row.
+func (s *booksFilterSuite) TestExactFacetsUseFoldIndex() {
+	cases := []struct {
+		filter BookFilter
+		want   string
+	}{
+		{BookFilter{Author: FieldFilter{Value: "Кевин Джеймс Андерсон", Exact: true}}, "authors_1 (name_fold=?)"},
+		{BookFilter{Series: FieldFilter{Value: "Dune Saga", Exact: true}}, "series_1 (name_fold=?)"},
+		{BookFilter{Genre: "sf"}, "genres_1 (name_fold=?)"},
+		{BookFilter{Publisher: "Ace"}, "idx_books_publisher_fold (publisher_fold=?)"},
+		{BookFilter{Title: FieldFilter{Value: "Guards! Guards!", Exact: true}}, "VIRTUAL TABLE INDEX"},
+	}
+	for i := range cases {
+		s.Contains(s.countPlan(cases[i].filter), cases[i].want, "%+v", cases[i].filter)
+	}
+}
+
+// countPlan returns the EXPLAIN QUERY PLAN details of CountFilteredBooks's
+// query for f, one step per line.
+func (s *booksFilterSuite) countPlan(f BookFilter) string {
+	ctx := context.Background()
+	query, args, err := sqlite.Select(append(f.filterMods(), sm.Columns("COUNT(*)"))...).Build(ctx)
+	s.Require().NoError(err)
+
+	rows, err := s.db.QueryContext(ctx, "EXPLAIN QUERY PLAN "+query, args...)
+	s.Require().NoError(err)
+	defer func() { _ = rows.Close() }()
+
+	var steps []string
+	for rows.Next() {
+		var id, parent, unused int
+		var detail string
+		s.Require().NoError(rows.Scan(&id, &parent, &unused, &detail))
+		steps = append(steps, detail)
+	}
+	s.Require().NoError(rows.Err())
+
+	return strings.Join(steps, "\n")
 }
 
 // TestCombinedQueryAndFacetSearch confirms free-text q AND a partial facet

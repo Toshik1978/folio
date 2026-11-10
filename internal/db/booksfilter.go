@@ -195,13 +195,45 @@ func (f BookFilter) ftsMatch() string {
 	return strings.Join(clauses, " AND ")
 }
 
+// filterMatch is the FTS5 MATCH expression filterMods applies: ftsMatch plus,
+// for an exact title, the title's own tokens scoped to the title column. books
+// has no index on title, so the token match is what narrows an exact title to
+// a few candidates; b.title = ? then keeps only the identical one. Every book
+// write refreshes its FTS row, so the match never drops a book whose title is
+// equal. It stays out of ftsMatch, which also decides relevance ordering: an
+// exact title alone keeps the requested sort. A title with no tokens adds
+// nothing and falls back to the plain comparison.
+func (f BookFilter) filterMatch() string {
+	m := f.ftsMatch()
+	if !f.Title.Exact {
+		return m
+	}
+	t := ftsClause("title", f.Title.Value)
+	switch {
+	case t == "":
+		return m
+	case m == "":
+		return t
+	default:
+		return m + " AND " + t
+	}
+}
+
 // filterMods builds the FROM clause plus the joins and WHERE conditions required
 // by the active filters, shared by FilterBooks and CountFilteredBooks. Every
 // caller-supplied value is bound as an argument via sqlite.Arg / sqlite.Raw.
+//
+// Exact author/series/genre/publisher filters match on the name and on its
+// fold. The fold term is what an index serves (the UNIQUE name_fold, or
+// idx_books_publisher_fold); the name term keeps the match exact, so a case
+// variant of the name still finds nothing. The pair selects exactly what the
+// name alone would, because every write stores name_fold = Fold(name).
+// Without the fold term the name has no index, and the planner, unless
+// ANALYZE statistics steer it, may walk every book_authors row to evaluate it.
 func (f BookFilter) filterMods() []bob.Mod[*dialect.SelectQuery] {
 	mods := []bob.Mod[*dialect.SelectQuery]{sm.From("books b")}
 
-	if m := f.ftsMatch(); m != "" {
+	if m := f.filterMatch(); m != "" {
 		// A single table-level MATCH searches all requested FTS columns at once
 		// (FTS5 forbids multiple MATCH constraints against the same table).
 		mods = append(
@@ -217,6 +249,7 @@ func (f BookFilter) filterMods() []bob.Mod[*dialect.SelectQuery] {
 			mods,
 			sm.InnerJoin("book_authors ba").On(sqlite.Quote("ba", "book_id").EQ(sqlite.Quote("b", "id"))),
 			sm.InnerJoin("authors a").On(sqlite.Quote("a", "id").EQ(sqlite.Quote("ba", "author_id"))),
+			sm.Where(sqlite.Quote("a", "name_fold").EQ(sqlite.Arg(Fold(f.Author.Value)))),
 			sm.Where(sqlite.Quote("a", "name").EQ(sqlite.Arg(f.Author.Value))),
 		)
 	}
@@ -224,6 +257,7 @@ func (f BookFilter) filterMods() []bob.Mod[*dialect.SelectQuery] {
 		mods = append(
 			mods,
 			sm.InnerJoin("series s").On(sqlite.Quote("s", "id").EQ(sqlite.Quote("b", "series_id"))),
+			sm.Where(sqlite.Quote("s", "name_fold").EQ(sqlite.Arg(Fold(f.Series.Value)))),
 			sm.Where(sqlite.Quote("s", "name").EQ(sqlite.Arg(f.Series.Value))),
 		)
 	}
@@ -235,6 +269,7 @@ func (f BookFilter) filterMods() []bob.Mod[*dialect.SelectQuery] {
 			mods,
 			sm.InnerJoin("book_genres bg").On(sqlite.Quote("bg", "book_id").EQ(sqlite.Quote("b", "id"))),
 			sm.InnerJoin("genres g").On(sqlite.Quote("g", "id").EQ(sqlite.Quote("bg", "genre_id"))),
+			sm.Where(sqlite.Quote("g", "name_fold").EQ(sqlite.Arg(Fold(f.Genre)))),
 			sm.Where(sqlite.Quote("g", "name").EQ(sqlite.Arg(f.Genre))),
 		)
 	}
@@ -274,7 +309,10 @@ func (f BookFilter) scalarMods() []bob.Mod[*dialect.SelectQuery] {
 		mods = append(mods, sm.Where(sqlite.Quote("b", "year").LTE(sqlite.Arg(f.YearTo))))
 	}
 	if f.Publisher != "" {
-		mods = append(mods, sm.Where(sqlite.Quote("b", "publisher").EQ(sqlite.Arg(f.Publisher))))
+		mods = append(mods,
+			sm.Where(sqlite.Quote("b", "publisher_fold").EQ(sqlite.Arg(Fold(f.Publisher)))),
+			sm.Where(sqlite.Quote("b", "publisher").EQ(sqlite.Arg(f.Publisher))),
+		)
 	}
 
 	return mods
