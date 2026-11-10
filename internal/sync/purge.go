@@ -137,6 +137,7 @@ func (e *Engine) purgeLibrary(ctx context.Context, id int64) error {
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit purge: %w", err)
 	}
+	e.optimize(ctx)
 
 	// Notify before emitting so SSE clients that immediately refetch stats
 	// see a fresh value (mirrors the ordering in recordLastSync).

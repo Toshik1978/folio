@@ -102,6 +102,21 @@ func (s *connSuite) TestForeignKeyCascadeDeletesChildren() {
 	s.Equal(0, s.count("SELECT COUNT(*) FROM book_authors WHERE book_id = ?", bookID))
 }
 
+// TestOptimizeRecordsStatistics asserts Optimize analyzes a table that has
+// grown and was never analyzed, so the planner gets row counts to choose join
+// orders from.
+func (s *connSuite) TestOptimizeRecordsStatistics() {
+	ctx := context.Background()
+	_, err := s.db.ExecContext(ctx, `
+		WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 500)
+		INSERT INTO authors (name, name_fold) SELECT 'a' || i, 'A' || i FROM n`)
+	s.Require().NoError(err)
+
+	s.Require().NoError(Optimize(ctx, s.db))
+
+	s.Equal(1, s.count("SELECT COUNT(*) FROM sqlite_stat1 WHERE tbl = 'authors'"))
+}
+
 func (s *connSuite) count(query string, args ...any) int {
 	var n int
 	s.Require().NoError(s.db.QueryRowContext(context.Background(), query, args...).Scan(&n))

@@ -732,6 +732,9 @@ func (e *Engine) runSync(
 	persistCtx := context.WithoutCancel(ctx) // keep values, drop cancellation
 	e.recordLastSync(persistCtx, req.id)
 	e.storeCheckpoint(persistCtx, src.ID, fp)
+	if res.Added > 0 || res.Removed > 0 {
+		e.optimize(persistCtx)
+	}
 	e.log.Info("sync done",
 		slog.Int64("library", req.id), slog.Int("added", res.Added), slog.Int("removed", res.Removed))
 
@@ -945,6 +948,15 @@ func (e *Engine) storeCheckpoint(ctx context.Context, id int64, fp string) {
 	})
 	if err != nil {
 		e.log.Error("record checkpoint", slog.Int64("library", id), slog.Any("error", err))
+	}
+}
+
+// optimize refreshes the planner statistics after a run changed the catalog.
+// Callers hold the write guard, as the statistics are a write. A failure is
+// only logged: stale statistics cost query speed, never correctness.
+func (e *Engine) optimize(ctx context.Context) {
+	if err := db.Optimize(ctx, e.db); err != nil {
+		e.log.Warn("refresh planner statistics", slog.Any("error", err))
 	}
 }
 
