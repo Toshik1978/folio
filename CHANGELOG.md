@@ -9,6 +9,37 @@ Versions follow [semver](https://semver.org). Commits follow
 
 ---
 
+## v1.8.2 — 2026-11-10
+
+A performance fix release. Clicking an author on a large catalog could take
+10–20 seconds to show their books; it now opens immediately. The same slowdown
+could hit series, tag, publisher and exact-title filters.
+
+### Notable fixes
+
+- **Author, series, tag and publisher pages load fast again.** These filters
+  compared names without an index, and on a catalog of hundreds of thousands of
+  books SQLite sometimes worked through every author–book link to count the
+  results. They now look the name up through an index. Results are unchanged:
+  the match is still exact.
+- **Exact title search no longer scans the whole catalog.** A title filter
+  typed with a leading `=` now uses the search index to find its candidates.
+- **Folio keeps SQLite's query statistics up to date.** On startup and after
+  a sync or library removal that changed the catalog, Folio refreshes the
+  statistics SQLite uses to plan queries. It only does work when a table has
+  changed size substantially, so routine syncs stay cheap.
+
+### Bug Fixes
+
+- [38b485b](https://github.com/Toshik1978/folio/commit/38b485b3a6f9c9402465bad27fcf50b9c7d86ad7) fix(db): look up exact facet filters through an index
+- [a5036d2](https://github.com/Toshik1978/folio/commit/a5036d25db536c890cfa39bbe034180a05988174) fix(db): keep query planner statistics fresh
+
+### Others
+
+- [36b42ce](https://github.com/Toshik1978/folio/commit/36b42ced8aa4024e3dfcc04b25076e56b46abf3d) ci: scan for known vulnerabilities and limit GITHUB_TOKEN permissions
+
+---
+
 ## v1.8.1 — 2026-11-07
 
 A small fix release. In Chrome, the language filter showed a few languages as
