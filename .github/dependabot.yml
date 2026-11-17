@@ -1,74 +1,31 @@
 version: 2
 updates:
-  # Go modules
-  - package-ecosystem: gomod
+  - package-ecosystem: docker
     directory: "/"
     schedule:
       interval: monthly
-    open-pull-requests-limit: 10
     commit-message:
       prefix: build
       include: scope
+    open-pull-requests-limit: 10
     groups:
-      gomod:
+      docker:
         patterns:
           - "*"
         update-types:
           - minor
           - patch
-      # Security updates are a repository setting, not something this file can
-      # switch on; it only shapes their PRs. One advisory often lands on several
-      # packages of one stack at once, and separate PRs each conflict on the
-      # lockfile or fail CI on the others' advisories, so they are grouped into
-      # a single PR that can actually go green.
-      gomod-security:
-        applies-to: security-updates
-        patterns:
-          - "*"
-
-  # Frontend npm packages (Vue SPA lives in web/)
-  - package-ecosystem: npm
-    directory: "/web"
-    schedule:
-      interval: monthly
-    open-pull-requests-limit: 10
-    commit-message:
-      prefix: build
-      include: scope
-    ignore:
-      # Pinned to 7.x: the 8.0 release changed the license.
-      - dependency-name: "primeicons"
-        update-types:
-          - version-update:semver-major
-      # Pinned to 6.x: nothing here invokes tsc — vue-tsc and typescript-eslint
-      # consume the TypeScript programmatic API, which 7.0 dropped and 7.1 is
-      # expected to restore. Revisit once Volar and typescript-eslint support it.
-      - dependency-name: "typescript"
-        update-types:
-          - version-update:semver-major
-    groups:
-      npm:
-        patterns:
-          - "*"
-        update-types:
-          - minor
-          - patch
-      # Security updates grouped for the same reason as above.
-      npm-security:
-        applies-to: security-updates
-        patterns:
-          - "*"
-
+    cooldown:
+      default-days: 7
   # GitHub Actions used by CI and release workflows
   - package-ecosystem: github-actions
     directory: "/"
     schedule:
       interval: monthly
-    open-pull-requests-limit: 10
     commit-message:
       prefix: ci
       include: scope
-
+    open-pull-requests-limit: 10
     # The actions listed below are pinned to a moving major tag (`@v4`, `@v7`),
     # not to an exact `x.y.z`. Upstream repoints those tags on each release, so
     # minor and patch updates arrive without a commit here and a PR proposing
@@ -93,32 +50,57 @@ updates:
     # the bad bump described above.
     ignore:
       - dependency-name: "actions/attest"
-        update-types: ["version-update:semver-minor", "version-update:semver-patch"]
+        update-types:
+          - "version-update:semver-minor"
+          - "version-update:semver-patch"
       - dependency-name: "actions/checkout"
-        update-types: ["version-update:semver-minor", "version-update:semver-patch"]
+        update-types:
+          - "version-update:semver-minor"
+          - "version-update:semver-patch"
       - dependency-name: "actions/github-script"
-        update-types: ["version-update:semver-minor", "version-update:semver-patch"]
+        update-types:
+          - "version-update:semver-minor"
+          - "version-update:semver-patch"
       - dependency-name: "actions/setup-go"
-        update-types: ["version-update:semver-minor", "version-update:semver-patch"]
+        update-types:
+          - "version-update:semver-minor"
+          - "version-update:semver-patch"
       - dependency-name: "actions/setup-node"
-        update-types: ["version-update:semver-minor", "version-update:semver-patch"]
+        update-types:
+          - "version-update:semver-minor"
+          - "version-update:semver-patch"
       - dependency-name: "docker/build-push-action"
-        update-types: ["version-update:semver-minor", "version-update:semver-patch"]
+        update-types:
+          - "version-update:semver-minor"
+          - "version-update:semver-patch"
       - dependency-name: "docker/login-action"
-        update-types: ["version-update:semver-minor", "version-update:semver-patch"]
+        update-types:
+          - "version-update:semver-minor"
+          - "version-update:semver-patch"
       - dependency-name: "docker/metadata-action"
-        update-types: ["version-update:semver-minor", "version-update:semver-patch"]
+        update-types:
+          - "version-update:semver-minor"
+          - "version-update:semver-patch"
       - dependency-name: "docker/setup-buildx-action"
-        update-types: ["version-update:semver-minor", "version-update:semver-patch"]
+        update-types:
+          - "version-update:semver-minor"
+          - "version-update:semver-patch"
       - dependency-name: "go-task/setup-task"
-        update-types: ["version-update:semver-minor", "version-update:semver-patch"]
+        update-types:
+          - "version-update:semver-minor"
+          - "version-update:semver-patch"
       - dependency-name: "golangci/golangci-lint-action"
-        update-types: ["version-update:semver-minor", "version-update:semver-patch"]
+        update-types:
+          - "version-update:semver-minor"
+          - "version-update:semver-patch"
       - dependency-name: "marocchino/sticky-pull-request-comment"
-        update-types: ["version-update:semver-minor", "version-update:semver-patch"]
+        update-types:
+          - "version-update:semver-minor"
+          - "version-update:semver-patch"
       - dependency-name: "softprops/action-gh-release"
-        update-types: ["version-update:semver-minor", "version-update:semver-patch"]
-
+        update-types:
+          - "version-update:semver-minor"
+          - "version-update:semver-patch"
     # Still covers minor/patch: those survive the ignore above only for the
     # exact-pinned action, and it should ride in the same grouped PR.
     groups:
@@ -129,3 +111,80 @@ updates:
           - major
           - minor
           - patch
+    cooldown:
+      default-days: 7
+  # Go modules
+  - package-ecosystem: gomod
+    directory: "/"
+    schedule:
+      interval: monthly
+    commit-message:
+      prefix: build
+      include: scope
+    open-pull-requests-limit: 10
+    groups:
+      gomod:
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch
+      # Security updates are a repository setting, not something this file can
+      # switch on; it only shapes their PRs. One advisory often lands on several
+      # packages of one stack at once, and separate PRs each conflict on the
+      # lockfile or fail CI on the others' advisories, so they are grouped into
+      # a single PR that can actually go green.
+      gomod-security:
+        patterns:
+          - "*"
+        applies-to: security-updates
+    cooldown:
+      default-days: 7
+  # Frontend npm packages (Vue SPA lives in web/)
+  - package-ecosystem: npm
+    directory: "/web"
+    schedule:
+      interval: monthly
+    commit-message:
+      prefix: build
+      include: scope
+    open-pull-requests-limit: 10
+    ignore:
+      # Pinned to 7.x: the 8.0 release changed the license.
+      - dependency-name: "primeicons"
+        update-types:
+          - version-update:semver-major
+      # Pinned to 6.x: nothing here invokes tsc — vue-tsc and typescript-eslint
+      # consume the TypeScript programmatic API, which 7.0 dropped and 7.1 is
+      # expected to restore. Revisit once Volar and typescript-eslint support it.
+      - dependency-name: "typescript"
+        update-types:
+          - version-update:semver-major
+    groups:
+      npm:
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch
+      # Security updates grouped for the same reason as above.
+      npm-security:
+        patterns:
+          - "*"
+        applies-to: security-updates
+    cooldown:
+      default-days: 7
+  - package-ecosystem: pre-commit
+    directory: "/"
+    schedule:
+      interval: monthly
+    commit-message:
+      prefix: build
+      include: scope
+    open-pull-requests-limit: 10
+    groups:
+      pre-commit:
+        patterns:
+          - "*"
+    cooldown:
+      default-days: 7
