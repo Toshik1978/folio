@@ -8,6 +8,12 @@ updates:
       prefix: build
       include: scope
     open-pull-requests-limit: 10
+    ignore:
+      # Node stays on an LTS line and moves to the next LTS by hand, together with any
+      # .mise.toml pin (odd majors never become LTS).
+      - dependency-name: "node"
+        update-types:
+          - "version-update:semver-major"
     groups:
       docker:
         patterns:
