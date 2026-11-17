@@ -3,26 +3,26 @@ module github.com/Toshik1978/folio
 go 1.27
 
 require (
-	github.com/caarlos0/env/v11 v11.4.1
+	github.com/caarlos0/env/v11 v11.4.2
 	github.com/fsnotify/fsnotify v1.10.1
 	github.com/go-chi/chi/v5 v5.5.0
-	github.com/go-co-op/gocron/v2 v2.23.0
+	github.com/go-co-op/gocron/v2 v2.23.1
 	github.com/gofrs/uuid/v5 v5.5.1
 	github.com/joho/godotenv v1.5.1
 	github.com/mattn/go-isatty v0.0.24
 	github.com/microcosm-cc/bluemonday v1.0.27
 	github.com/modelcontextprotocol/go-sdk v1.8.0
 	github.com/pdfcpu/pdfcpu v0.16.4
-	github.com/pressly/goose/v3 v3.29.0
+	github.com/pressly/goose/v3 v3.30.0
 	github.com/samber/lo v1.53.0
 	github.com/stephenafamo/bob v0.50.0
 	github.com/stretchr/testify v1.12.1
 	golang.org/x/crypto v0.58.0
-	golang.org/x/image v0.47.0
+	golang.org/x/image v0.48.0
 	golang.org/x/net v0.62.0
-	golang.org/x/sync v0.24.0
-	golang.org/x/text v0.43.0
-	modernc.org/sqlite v1.61.0
+	golang.org/x/sync v0.25.0
+	golang.org/x/text v0.44.0
+	modernc.org/sqlite v1.62.0
 )
 
 require (
@@ -48,11 +48,11 @@ require (
 	github.com/xdg-go/stringprep v1.0.4 // indirect
 	github.com/yosida95/uritemplate/v3 v3.0.2 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
-	go.yaml.in/yaml/v3 v3.0.5 // indirect
+	go.yaml.in/yaml/v3 v3.0.6 // indirect
 	golang.org/x/oauth2 v0.35.0 // indirect
-	golang.org/x/sys v0.49.0 // indirect
+	golang.org/x/sys v0.50.0 // indirect
 	golang.org/x/time v0.15.0 // indirect
-	modernc.org/libc v1.79.0 // indirect
+	modernc.org/libc v1.80.2 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.12.1 // indirect
 )
