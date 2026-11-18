@@ -39,7 +39,7 @@ RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
 RUN mkdir -p /data && chown -R 65532:65532 /data
 
 # Stage 3: Run target
-FROM gcr.io/distroless/static-debian12
+FROM gcr.io/distroless/static-debian12:nonroot
 WORKDIR /app
 # Copy the compiled binary (remains owned by root, read-only to nonroot for security)
 COPY --from=backend-builder /app/bin/folio-idx .
